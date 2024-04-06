@@ -1,0 +1,27 @@
+= Design
+
+== HTTP signature
+
+See https://www.iana.org/assignments/http-message-signature/http-message-signature.xhtml
+
+* Outgoing messages use Ed25519
+* Support verify incoming messages with
+  - rsa-pss-sha512
+  - rsa-v1_5-sha256
+  - hmac-sha256
+  - ecdsa-p256-sha256
+  - ecdsa-p384-sha384
+  - ed25519
+* Internal key representation is DER encoded string.
+
+== URLs
+
+All the federation APIs are under `/fed` path.
+
+== Posts
+
+All posts from this server are Markdown.
+
+== Dependency
+
+* Crypto++
