@@ -4,6 +4,7 @@
 #include <string>
 #include <format>
 #include <string_view>
+#include <optional>
 
 #include "crypto.hpp"
 #include "utils.hpp"
@@ -16,6 +17,7 @@ struct Attachment
 struct FediUser
 {
     std::string name;
+    // If server is empty, it’s a local user.
     std::string server;
 
     // Parse a user ID from the fediverse. A user ID looks like
@@ -24,7 +26,14 @@ struct FediUser
 
     std::string idStr() const
     {
-        return std::format("{}@{}", name, server);
+        if(server.empty())
+        {
+            return name;
+        }
+        else
+        {
+            return std::format("{}@{}", name, server);
+        }
     }
 };
 
@@ -39,6 +48,7 @@ struct LocalUser
 
 struct Post
 {
+    std::optional<int64_t> id;
     enum Visibility { PUBLIC, FOLLOWER_ONLY, PRIVATE };
     std::string author;
     Visibility visibility;

@@ -67,15 +67,15 @@ set(SOURCE_FILES
   src/crypto.cpp
   src/crypto.hpp
   src/data.hpp
+  src/data_types.cpp
+  src/data_types.hpp
   src/database.cpp
   src/database.hpp
   src/error.hpp
-  src/federation.hpp
   src/federation.cpp
+  src/federation.hpp
   src/http_client.cpp
   src/http_client.hpp
-  src/types.hpp
-  src/types.cpp
   src/url.cpp
   src/url.hpp
   src/url_manager.hpp
@@ -114,12 +114,12 @@ target_link_libraries(actpub PRIVATE ${LIBS})
 set(TEST_FILES
   src/auth_mock.hpp
   src/auth_test.cpp
+  src/data_types_test.cpp
   src/database_test.cpp
   src/federation_test.cpp
   src/http_client_mock.hpp
   src/http_client_test.cpp
   src/test_utils.hpp
-  src/types_test.cpp
   src/url_test.cpp
   src/utils_test.cpp
 )

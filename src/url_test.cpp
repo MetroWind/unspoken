@@ -1,7 +1,7 @@
+#include <gtest/gtest.h>
+
 #include "test_utils.hpp"
 #include "url.hpp"
-
-#include <gtest/gtest.h>
 
 TEST(URL, CanGetSetParts)
 {
