@@ -19,7 +19,7 @@ public:
     virtual E<std::optional<LocalUser>> getUser(std::string_view name) = 0;
     // Create a post, or modify a post if “p” has an post ID.
     virtual E<void> post(Post&& p) = 0;
-    // Remove a post.
+    // Remove a post. This does not delete attachment files.
     virtual E<void> deletePost(uint64_t id) = 0;
     // Retrieve a timeline of posts.
     virtual E<std::vector<Post>> getTimeline(const TimelineSpec& spec) = 0;

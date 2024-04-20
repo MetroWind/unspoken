@@ -56,6 +56,7 @@ struct Post
     Time time_creation;
     // Initially this will equal time_creation.
     Time time_update;
+    std::string title;
     // For local posts this is markdown. For remote posts this is
     // HTML.
     std::string content;
