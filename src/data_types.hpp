@@ -46,16 +46,30 @@ struct LocalUser
     KeyPair keys;
 };
 
+// Local posts use “id” as unique ID; remote posts use “remote_url”.
 struct Post
 {
     std::optional<int64_t> id;
     enum Visibility { PUBLIC, FOLLOWER_ONLY, PRIVATE };
     std::string author;
-    Visibility visibility;
+    Visibility visibility = PUBLIC;
     Time time_creation;
+    // Initially this will equal time_creation.
     Time time_update;
+    // For local posts this is markdown. For remote posts this is
+    // HTML.
     std::string content;
+    // Only local posts have this.
     std::vector<Attachment> attachments;
+    // Only remote posts have this.
+    std::vector<std::string> remote_attachments;
+    // Only remote posts have this.
+    std::string remote_url;
+
+    bool remote() const
+    {
+        return !remote_url.empty();
+    }
 };
 
 struct Like
@@ -74,4 +88,14 @@ struct Follow
 {
     FediUser user;
     FediUser follower;
+};
+
+struct TimelineSpec
+{
+    enum TimelineType { USER_INDEX, USER };
+    TimelineType type;
+    // The local user this time line belongs to.
+    std::string user;
+    unsigned int begin = 0;
+    unsigned int count;
 };

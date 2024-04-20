@@ -66,6 +66,7 @@ set(SOURCE_FILES
   src/config.hpp
   src/crypto.cpp
   src/crypto.hpp
+  src/data.cpp
   src/data.hpp
   src/data_types.cpp
   src/data_types.hpp
@@ -114,6 +115,7 @@ target_link_libraries(actpub PRIVATE ${LIBS})
 set(TEST_FILES
   src/auth_mock.hpp
   src/auth_test.cpp
+  src/data_test.cpp
   src/data_types_test.cpp
   src/database_test.cpp
   src/federation_test.cpp

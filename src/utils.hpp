@@ -4,6 +4,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <sstream>
 #include <span>
 #include <filesystem>
 
@@ -131,4 +132,12 @@ inline std::string_view rstrip(std::string_view s)
 inline std::string_view strip(std::string_view s)
 {
     return rstrip(lstrip(s));
+}
+
+template <typename It>
+std::string joinStrs(It begin, It end, const char* sep)
+{
+    std::ostringstream ss;
+    std::copy(begin, end, std::ostream_iterator(ss, sep));
+    return ss.str();
 }

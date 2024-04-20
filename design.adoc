@@ -26,6 +26,11 @@ All the federation APIs are under `/fed` path.
   sticker system. User could choose attachments from a set of existing
   attachments.
 
+== Database
+
+- The posts table stores both local and remote posts.
+- The users table only stores local users.
+
 == Dependency
 
 * Crypto++
