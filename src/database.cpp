@@ -4,14 +4,6 @@
 #include <spdlog/spdlog.h>
 #include <iostream>
 
-namespace mw::internal
-{
-E<void> bindOne(const SQLiteStatement& sql, int i, const std::string& x);
-E<void> bindOne(const SQLiteStatement& sql, int i, int x);
-E<void> bindOne(const SQLiteStatement& sql, int i, int64_t x);
-E<void> bindOne(const SQLiteStatement& sql, int i, std::nullopt_t _);
-}
-
 Database::Database(const std::string& path)
     : db_path(path)
 {
@@ -162,25 +154,21 @@ mw::E<int64_t> Database::createUser(const User& user)
                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 1, user.username));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 2, user.display_name));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 3, user.bio));
-    if(user.email) { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, *user.email)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, std::nullopt)); }
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 5, user.uri));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 6, user.public_key));
-    if(user.private_key) { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, *user.private_key)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, std::nullopt)); }
-    if(user.host) { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, *user.host)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, std::nullopt)); }
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 9, user.created_at));
-    if(user.avatar_path) { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, *user.avatar_path)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, std::nullopt)); }
-    if(user.oidc_subject) { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, *user.oidc_subject)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, std::nullopt)); }
+    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
+                           user.email, user.uri, user.public_key,
+                           user.private_key, user.host, user.created_at,
+                           user.avatar_path, user.oidc_subject));
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
 }
 
 using UserTuple = std::tuple<int64_t, std::string, std::string, std::string,
-                             std::string, std::string, std::string,
-                             std::string, std::string, int64_t, std::string, std::string>;
+                             std::optional<std::string>, std::string,
+                             std::string, std::optional<std::string>,
+                             std::optional<std::string>, int64_t,
+                             std::optional<std::string>,
+                             std::optional<std::string>>;
 
 static User rowToUser(const UserTuple& row)
 {
@@ -189,14 +177,14 @@ static User rowToUser(const UserTuple& row)
     u.username = std::get<1>(row);
     u.display_name = std::get<2>(row);
     u.bio = std::get<3>(row);
-    if(!std::get<4>(row).empty()) u.email = std::get<4>(row);
+    u.email = std::get<4>(row);
     u.uri = std::get<5>(row);
     u.public_key = std::get<6>(row);
-    if(!std::get<7>(row).empty()) u.private_key = std::get<7>(row);
-    if(!std::get<8>(row).empty()) u.host = std::get<8>(row);
+    u.private_key = std::get<7>(row);
+    u.host = std::get<8>(row);
     u.created_at = std::get<9>(row);
-    if(!std::get<10>(row).empty()) u.avatar_path = std::get<10>(row);
-    if(!std::get<11>(row).empty()) u.oidc_subject = std::get<11>(row);
+    u.avatar_path = std::get<10>(row);
+    u.oidc_subject = std::get<11>(row);
     return u;
 }
 
@@ -207,13 +195,21 @@ mw::E<std::optional<User>> Database::getUserById(int64_t id)
                       "avatar_path, oidc_subject FROM users WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
+
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string>(
+                                          std::string,
+                                          std::optional<std::string>,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          int64_t, std::optional<std::string>,
+                                          std::optional<std::string>>(
                                     std::move(stmt))));
 
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -225,11 +221,18 @@ mw::E<std::optional<User>> Database::getUserByUsername(const std::string& name)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(name));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string>(
+                                          std::string,
+                                          std::optional<std::string>,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          int64_t, std::optional<std::string>,
+                                          std::optional<std::string>>(
                                     std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -241,11 +244,18 @@ mw::E<std::optional<User>> Database::getUserByUri(const std::string& uri)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string>(
+                                          std::string,
+                                          std::optional<std::string>,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          int64_t, std::optional<std::string>,
+                                          std::optional<std::string>>(
                                     std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -253,15 +263,23 @@ mw::E<std::optional<User>> Database::getUserByOidcSubject(const std::string& sub
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject FROM users WHERE oidc_subject = ?;";
+                      "avatar_path, oidc_subject FROM users "
+                      "WHERE oidc_subject = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(sub));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string>(
+                                          std::string,
+                                          std::optional<std::string>,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          int64_t, std::optional<std::string>,
+                                          std::optional<std::string>>(
                                     std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -273,21 +291,18 @@ mw::E<int64_t> Database::createPost(const Post& post)
                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 1, post.uri));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 2, post.author_id));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 3, post.content_html));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 4, post.content_source));
-    if(post.in_reply_to_uri) { DO_OR_RETURN(mw::internal::bindOne(stmt, 5, *post.in_reply_to_uri)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 5, std::nullopt)); }
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 6, static_cast<int>(post.visibility)));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 7, post.created_at));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 8, post.is_local ? 1 : 0));
+    DO_OR_RETURN(stmt.bind(post.uri, post.author_id, post.content_html,
+                           post.content_source, post.in_reply_to_uri,
+                           static_cast<int>(post.visibility), post.created_at,
+                           post.is_local ? 1 : 0));
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
 }
 
 using PostTuple = std::tuple<int64_t, std::string, int64_t, std::string,
-                             std::string, std::string, int, int64_t, int>;
+                             std::string, std::optional<std::string>, int,
+                             int64_t, int>;
 
 static Post rowToPost(const PostTuple& row)
 {
@@ -297,7 +312,7 @@ static Post rowToPost(const PostTuple& row)
     p.author_id = std::get<2>(row);
     p.content_html = std::get<3>(row);
     p.content_source = std::get<4>(row);
-    if(!std::get<5>(row).empty()) p.in_reply_to_uri = std::get<5>(row);
+    p.in_reply_to_uri = std::get<5>(row);
     p.visibility = static_cast<Visibility>(std::get<6>(row));
     p.created_at = std::get<7>(row);
     p.is_local = std::get<8>(row) != 0;
@@ -312,9 +327,13 @@ mw::E<std::optional<Post>> Database::getPostById(int64_t id)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string, std::string,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
                                           int, int64_t, int>(std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToPost(rows[0]);
 }
 
@@ -326,9 +345,13 @@ mw::E<std::optional<Post>> Database::getPostByUri(const std::string& uri)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string, std::string,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
                                           int, int64_t, int>(std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToPost(rows[0]);
 }
 
@@ -345,11 +368,15 @@ mw::E<std::vector<Post>> Database::getTimeline(int64_t user_id, int limit,
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(user_id, user_id, limit, offset));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string, std::string,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
                                           int, int64_t, int>(std::move(stmt))));
 
     std::vector<Post> posts;
-    for(const auto& row : rows) posts.push_back(rowToPost(row));
+    for(const auto& row : rows)
+    {
+        posts.push_back(rowToPost(row));
+    }
     return posts;
 }
 
@@ -363,11 +390,15 @@ mw::E<std::vector<Post>> Database::getPublicTimeline(int limit, int offset)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(limit, offset));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string, std::string,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
                                           int, int64_t, int>(std::move(stmt))));
 
     std::vector<Post> posts;
-    for(const auto& row : rows) posts.push_back(rowToPost(row));
+    for(const auto& row : rows)
+    {
+        posts.push_back(rowToPost(row));
+    }
     return posts;
 }
 
@@ -400,7 +431,10 @@ mw::E<std::optional<Follow>> Database::getFollow(int64_t follower_id,
     DO_OR_RETURN(stmt.bind(follower_id, target_id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, int64_t, int,
                                           std::string>(std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     Follow f;
     f.follower_id = std::get<0>(rows[0]);
     f.target_id = std::get<1>(rows[0]);
@@ -479,7 +513,10 @@ mw::E<std::optional<Session>> Database::getSession(const std::string& token)
     DO_OR_RETURN(stmt.bind(token));
     ASSIGN_OR_RETURN(auto rows, (db->eval<std::string, int64_t,
                                           int64_t>(std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     Session s;
     s.token = std::get<0>(rows[0]);
     s.user_id = std::get<1>(rows[0]);
