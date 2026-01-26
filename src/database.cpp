@@ -175,8 +175,13 @@ mw::E<int64_t> Database::createUser(const User& user)
 }
 
 using UserTuple = std::tuple<int64_t, std::string, std::string, std::string,
-                             std::string, std::string, std::string,
-                             std::string, std::string, int64_t, std::string, std::string, std::string, std::string>;
+                             std::optional<std::string>, std::string,
+                             std::string, std::optional<std::string>,
+                             std::optional<std::string>, int64_t,
+                             std::optional<std::string>,
+                             std::optional<std::string>,
+                             std::optional<std::string>,
+                             std::optional<std::string>>;
 
 static User rowToUser(const UserTuple& row)
 {
@@ -185,16 +190,16 @@ static User rowToUser(const UserTuple& row)
     u.username = std::get<1>(row);
     u.display_name = std::get<2>(row);
     u.bio = std::get<3>(row);
-    if(!std::get<4>(row).empty()) u.email = std::get<4>(row);
+    u.email = std::get<4>(row);
     u.uri = std::get<5>(row);
     u.public_key = std::get<6>(row);
-    if(!std::get<7>(row).empty()) u.private_key = std::get<7>(row);
-    if(!std::get<8>(row).empty()) u.host = std::get<8>(row);
+    u.private_key = std::get<7>(row);
+    u.host = std::get<8>(row);
     u.created_at = std::get<9>(row);
-    if(!std::get<10>(row).empty()) u.avatar_path = std::get<10>(row);
-    if(!std::get<11>(row).empty()) u.oidc_subject = std::get<11>(row);
-    if(!std::get<12>(row).empty()) u.inbox = std::get<12>(row);
-    if(!std::get<13>(row).empty()) u.shared_inbox = std::get<13>(row);
+    u.avatar_path = std::get<10>(row);
+    u.oidc_subject = std::get<11>(row);
+    u.inbox = std::get<12>(row);
+    u.shared_inbox = std::get<13>(row);
     return u;
 }
 
@@ -360,6 +365,29 @@ mw::E<std::vector<Post>> Database::getTimeline(int64_t user_id, int limit,
     return posts;
 }
 
+mw::E<std::vector<Post>> Database::getUserPosts(int64_t author_id, int limit,
+                                                int offset)
+{
+    const char* sql = "SELECT id, uri, author_id, content_html, "
+                      "content_source, in_reply_to_uri, visibility, "
+                      "created_at, is_local FROM posts "
+                      "WHERE author_id = ? ORDER BY created_at DESC "
+                      "LIMIT ? OFFSET ?;";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(author_id, limit, offset));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          int, int64_t, int>(std::move(stmt))));
+
+    std::vector<Post> posts;
+    for(const auto& row : rows)
+    {
+        posts.push_back(rowToPost(row));
+    }
+    return posts;
+}
+
 mw::E<std::vector<Post>> Database::getPublicTimeline(int limit, int offset)
 {
     const char* sql = "SELECT id, uri, author_id, content_html, "
@@ -421,6 +449,38 @@ mw::E<std::optional<Follow>> Database::getFollow(int64_t follower_id,
     f.status = std::get<2>(rows[0]);
     f.uri = std::get<3>(rows[0]);
     return f;
+}
+
+mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
+{
+    const char* sql = "SELECT u.id, u.username, u.display_name, u.bio, "
+                      "u.email, u.uri, u.public_key, u.private_key, u.host, "
+                      "u.created_at, u.avatar_path, u.oidc_subject, "
+                      "u.inbox, u.shared_inbox "
+                      "FROM follows f JOIN users u ON f.follower_id = u.id "
+                      "WHERE f.target_id = ? AND f.status = 1;";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(target_id));
+    
+    using R = std::vector<UserTuple>;
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
+                                          std::string,
+                                          std::optional<std::string>,
+                                          std::string, std::string,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          int64_t, std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>>(
+                                    std::move(stmt))));
+
+    std::vector<User> users;
+    for(const auto& row : rows)
+    {
+        users.push_back(rowToUser(row));
+    }
+    return users;
 }
 
 mw::E<int64_t> Database::enqueueJob(const Job& job)

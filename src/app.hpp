@@ -28,6 +28,7 @@ private:
     mw::E<void> handleCreate(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<void> handleFollow(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<int64_t> ensureRemoteUser(const std::string& uri);
+    mw::E<void> createPost(const User& author, const std::string& content);
 
     std::shared_ptr<Database> db;
     std::shared_ptr<mw::HTTPSessionInterface> http_client;

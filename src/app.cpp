@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 #include <random>
+#include <unordered_set>
 
 static std::string getCookie(const mw::HTTPServer::Request& req, const std::string& name)
 {
@@ -384,6 +385,151 @@ void App::setup()
             res.set_content("Invalid JSON", "text/plain");
         }
     });
+
+    server.Get("/u/:username/outbox", [this](const mw::HTTPServer::Request& req,
+                                             mw::HTTPServer::Response& res)
+    {
+        std::string username = req.get_param_value("username");
+        auto user = db->getUserByUsername(username);
+        if(!user || !user.value())
+        {
+            res.status = 404;
+            res.set_content("User not found", "text/plain");
+            return;
+        }
+
+        auto posts_res = db->getUserPosts(user.value()->id, 20, 0);
+        if(!posts_res)
+        {
+            res.status = 500;
+            return;
+        }
+
+        nlohmann::json j;
+        j["@context"] = "https://www.w3.org/ns/activitystreams";
+        j["id"] = user.value()->uri + "/outbox";
+        j["type"] = "OrderedCollection";
+        j["totalItems"] = posts_res->size(); // Approximate for now
+        j["orderedItems"] = nlohmann::json::array();
+
+        for(const auto& p : *posts_res)
+        {
+            nlohmann::json activity;
+            activity["type"] = "Create";
+            activity["actor"] = user.value()->uri;
+            activity["object"] = {
+                {"id", p.uri},
+                {"type", "Note"},
+                {"content", p.content_html},
+                {"attributedTo", user.value()->uri},
+                {"published", mw::timeToISO8601(mw::secondsToTime(p.created_at))},
+                {"to", {"https://www.w3.org/ns/activitystreams#Public"}}
+            };
+            j["orderedItems"].push_back(activity);
+        }
+
+        res.set_content(j.dump(), "application/activity+json");
+    });
+
+    server.Post("/post", [this](const mw::HTTPServer::Request& req,
+                                mw::HTTPServer::Response& res)
+    {
+        auto user = getCurrentUser(req);
+        if(!user)
+        {
+            res.status = 403;
+            res.set_content("Login required", "text/plain");
+            return;
+        }
+
+        std::string content = req.get_param_value("content");
+        if(content.empty())
+        {
+            res.status = 400;
+            res.set_content("Content empty", "text/plain");
+            return;
+        }
+
+        auto create_res = createPost(*user, content);
+        if(!create_res)
+        {
+            res.status = 500;
+            res.set_content("Failed to create post: " + mw::errorMsg(create_res.error()), "text/plain");
+            return;
+        }
+
+        res.set_redirect("/");
+    });
+}
+
+mw::E<void> App::createPost(const User& author, const std::string& content)
+{
+    Post p;
+    p.author_id = author.id;
+    p.content_html = content; // TODO: Markdown parsing
+    p.content_source = content;
+    p.created_at = mw::timeToSeconds(mw::Clock::now());
+    p.is_local = true;
+    p.visibility = Visibility::PUBLIC;
+    
+    // Generate URI
+    p.uri = Config::get().server_url_root + "/p/" + std::to_string(p.created_at); // Placeholder ID generation
+
+    DO_OR_RETURN(db->createPost(p));
+
+    // Construct Activity
+    nlohmann::json activity;
+    activity["@context"] = "https://www.w3.org/ns/activitystreams";
+    activity["type"] = "Create";
+    activity["id"] = p.uri + "/activity";
+    activity["actor"] = author.uri;
+    activity["object"] = {
+        {"id", p.uri},
+        {"type", "Note"},
+        {"content", p.content_html},
+        {"published", mw::timeToISO8601(mw::secondsToTime(p.created_at))},
+        {"attributedTo", author.uri},
+        {"to", {"https://www.w3.org/ns/activitystreams#Public"}},
+        {"cc", {author.uri + "/followers"}}
+    };
+
+    auto followers_res = db->getFollowers(author.id);
+    if(followers_res)
+    {
+        std::unordered_set<std::string> inboxes;
+        for(const auto& f : *followers_res)
+        {
+            if(f.shared_inbox && !f.shared_inbox->empty())
+            {
+                inboxes.insert(*f.shared_inbox);
+            }
+            else if(f.inbox && !f.inbox->empty())
+            {
+                inboxes.insert(*f.inbox);
+            }
+        }
+
+        for(const auto& inbox : inboxes)
+        {
+            Job j;
+            j.type = "deliver_activity";
+            j.attempts = 0;
+            j.status = 0;
+            j.next_try = mw::timeToSeconds(mw::Clock::now());
+            
+            nlohmann::json payload;
+            payload["inbox"] = inbox;
+            payload["activity"] = activity;
+            payload["sender_uri"] = author.uri;
+            j.payload = payload.dump();
+
+            db->enqueueJob(j);
+        }
+    }
+
+    spdlog::info("Created post: {}", p.uri);
+
+    return {};
 }
 
 mw::E<void> App::processActivity(const nlohmann::json& activity, const std::string& sender_id)

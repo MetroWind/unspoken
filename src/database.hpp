@@ -27,6 +27,8 @@ public:
     mw::E<std::optional<Post>> getPostByUri(const std::string& uri);
     mw::E<std::vector<Post>> getTimeline(int64_t user_id, int limit,
                                          int offset);
+    mw::E<std::vector<Post>> getUserPosts(int64_t author_id, int limit,
+                                          int offset);
     mw::E<std::vector<Post>> getPublicTimeline(int limit, int offset);
 
     // Follow DAO
@@ -35,6 +37,7 @@ public:
                                    int status);
     mw::E<std::optional<Follow>> getFollow(int64_t follower_id,
                                            int64_t target_id);
+    mw::E<std::vector<User>> getFollowers(int64_t target_id);
 
     // Job DAO
     mw::E<int64_t> enqueueJob(const Job& job);
