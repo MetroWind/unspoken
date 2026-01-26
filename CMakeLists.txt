@@ -85,7 +85,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
-set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp)
+set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp src/signature_verifier.cpp)
 
 # Main Executable
 add_executable(actpub ${SOURCE_FILES})

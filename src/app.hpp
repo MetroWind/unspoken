@@ -5,6 +5,7 @@
 #include <mw/auth.hpp>
 #include <inja/inja.hpp>
 #include "database.hpp"
+#include "signature_verifier.hpp"
 
 class App : public mw::HTTPServer
 {
@@ -22,8 +23,14 @@ private:
     
     std::optional<User> getCurrentUser(const mw::HTTPServer::Request& req);
     std::string generateToken();
+    mw::E<void> processActivity(const nlohmann::json& activity, const std::string& sender_id);
+    mw::E<void> handleCreate(const nlohmann::json& activity, const std::string& sender_id);
+    mw::E<void> handleFollow(const nlohmann::json& activity, const std::string& sender_id);
+    mw::E<int64_t> ensureRemoteUser(const std::string& uri);
 
     std::shared_ptr<Database> db;
+    std::shared_ptr<mw::HTTPSessionInterface> http_client;
     inja::Environment inja_env;
     std::unique_ptr<mw::AuthOpenIDConnect> auth;
+    std::unique_ptr<SignatureVerifier> sig_verifier;
 };

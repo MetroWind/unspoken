@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "config.hpp"
+#include "json_ld.hpp"
 #include <mw/http_client.hpp>
 #include <mw/url.hpp>
 #include <mw/crypto.hpp>
@@ -25,6 +26,9 @@ App::App(std::shared_ptr<Database> database,
          const mw::HTTPServer::ListenAddress& listen)
     : mw::HTTPServer(listen), db(database)
 {
+    // inja_env.set_template_path("./templates/");
+    http_client = std::make_shared<mw::HTTPSession>();
+    sig_verifier = std::make_unique<SignatureVerifier>(http_client);
 }
 
 mw::E<void> App::run()
@@ -270,7 +274,6 @@ void App::setup()
         std::string resource = req.get_param_value("resource");
         std::string username;
         
-        // Expected format: acct:user@domain
         if(resource.starts_with("acct:"))
         {
             resource = resource.substr(5);
@@ -280,11 +283,9 @@ void App::setup()
         if(at_pos != std::string::npos)
         {
             username = resource.substr(0, at_pos);
-            // Ideally check domain matches ours
         }
         else
         {
-            // Fallback or invalid
             username = resource;
         }
 
@@ -309,7 +310,7 @@ void App::setup()
         nlohmann::json link_profile;
         link_profile["rel"] = "http://webfinger.net/rel/profile-page";
         link_profile["type"] = "text/html";
-        link_profile["href"] = user.value()->uri; // TODO: Separate profile URL?
+        link_profile["href"] = user.value()->uri; 
         j["links"].push_back(link_profile);
 
         res.set_content(j.dump(), "application/jrd+json");
@@ -346,7 +347,7 @@ void App::setup()
         j["protocols"] = {"activitypub"};
         j["services"]["outbound"] = nlohmann::json::array();
         j["services"]["inbound"] = nlohmann::json::array();
-        j["usage"]["users"]["total"] = 1; // TODO: Count users
+        j["usage"]["users"]["total"] = 1; 
         j["usage"]["users"]["activeMonth"] = 1; 
         j["usage"]["users"]["activeHalfyear"] = 1;
         j["openRegistrations"] = false;
@@ -355,6 +356,153 @@ void App::setup()
 
         res.set_content(j.dump(), "application/json");
     });
+
+    server.Post("/inbox", [this](const mw::HTTPServer::Request& req,
+                                 mw::HTTPServer::Response& res)
+    {
+        std::string sender;
+        ASSIGN_OR_RESPOND_ERROR(sender, sig_verifier->verify(req, "POST", "/inbox"), res);
+        
+        try
+        {
+            auto j = nlohmann::json::parse(req.body);
+            auto process_res = processActivity(j, sender);
+            if(!process_res)
+            {
+                spdlog::error("Failed to process activity: {}", mw::errorMsg(process_res.error()));
+                res.status = 500; 
+                return;
+            }
+            res.status = 202; 
+        }
+        catch(const std::exception& e)
+        {
+            res.status = 400;
+            res.set_content("Invalid JSON", "text/plain");
+        }
+    });
+}
+
+mw::E<void> App::processActivity(const nlohmann::json& activity, const std::string& sender_id)
+{
+    std::string type = activity["type"];
+    
+    if(type == "Create")
+    {
+        return handleCreate(activity, sender_id);
+    }
+    else if(type == "Follow")
+    {
+        return handleFollow(activity, sender_id);
+    }
+    
+    return {};
+}
+
+mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
+{
+    auto user = db->getUserByUri(uri);
+    if(user && user.value())
+    {
+        return user.value()->id;
+    }
+
+    // Fetch Actor
+    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(uri));
+    if(res_ptr->status != 200)
+    {
+        return std::unexpected(mw::httpError(502, "Failed to fetch remote actor"));
+    }
+
+    nlohmann::json j;
+    try
+    {
+        j = nlohmann::json::parse(res_ptr->payloadAsStr());
+    }
+    catch(...)
+    {
+        return std::unexpected(mw::httpError(502, "Invalid JSON from remote actor"));
+    }
+
+    User u;
+    u.uri = uri;
+    u.username = j["preferredUsername"];
+    u.display_name = j.value("name", "");
+    u.bio = j.value("summary", "");
+    u.created_at = mw::timeToSeconds(mw::Clock::now()); // Approximate
+    
+    if(j.contains("publicKey") && j["publicKey"].contains("publicKeyPem"))
+    {
+        u.public_key = j["publicKey"]["publicKeyPem"];
+    }
+    else if(j.contains("publicKeyPem"))
+    {
+        u.public_key = j["publicKeyPem"];
+    }
+    
+    if(j.contains("icon") && j["icon"].contains("url"))
+    {
+        u.avatar_path = j["icon"]["url"];
+    }
+
+    auto url = mw::URL::fromStr(uri);
+    if(url)
+    {
+        u.host = url->host();
+    }
+
+    return db->createUser(u);
+}
+
+mw::E<void> App::handleCreate(const nlohmann::json& activity, const std::string& sender_id)
+{
+    auto object = activity["object"];
+    if(!json_ld::hasType(object, "Note")) return {};
+
+    ASSIGN_OR_RETURN(auto author_id, ensureRemoteUser(sender_id));
+
+    Post p;
+    p.uri = json_ld::getId(object, "id");
+    p.author_id = author_id;
+    p.content_html = object.value("content", "");
+    p.content_source = ""; // Remote posts usually don't have source
+    p.visibility = Visibility::PUBLIC; // Simplified for now
+    
+    std::string pub = "1970-01-01T00:00:00Z";
+    if(object.contains("published")) pub = object["published"];
+    auto time_res = mw::strToDate(pub); 
+    if (time_res) p.created_at = mw::timeToSeconds(*time_res);
+    else p.created_at = mw::timeToSeconds(mw::Clock::now()); 
+    p.is_local = false;
+
+    return db->createPost(p).transform([](auto){});
+}
+
+mw::E<void> App::handleFollow(const nlohmann::json& activity, const std::string& sender_id)
+{
+    std::string object_uri = json_ld::getId(activity, "object");
+    if (object_uri.empty()) return {};
+
+    auto target_user = db->getUserByUri(object_uri);
+    if (!target_user || !target_user.value())
+    {
+        // Target is not us (or not found), ignore
+        return {};
+    }
+
+    ASSIGN_OR_RETURN(auto follower_id, ensureRemoteUser(sender_id));
+
+    Follow f;
+    f.follower_id = follower_id;
+    f.target_id = target_user.value()->id;
+    f.status = 1; // Auto-accept
+    f.uri = json_ld::getId(activity, "id");
+    
+    DO_OR_RETURN(db->createFollow(f));
+
+    // TODO: Enqueue Accept activity (Phase 6)
+    
+    return {};
 }
 
 void App::render(mw::HTTPServer::Response& res, const std::string& template_name,
