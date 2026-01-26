@@ -1,0 +1,10 @@
+server_domain: "localhost"
+protocol: "http"
+port: 8080
+db_path: "actpub.db"
+oidc_client_id: "change_me"
+oidc_secret: "change_me"
+secret_key: "change_me_random_string"
+nodeinfo:
+  name: "ActPub Microblog"
+  description: "A C++ ActivityPub Server"
