@@ -1,7 +1,10 @@
 #include "json_ld.hpp"
 
-std::vector<std::string> JsonLD::asList(const nlohmann::json& j, 
-                                        const std::string& key)
+namespace json_ld
+{
+
+std::vector<std::string> asList(const nlohmann::json& j, 
+                                const std::string& key)
 {
     std::vector<std::string> result;
     if(!j.contains(key))
@@ -27,7 +30,7 @@ std::vector<std::string> JsonLD::asList(const nlohmann::json& j,
     return result;
 }
 
-std::string JsonLD::getId(const nlohmann::json& j, const std::string& key)
+std::string getId(const nlohmann::json& j, const std::string& key)
 {
     if(!j.contains(key))
     {
@@ -50,7 +53,7 @@ std::string JsonLD::getId(const nlohmann::json& j, const std::string& key)
     return "";
 }
 
-bool JsonLD::hasType(const nlohmann::json& j, const std::string& type)
+bool hasType(const nlohmann::json& j, const std::string& type)
 {
     auto types = asList(j, "type");
     for(const auto& t : types)
@@ -62,3 +65,5 @@ bool JsonLD::hasType(const nlohmann::json& j, const std::string& type)
     }
     return false;
 }
+
+} // namespace json_ld
