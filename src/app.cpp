@@ -2,7 +2,9 @@
 #include "config.hpp"
 #include <mw/http_client.hpp>
 #include <mw/url.hpp>
+#include <mw/crypto.hpp>
 #include <spdlog/spdlog.h>
+#include <nlohmann/json.hpp>
 #include <random>
 
 static std::string getCookie(const mw::HTTPServer::Request& req, const std::string& name)
@@ -213,7 +215,16 @@ void App::setup()
         u.oidc_subject = oidc_sub;
         u.uri = root_url->appendPath("u").appendPath(username).str();
         u.created_at = mw::timeToSeconds(mw::Clock::now());
-        u.public_key = "PLACEHOLDER_KEY";
+        
+        auto keys_res = mw::generateEd25519KeyPair();
+        if (!keys_res)
+        {
+            res.status = 500;
+            res.set_content("Failed to generate keys: " + mw::errorMsg(keys_res.error()), "text/plain");
+            return;
+        }
+        u.public_key = keys_res->public_key;
+        u.private_key = keys_res->private_key;
 
         auto create_res = db->createUser(u);
         if(!create_res)
@@ -244,6 +255,105 @@ void App::setup()
         }
         res.set_header("Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
         res.set_redirect("/");
+    });
+
+    server.Get("/.well-known/webfinger", [this](const mw::HTTPServer::Request& req,
+                                                mw::HTTPServer::Response& res)
+    {
+        if(!req.has_param("resource"))
+        {
+            res.status = 400;
+            res.set_content("Missing resource parameter", "text/plain");
+            return;
+        }
+
+        std::string resource = req.get_param_value("resource");
+        std::string username;
+        
+        // Expected format: acct:user@domain
+        if(resource.starts_with("acct:"))
+        {
+            resource = resource.substr(5);
+        }
+
+        size_t at_pos = resource.find('@');
+        if(at_pos != std::string::npos)
+        {
+            username = resource.substr(0, at_pos);
+            // Ideally check domain matches ours
+        }
+        else
+        {
+            // Fallback or invalid
+            username = resource;
+        }
+
+        auto user = db->getUserByUsername(username);
+        if(!user || !user.value())
+        {
+            res.status = 404;
+            res.set_content("User not found", "text/plain");
+            return;
+        }
+
+        nlohmann::json j;
+        j["subject"] = "acct:" + username + "@" + mw::URL::fromStr(Config::get().server_url_root)->host();
+        j["links"] = nlohmann::json::array();
+
+        nlohmann::json link_self;
+        link_self["rel"] = "self";
+        link_self["type"] = "application/activity+json";
+        link_self["href"] = user.value()->uri;
+        j["links"].push_back(link_self);
+
+        nlohmann::json link_profile;
+        link_profile["rel"] = "http://webfinger.net/rel/profile-page";
+        link_profile["type"] = "text/html";
+        link_profile["href"] = user.value()->uri; // TODO: Separate profile URL?
+        j["links"].push_back(link_profile);
+
+        res.set_content(j.dump(), "application/jrd+json");
+    });
+
+    server.Get("/.well-known/nodeinfo", [this](const mw::HTTPServer::Request&,
+                                               mw::HTTPServer::Response& res)
+    {
+        nlohmann::json j;
+        j["links"] = nlohmann::json::array();
+        
+        nlohmann::json link;
+        link["rel"] = "http://nodeinfo.diaspora.software/ns/schema/2.0";
+        
+        auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+        if (root_url)
+        {
+             link["href"] = root_url->appendPath("nodeinfo/2.0").str();
+        }
+        
+        j["links"].push_back(link);
+        
+        res.set_content(j.dump(), "application/json");
+    });
+
+    server.Get("/nodeinfo/2.0", [this](const mw::HTTPServer::Request&,
+                                       mw::HTTPServer::Response& res)
+    {
+        const auto& conf = Config::get();
+        nlohmann::json j;
+        j["version"] = "2.0";
+        j["software"]["name"] = "actpub";
+        j["software"]["version"] = "0.1.0";
+        j["protocols"] = {"activitypub"};
+        j["services"]["outbound"] = nlohmann::json::array();
+        j["services"]["inbound"] = nlohmann::json::array();
+        j["usage"]["users"]["total"] = 1; // TODO: Count users
+        j["usage"]["users"]["activeMonth"] = 1; 
+        j["usage"]["users"]["activeHalfyear"] = 1;
+        j["openRegistrations"] = false;
+        j["metadata"]["nodeName"] = conf.nodeinfo.name;
+        j["metadata"]["nodeDescription"] = conf.nodeinfo.description;
+
+        res.set_content(j.dump(), "application/json");
     });
 }
 

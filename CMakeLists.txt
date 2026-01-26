@@ -64,7 +64,7 @@ find_package(SQLite3 REQUIRED)
 set(INCLUDES
   ${libmw_SOURCE_DIR}/includes
   ${json_SOURCE_DIR}/single_include
-  ${inja_SOURCE_DIR}/single_include/inja
+  ${inja_SOURCE_DIR}/include
 )
 set(LIBS
   cxxopts
@@ -85,7 +85,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
-set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp)
+set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp)
 
 # Main Executable
 add_executable(actpub ${SOURCE_FILES})
