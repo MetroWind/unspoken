@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "config.hpp"
 #include <mw/http_client.hpp>
+#include <mw/url.hpp>
 #include <spdlog/spdlog.h>
 #include <random>
 
@@ -28,18 +29,20 @@ mw::E<void> App::run()
 {
     const auto& conf = Config::get();
     
-    std::string redirect_url = conf.protocol + "://" + conf.server_domain;
-    if(conf.port != 80 && conf.port != 443)
+    auto root_url = mw::URL::fromStr(conf.server_url_root);
+    if(!root_url)
     {
-        redirect_url += ":" + std::to_string(conf.port);
+        return std::unexpected(root_url.error());
     }
-    redirect_url += "/auth/callback";
+
+    auto redirect_url = *root_url;
+    redirect_url.appendPath("auth/callback");
 
     auto auth_res = mw::AuthOpenIDConnect::create(
         conf.oidc_issuer_url,
         conf.oidc_client_id,
         conf.oidc_secret,
-        redirect_url,
+        redirect_url.str(),
         std::make_unique<mw::HTTPSession>());
     
     if(!auth_res)
@@ -48,7 +51,7 @@ mw::E<void> App::run()
     }
     auth = std::move(*auth_res);
 
-    spdlog::info("Listening on {}:{}", conf.server_domain, conf.port);
+    spdlog::info("Listening on {}:{}", root_url->host(), conf.port);
 
     auto res = start();
     if(!res)
@@ -189,7 +192,6 @@ void App::setup()
             return;
         }
 
-        // Check if user already exists with this username
         auto existing = db->getUserByUsername(username);
         if(existing && existing.value())
         {
@@ -198,10 +200,18 @@ void App::setup()
             return;
         }
         
+        auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+        if(!root_url)
+        {
+             res.status = 500;
+             res.set_content("Invalid server config", "text/plain");
+             return;
+        }
+
         User u;
         u.username = username;
         u.oidc_subject = oidc_sub;
-        u.uri = Config::get().protocol + "://" + Config::get().server_domain + "/u/" + username;
+        u.uri = root_url->appendPath("u").appendPath(username).str();
         u.created_at = mw::timeToSeconds(mw::Clock::now());
         u.public_key = "PLACEHOLDER_KEY";
 

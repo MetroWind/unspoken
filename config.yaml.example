@@ -1,5 +1,4 @@
-server_domain: "localhost"
-protocol: "http"
+server_url_root: "http://localhost"
 port: 8080
 db_path: "actpub.db"
 oidc_issuer_url: "https://keycloak.example.com/realms/myrealm"

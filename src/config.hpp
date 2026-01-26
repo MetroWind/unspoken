@@ -9,8 +9,7 @@ struct NodeInfoConfig
 
 struct Config
 {
-    std::string server_domain;
-    std::string protocol;
+    std::string server_url_root;
     int port;
     std::string db_path;
     std::string oidc_issuer_url;

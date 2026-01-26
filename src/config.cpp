@@ -30,13 +30,9 @@ void Config::load(const std::string& path)
     ryml::Tree tree = ryml::parse_in_arena(ryml::to_csubstr(content));
     ryml::NodeRef root = tree.rootref();
 
-    if(root.has_child("server_domain"))
+    if(root.has_child("server_url_root"))
     {
-        root["server_domain"] >> server_domain;
-    }
-    if(root.has_child("protocol"))
-    {
-        root["protocol"] >> protocol;
+        root["server_url_root"] >> server_url_root;
     }
     if(root.has_child("port"))
     {
