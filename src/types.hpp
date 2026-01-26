@@ -7,10 +7,10 @@
 
 enum class Visibility : int
 {
-    Public = 0,
-    Unlisted = 1,
-    Followers = 2,
-    Direct = 3
+    PUBLIC = 0,
+    UNLISTED = 1,
+    FOLLOWERS = 2,
+    DIRECT = 3
 };
 
 struct User
@@ -26,8 +26,9 @@ struct User
     std::optional<std::string> host;
     int64_t created_at;
     std::optional<std::string> avatar_path;
+    std::optional<std::string> oidc_subject;
 
-    bool is_local() const { return !host.has_value(); }
+    bool isLocal() const { return !host.has_value(); }
 };
 
 struct Post
@@ -75,4 +76,11 @@ struct Media
     std::string filename;
     std::string mime_type;
     int64_t uploader_id;
+};
+
+struct Session
+{
+    std::string token;
+    int64_t user_id;
+    int64_t expires_at;
 };

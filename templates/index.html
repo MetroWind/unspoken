@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Home - ActPub{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <h2>Public Timeline</h2>
+        <hr>
+        {% for post in posts %}
+            <div class="card mb-3">
+                <div class="card-body">
+                    <h5 class="card-title">{{ post.author_name }}</h5>
+                    <div class="card-text">{{ post.content_html | raw }}</div>
+                    <p class="card-text"><small class="text-muted">{{ post.created_at }}</small></p>
+                </div>
+            </div>
+        {% else %}
+            <p>No posts found.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

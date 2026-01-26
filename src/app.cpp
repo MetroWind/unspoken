@@ -1,0 +1,291 @@
+#include "app.hpp"
+#include "config.hpp"
+#include <mw/http_client.hpp>
+#include <spdlog/spdlog.h>
+#include <random>
+
+static std::string getCookie(const mw::HTTPServer::Request& req, const std::string& name)
+{
+    if(!req.has_header("Cookie")) return "";
+    std::string cookies = req.get_header_value("Cookie");
+    std::string search = name + "=";
+    size_t pos = cookies.find(search);
+    if(pos == std::string::npos) return "";
+    
+    std::string val = cookies.substr(pos + search.size());
+    size_t end_pos = val.find(';');
+    if(end_pos != std::string::npos) val = val.substr(0, end_pos);
+    return val;
+}
+
+App::App(std::shared_ptr<Database> database,
+         const mw::HTTPServer::ListenAddress& listen)
+    : mw::HTTPServer(listen), db(database)
+{
+}
+
+mw::E<void> App::run()
+{
+    const auto& conf = Config::get();
+    
+    std::string redirect_url = conf.protocol + "://" + conf.server_domain;
+    if(conf.port != 80 && conf.port != 443)
+    {
+        redirect_url += ":" + std::to_string(conf.port);
+    }
+    redirect_url += "/auth/callback";
+
+    auto auth_res = mw::AuthOpenIDConnect::create(
+        conf.oidc_issuer_url,
+        conf.oidc_client_id,
+        conf.oidc_secret,
+        redirect_url,
+        std::make_unique<mw::HTTPSession>());
+    
+    if(!auth_res)
+    {
+        return std::unexpected(auth_res.error());
+    }
+    auth = std::move(*auth_res);
+
+    spdlog::info("Listening on {}:{}", conf.server_domain, conf.port);
+
+    auto res = start();
+    if(!res)
+    {
+        return res;
+    }
+
+    wait();
+    return {};
+}
+
+void App::setup()
+{
+    server.Get("/", [this](const mw::HTTPServer::Request& req,
+                            mw::HTTPServer::Response& res)
+    {
+        auto user = getCurrentUser(req);
+        auto posts_res = db->getPublicTimeline(20, 0);
+        nlohmann::json data;
+        data["logged_in"] = user.has_value();
+        if(user)
+        {
+            data["username"] = user->username;
+        }
+        
+        data["posts"] = nlohmann::json::array();
+        if(posts_res)
+        {
+            for(const auto& p : *posts_res)
+            {
+                nlohmann::json pj;
+                pj["content_html"] = p.content_html;
+                pj["created_at"] = mw::timeToStr(mw::secondsToTime(p.created_at));
+                
+                auto author = db->getUserById(p.author_id);
+                if(author && author.value())
+                {
+                    pj["author_name"] = author.value()->display_name.empty() ? 
+                                       author.value()->username : 
+                                       author.value()->display_name;
+                }
+                else
+                {
+                    pj["author_name"] = "Unknown";
+                }
+                data["posts"].push_back(pj);
+            }
+        }
+
+        render(res, "index.html", data);
+    });
+
+    server.Get("/auth/login", [this](const mw::HTTPServer::Request&,
+                                     mw::HTTPServer::Response& res)
+    {
+        res.set_redirect(auth->initialURL());
+    });
+
+    server.Get("/auth/callback", [this](const mw::HTTPServer::Request& req,
+                                        mw::HTTPServer::Response& res)
+    {
+        if(!req.has_param("code"))
+        {
+            res.status = 400;
+            res.set_content("Missing code", "text/plain");
+            return;
+        }
+
+        auto code = req.get_param_value("code");
+        auto tokens_res = auth->authenticate(code);
+        if(!tokens_res)
+        {
+            res.status = 500;
+            res.set_content(mw::errorMsg(tokens_res.error()), "text/plain");
+            return;
+        }
+
+        auto oidc_user_res = auth->getUser(*tokens_res);
+        if(!oidc_user_res)
+        {
+            res.status = 500;
+            res.set_content(mw::errorMsg(oidc_user_res.error()), "text/plain");
+            return;
+        }
+
+        auto existing_user = db->getUserByOidcSubject(oidc_user_res->id);
+        if(existing_user && existing_user.value())
+        {
+            Session s;
+            s.token = generateToken();
+            s.user_id = existing_user.value()->id;
+            s.expires_at = mw::timeToSeconds(mw::Clock::now()) + 3600 * 24 * 7;
+            
+            auto sess_res = db->createSession(s);
+            if(!sess_res)
+            {
+                res.status = 500;
+                res.set_content("Failed to create session", "text/plain");
+                return;
+            }
+
+            res.set_header("Set-Cookie", "session=" + s.token + "; Path=/; HttpOnly");
+            res.set_redirect("/");
+        }
+        else
+        {
+            res.set_header("Set-Cookie", "pending_oidc_sub=" + oidc_user_res->id + "; Path=/; HttpOnly");
+            res.set_redirect("/auth/setup_username");
+        }
+    });
+
+    server.Get("/auth/setup_username", [this](const mw::HTTPServer::Request& req,
+                                              mw::HTTPServer::Response& res)
+    {
+        if(getCookie(req, "pending_oidc_sub").empty())
+        {
+            res.set_redirect("/auth/login");
+            return;
+        }
+        render(res, "setup_username.html", {});
+    });
+
+    server.Post("/auth/setup_username", [this](const mw::HTTPServer::Request& req,
+                                               mw::HTTPServer::Response& res)
+    {
+        std::string oidc_sub = getCookie(req, "pending_oidc_sub");
+        if(oidc_sub.empty())
+        {
+            res.set_redirect("/auth/login");
+            return;
+        }
+
+        std::string username = req.get_param_value("username");
+        if(username.empty())
+        {
+            res.status = 400;
+            res.set_content("Username required", "text/plain");
+            return;
+        }
+
+        // Check if user already exists with this username
+        auto existing = db->getUserByUsername(username);
+        if(existing && existing.value())
+        {
+            res.status = 400;
+            res.set_content("Username already taken", "text/plain");
+            return;
+        }
+        
+        User u;
+        u.username = username;
+        u.oidc_subject = oidc_sub;
+        u.uri = Config::get().protocol + "://" + Config::get().server_domain + "/u/" + username;
+        u.created_at = mw::timeToSeconds(mw::Clock::now());
+        u.public_key = "PLACEHOLDER_KEY";
+
+        auto create_res = db->createUser(u);
+        if(!create_res)
+        {
+            res.status = 500;
+            res.set_content("Failed to create user: " + mw::errorMsg(create_res.error()), "text/plain");
+            return;
+        }
+
+        Session s;
+        s.token = generateToken();
+        s.user_id = *create_res;
+        s.expires_at = mw::timeToSeconds(mw::Clock::now()) + 3600 * 24 * 7;
+        db->createSession(s);
+
+        res.set_header("Set-Cookie", "session=" + s.token + "; Path=/; HttpOnly");
+        res.set_header("Set-Cookie", "pending_oidc_sub=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        res.set_redirect("/");
+    });
+
+    server.Get("/auth/logout", [this](const mw::HTTPServer::Request& req,
+                                      mw::HTTPServer::Response& res)
+    {
+        std::string token = getCookie(req, "session");
+        if(!token.empty())
+        {
+            db->deleteSession(token);
+        }
+        res.set_header("Set-Cookie", "session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        res.set_redirect("/");
+    });
+}
+
+void App::render(mw::HTTPServer::Response& res, const std::string& template_name,
+                 const nlohmann::json& data)
+{
+    try
+    {
+        std::string path = "./templates/" + template_name;
+        res.set_content(inja_env.render_file(path, data), "text/html");
+    }
+    catch(const std::exception& e)
+    {
+        spdlog::error("Template error: {}", e.what());
+        res.status = 500;
+        res.set_content("Internal Server Error", "text/plain");
+    }
+}
+
+std::optional<User> App::getCurrentUser(const mw::HTTPServer::Request& req)
+{
+    std::string token = getCookie(req, "session");
+    if(token.empty()) return std::nullopt;
+    
+    auto sess = db->getSession(token);
+    if(sess && sess.value())
+    {
+        if(sess.value()->expires_at > mw::timeToSeconds(mw::Clock::now()))
+        {
+            auto user = db->getUserById(sess.value()->user_id);
+            if(user && user.value()) return user.value();
+        }
+        else
+        {
+            db->deleteSession(token);
+        }
+    }
+    return std::nullopt;
+}
+
+std::string App::generateToken()
+{
+    static const char charset[] =
+        "0123456789"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz";
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<> dis(0, sizeof(charset) - 2);
+
+    std::string s;
+    s.reserve(32);
+    for(int i = 0; i < 32; i++) s += charset[dis(gen)];
+    return s;
+}

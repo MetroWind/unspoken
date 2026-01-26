@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include "database.hpp"
+#include "app.hpp"
 #include <iostream>
 #include <spdlog/spdlog.h>
 #include <mw/error.hpp>
@@ -13,23 +14,36 @@ int main()
     {
         Config::get().load("config.yaml");
     }
-    catch (const std::exception& e)
+    catch(const std::exception& e)
     {
         spdlog::critical("Failed to load config: {}", e.what());
         return 1;
     }
 
-    Database db(Config::get().db_path);
-    auto db_init = db.init();
-    if (!db_init)
+    auto db = std::make_shared<Database>(Config::get().db_path);
+    auto db_init = db->init();
+    if(!db_init)
     {
-        spdlog::critical("Failed to initialize database: {}", mw::errorMsg(db_init.error()));
+        spdlog::critical("Failed to initialize database: {}",
+                         mw::errorMsg(db_init.error()));
         return 1;
     }
 
-    spdlog::info("Database initialized successfully at {}", Config::get().db_path);
+    spdlog::info("Database initialized successfully at {}",
+                 Config::get().db_path);
 
-    // More initialization will go here in further phases (HTTP server, etc.)
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{
+        "0.0.0.0", Config::get().port
+    };
+
+    App app(db, listen);
+    auto app_run = app.run();
+    if(!app_run)
+    {
+        spdlog::critical("App failed to run: {}",
+                         mw::errorMsg(app_run.error()));
+        return 1;
+    }
 
     return 0;
 }

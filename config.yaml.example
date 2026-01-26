@@ -2,6 +2,7 @@ server_domain: "localhost"
 protocol: "http"
 port: 8080
 db_path: "actpub.db"
+oidc_issuer_url: "https://keycloak.example.com/realms/myrealm"
 oidc_client_id: "change_me"
 oidc_secret: "change_me"
 secret_key: "change_me_random_string"

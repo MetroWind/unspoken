@@ -1,16 +1,19 @@
 #pragma once
 #include <string>
 
-struct NodeInfoConfig {
+struct NodeInfoConfig
+{
     std::string name;
     std::string description;
 };
 
-struct Config {
+struct Config
+{
     std::string server_domain;
     std::string protocol;
     int port;
     std::string db_path;
+    std::string oidc_issuer_url;
     std::string oidc_client_id;
     std::string oidc_secret;
     std::string secret_key;
