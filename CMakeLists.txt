@@ -78,6 +78,13 @@ set(LIBS
   MacroDown::MacroDown
 )
 
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG v1.14.0
+)
+FetchContent_MakeAvailable(googletest)
+
 set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp)
 
 # Main Executable
@@ -87,3 +94,9 @@ set_property(TARGET actpub PROPERTY CXX_EXTENSIONS FALSE)
 target_link_libraries(actpub PRIVATE ${LIBS})
 target_compile_options(actpub PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(actpub PRIVATE ${INCLUDES})
+
+# Tests
+add_executable(database_test src/database_test.cpp src/database.cpp src/config.cpp)
+set_property(TARGET database_test PROPERTY CXX_STANDARD 23)
+target_link_libraries(database_test PRIVATE ${LIBS} GTest::gtest_main)
+target_include_directories(database_test PRIVATE ${INCLUDES})
