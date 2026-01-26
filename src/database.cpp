@@ -128,6 +128,7 @@ mw::E<void> Database::migrate()
                 token TEXT PRIMARY KEY,
                 user_id INTEGER,
                 expires_at INTEGER,
+                csrf_token TEXT,
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );)",
 
@@ -483,6 +484,35 @@ mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
     return users;
 }
 
+mw::E<int64_t> Database::createMedia(const Media& media)
+{
+    const char* sql = "INSERT INTO media (hash, filename, mime_type, "
+                      "uploader_id) VALUES (?, ?, ?, ?);";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(media.hash, media.filename, media.mime_type,
+                           media.uploader_id));
+    DO_OR_RETURN(db->execute(std::move(stmt)));
+    return db->lastInsertRowID();
+}
+
+mw::E<std::optional<Media>> Database::getMediaByHash(const std::string& hash)
+{
+    const char* sql = "SELECT id, hash, filename, mime_type, uploader_id "
+                      "FROM media WHERE hash = ?;";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(hash));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
+                                          std::string, int64_t>(std::move(stmt))));
+    if(rows.empty()) return std::nullopt;
+    Media m;
+    m.id = std::get<0>(rows[0]);
+    m.hash = std::get<1>(rows[0]);
+    m.filename = std::get<2>(rows[0]);
+    m.mime_type = std::get<3>(rows[0]);
+    m.uploader_id = std::get<4>(rows[0]);
+    return m;
+}
+
 mw::E<int64_t> Database::enqueueJob(const Job& job)
 {
     const char* sql = "INSERT INTO jobs (type, payload, attempts, "
@@ -538,21 +568,21 @@ mw::E<void> Database::deleteJob(int64_t id)
 
 mw::E<void> Database::createSession(const Session& session)
 {
-    const char* sql = "INSERT INTO sessions (token, user_id, expires_at) "
-                      "VALUES (?, ?, ?);";
+    const char* sql = "INSERT INTO sessions (token, user_id, expires_at, csrf_token) "
+                      "VALUES (?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
-    DO_OR_RETURN(stmt.bind(session.token, session.user_id, session.expires_at));
+    DO_OR_RETURN(stmt.bind(session.token, session.user_id, session.expires_at, session.csrf_token));
     return db->execute(std::move(stmt));
 }
 
 mw::E<std::optional<Session>> Database::getSession(const std::string& token)
 {
-    const char* sql = "SELECT token, user_id, expires_at FROM sessions "
+    const char* sql = "SELECT token, user_id, expires_at, csrf_token FROM sessions "
                       "WHERE token = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(token));
     ASSIGN_OR_RETURN(auto rows, (db->eval<std::string, int64_t,
-                                          int64_t>(std::move(stmt))));
+                                          int64_t, std::string>(std::move(stmt))));
     if(rows.empty())
     {
         return std::nullopt;
@@ -561,6 +591,7 @@ mw::E<std::optional<Session>> Database::getSession(const std::string& token)
     s.token = std::get<0>(rows[0]);
     s.user_id = std::get<1>(rows[0]);
     s.expires_at = std::get<2>(rows[0]);
+    s.csrf_token = std::get<3>(rows[0]);
     return s;
 }
 

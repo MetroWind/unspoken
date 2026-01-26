@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}{{ user.display_name }} (@{{ user.username }}) - ActPub{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                {% if user.avatar_path %}
+                <img src="{{ user.avatar_path }}" class="img-fluid rounded mb-3" alt="Avatar">
+                {% endif %}
+                <h5 class="card-title">{{ user.display_name }}</h5>
+                <h6 class="card-subtitle mb-2 text-muted">@{{ user.username }}{% if user.host %}@{{ user.host }}{% endif %}</h6>
+                <p class="card-text">{{ user.bio }}</p>
+                
+                {% if logged_in and not is_self %}
+                    {% if is_following %}
+                    <form action="/api/unfollow" method="POST">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="uri" value="{{ user.uri }}">
+                        <button type="submit" class="btn btn-danger w-100">Unfollow</button>
+                    </form>
+                    {% else %}
+                    <form action="/api/follow" method="POST">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="uri" value="{{ user.uri }}">
+                        <button type="submit" class="btn btn-primary w-100">Follow</button>
+                    </form>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <h3>Posts</h3>
+        {% for post in posts %}
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="card-text">{{ post.content_html | raw }}</div>
+                    <p class="card-text"><small class="text-muted">{{ post.created_at }}</small></p>
+                </div>
+            </div>
+        {% else %}
+            <p>No posts yet.</p>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

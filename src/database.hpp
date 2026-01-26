@@ -39,6 +39,10 @@ public:
                                            int64_t target_id);
     mw::E<std::vector<User>> getFollowers(int64_t target_id);
 
+    // Media DAO
+    mw::E<int64_t> createMedia(const Media& media);
+    mw::E<std::optional<Media>> getMediaByHash(const std::string& hash);
+
     // Job DAO
     mw::E<int64_t> enqueueJob(const Job& job);
     mw::E<std::vector<Job>> getPendingJobs(int limit);

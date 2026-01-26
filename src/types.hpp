@@ -81,8 +81,15 @@ struct Media
 };
 
 struct Session
+
 {
+
     std::string token;
+
     int64_t user_id;
+
     int64_t expires_at;
+
+    std::string csrf_token;
+
 };

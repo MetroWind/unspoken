@@ -10,6 +10,7 @@
             <div class="card-body">
                 <h5 class="card-title">New Post</h5>
                 <form action="/post" method="POST">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <div class="mb-3">
                         <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind?"></textarea>
                     </div>

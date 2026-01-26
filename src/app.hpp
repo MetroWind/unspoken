@@ -23,12 +23,18 @@ private:
                 const nlohmann::json& data);
     
     std::optional<User> getCurrentUser(const mw::HTTPServer::Request& req);
+    std::optional<Session> getCurrentSession(const mw::HTTPServer::Request& req);
+    bool checkCSRF(const mw::HTTPServer::Request& req);
     std::string generateToken();
     mw::E<void> processActivity(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<void> handleCreate(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<void> handleFollow(const nlohmann::json& activity, const std::string& sender_id);
+    mw::E<void> handleAccept(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<int64_t> ensureRemoteUser(const std::string& uri);
     mw::E<void> createPost(const User& author, const std::string& content);
+    mw::E<std::string> handleUpload(const mw::HTTPServer::Request& req, const User& uploader);
+    mw::E<std::optional<User>> resolveRemoteUser(const std::string& username, const std::string& domain);
+    mw::E<void> sendFollowActivity(const User& follower, const User& target);
 
     std::shared_ptr<Database> db;
     std::shared_ptr<mw::HTTPSessionInterface> http_client;

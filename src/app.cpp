@@ -6,8 +6,11 @@
 #include <mw/crypto.hpp>
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
+#include <macrodown.h>
 #include <random>
 #include <unordered_set>
+#include <filesystem>
+#include <fstream>
 
 static std::string getCookie(const mw::HTTPServer::Request& req, const std::string& name)
 {
@@ -75,19 +78,23 @@ mw::E<void> App::run()
 
 void App::setup()
 {
+    server.set_mount_point("/uploads", "./uploads");
+
     server.Get("/", [this](const mw::HTTPServer::Request& req,
                             mw::HTTPServer::Response& res)
     {
-        auto user = getCurrentUser(req);
-        auto posts_res = db->getPublicTimeline(20, 0);
+        auto sess = getCurrentSession(req);
         nlohmann::json data;
-        data["logged_in"] = user.has_value();
-        if(user)
+        data["logged_in"] = sess.has_value();
+        if(sess)
         {
-            data["username"] = user->username;
+            auto user = db->getUserById(sess->user_id);
+            if(user && user.value()) data["username"] = user.value()->username;
+            data["csrf_token"] = sess->csrf_token;
         }
         
         data["posts"] = nlohmann::json::array();
+        auto posts_res = db->getPublicTimeline(20, 0);
         if(posts_res)
         {
             for(const auto& p : *posts_res)
@@ -154,6 +161,7 @@ void App::setup()
             s.token = generateToken();
             s.user_id = existing_user.value()->id;
             s.expires_at = mw::timeToSeconds(mw::Clock::now()) + 3600 * 24 * 7;
+            s.csrf_token = generateToken();
             
             auto sess_res = db->createSession(s);
             if(!sess_res)
@@ -246,6 +254,7 @@ void App::setup()
         s.token = generateToken();
         s.user_id = *create_res;
         s.expires_at = mw::timeToSeconds(mw::Clock::now()) + 3600 * 24 * 7;
+        s.csrf_token = generateToken();
         db->createSession(s);
 
         res.set_header("Set-Cookie", "session=" + s.token + "; Path=/; HttpOnly");
@@ -442,6 +451,13 @@ void App::setup()
             return;
         }
 
+        if(!checkCSRF(req))
+        {
+            res.status = 403;
+            res.set_content("CSRF Check Failed", "text/plain");
+            return;
+        }
+
         std::string content = req.get_param_value("content");
         if(content.empty())
         {
@@ -460,24 +476,294 @@ void App::setup()
 
         res.set_redirect("/");
     });
+
+    server.Post("/api/upload", [this](const mw::HTTPServer::Request& req,
+                                      mw::HTTPServer::Response& res)
+    {
+        auto user = getCurrentUser(req);
+        if(!user)
+        {
+            res.status = 403;
+            return;
+        }
+
+        if(!checkCSRF(req))
+        {
+            res.status = 403;
+            res.set_content("CSRF Check Failed", "text/plain");
+            return;
+        }
+
+        auto result = handleUpload(req, *user);
+        if(!result)
+        {
+            res.status = 500;
+            res.set_content(mw::errorMsg(result.error()), "text/plain");
+            return;
+        }
+
+        nlohmann::json j;
+        j["url"] = *result;
+        res.set_content(j.dump(), "application/json");
+    });
+
+    server.Get("/search", [this](const mw::HTTPServer::Request& req,
+                                 mw::HTTPServer::Response& res)
+    {
+        auto sess = getCurrentSession(req);
+        nlohmann::json data;
+        data["logged_in"] = sess.has_value();
+        if(sess)
+        {
+            auto user = db->getUserById(sess->user_id);
+            if(user && user.value()) data["username"] = user.value()->username;
+            data["csrf_token"] = sess->csrf_token;
+        }
+
+        if (req.has_param("q"))
+        {
+            std::string q = req.get_param_value("q");
+            data["q"] = q;
+            
+            if (q.starts_with("@")) q = q.substr(1);
+            
+            std::string username = q;
+            std::string domain;
+            size_t at_pos = q.find('@');
+            if (at_pos != std::string::npos)
+            {
+                username = q.substr(0, at_pos);
+                domain = q.substr(at_pos + 1);
+            }
+
+            std::optional<User> result;
+            auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+            std::string local_host = root_url ? root_url->host() : "";
+
+            if (domain.empty() || domain == local_host)
+            {
+                auto db_res = db->getUserByUsername(username);
+                if (db_res && db_res.value()) result = db_res.value();
+            }
+            else
+            {
+                auto remote_res = resolveRemoteUser(username, domain);
+                if (remote_res && remote_res.value()) result = remote_res.value();
+            }
+            
+            if (result)
+            {
+                nlohmann::json u;
+                u["display_name"] = result->display_name;
+                u["username"] = result->username;
+                u["host"] = result->host ? *result->host : "";
+                u["bio"] = result->bio;
+                u["uri"] = result->uri;
+                data["result"] = u;
+            }
+        }
+
+        render(res, "search.html", data);
+    });
+
+    server.Get("/u/:username", [this](const mw::HTTPServer::Request& req,
+                                      mw::HTTPServer::Response& res)
+    {
+        // Check Accept header for JSON
+        if (req.has_header("Accept") && req.get_header_value("Accept").find("application/activity+json") != std::string::npos)
+        {
+            // Redirect to outbox or return Actor JSON?
+            // Usually returns Actor JSON.
+            // For now let's just return 404 for JSON if not implemented or redirect to outbox?
+            // Actually, /u/user IS the actor ID, so it should return Actor JSON.
+            // I'll skip that for now as I implemented outbox separately.
+        }
+
+        std::string username = req.get_param_value("username");
+        auto user_res = db->getUserByUsername(username);
+        if(!user_res || !user_res.value())
+        {
+            res.status = 404;
+            res.set_content("User not found", "text/plain");
+            return;
+        }
+        auto target = *user_res.value();
+
+        auto current_user = getCurrentUser(req);
+        bool is_following = false;
+        bool is_self = false;
+        if(current_user)
+        {
+            is_self = (current_user->id == target.id);
+            auto follow = db->getFollow(current_user->id, target.id);
+            if(follow && follow.value() && follow.value()->status == 1) is_following = true;
+        }
+
+        auto sess = getCurrentSession(req);
+        auto posts_res = db->getUserPosts(target.id, 20, 0);
+        
+        nlohmann::json data;
+        data["user"]["display_name"] = target.display_name;
+        data["user"]["username"] = target.username;
+        data["user"]["host"] = target.host ? *target.host : "";
+        data["user"]["bio"] = target.bio;
+        data["user"]["uri"] = target.uri;
+        data["user"]["avatar_path"] = target.avatar_path ? *target.avatar_path : "";
+        data["logged_in"] = current_user.has_value();
+        data["is_following"] = is_following;
+        data["is_self"] = is_self;
+        if(current_user) data["username"] = current_user->username;
+        if(sess) data["csrf_token"] = sess->csrf_token;
+
+        data["posts"] = nlohmann::json::array();
+        if(posts_res)
+        {
+            for(const auto& p : *posts_res)
+            {
+                nlohmann::json pj;
+                pj["content_html"] = p.content_html;
+                pj["created_at"] = mw::timeToStr(mw::secondsToTime(p.created_at));
+                data["posts"].push_back(pj);
+            }
+        }
+
+        render(res, "profile.html", data);
+    });
+
+    server.Post("/api/follow", [this](const mw::HTTPServer::Request& req,
+                                      mw::HTTPServer::Response& res)
+    {
+        auto user = getCurrentUser(req);
+        if(!user)
+        {
+            res.status = 403;
+            return;
+        }
+
+        if(!checkCSRF(req))
+        {
+            res.status = 403;
+            res.set_content("CSRF Check Failed", "text/plain");
+            return;
+        }
+
+        std::string uri = req.get_param_value("uri");
+        auto target_res = db->getUserByUri(uri);
+        if(!target_res || !target_res.value())
+        {
+            res.status = 404;
+            return;
+        }
+        auto target = *target_res.value();
+
+        auto existing = db->getFollow(user->id, target.id);
+        if(existing && existing.value())
+        {
+            res.set_redirect("/u/" + target.username);
+            return;
+        }
+
+        Follow f;
+        f.follower_id = user->id;
+        f.target_id = target.id;
+        f.status = 0;
+        f.uri = user->uri + "/follows/" + std::to_string(mw::timeToSeconds(mw::Clock::now()));
+
+        if (target.isLocal())
+        {
+            f.status = 1;
+        }
+
+        db->createFollow(f);
+
+        if (!target.isLocal())
+        {
+            sendFollowActivity(*user, target);
+        }
+
+        res.set_redirect("/u/" + target.username);
+    });
+}
+
+mw::E<void> App::sendFollowActivity(const User& follower, const User& target)
+{
+    nlohmann::json activity;
+    activity["@context"] = "https://www.w3.org/ns/activitystreams";
+    activity["type"] = "Follow";
+    activity["id"] = follower.uri + "/follows/" + std::to_string(mw::timeToSeconds(mw::Clock::now()));
+    activity["actor"] = follower.uri;
+    activity["object"] = target.uri;
+
+    if (!target.inbox) return {}; // Can't send
+
+    Job j;
+    j.type = "deliver_activity";
+    j.attempts = 0;
+    j.status = 0;
+    j.next_try = mw::timeToSeconds(mw::Clock::now());
+    
+    nlohmann::json payload;
+    payload["inbox"] = *target.inbox;
+    payload["activity"] = activity;
+    payload["sender_uri"] = follower.uri;
+    j.payload = payload.dump();
+
+    return db->enqueueJob(j).transform([](auto){});
+}
+
+mw::E<std::optional<User>> App::resolveRemoteUser(const std::string& username, const std::string& domain)
+{
+    std::string wf_url = "https://" + domain + "/.well-known/webfinger?resource=acct:" + username + "@" + domain;
+    
+    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(wf_url));
+    if(res_ptr->status != 200) return std::nullopt;
+
+    nlohmann::json j;
+    try
+    {
+        j = nlohmann::json::parse(res_ptr->payloadAsStr());
+    }
+    catch(...) { return std::nullopt; }
+
+    std::string actor_uri;
+    if(j.contains("links") && j["links"].is_array())
+    {
+        for(const auto& link : j["links"])
+        {
+            if(link.value("rel", "") == "self" && 
+               link.value("type", "") == "application/activity+json")
+            {
+                actor_uri = link.value("href", "");
+                break;
+            }
+        }
+    }
+
+    if(actor_uri.empty()) return std::nullopt;
+
+    ASSIGN_OR_RETURN(auto uid, ensureRemoteUser(actor_uri));
+    return db->getUserById(uid);
 }
 
 mw::E<void> App::createPost(const User& author, const std::string& content)
 {
+    macrodown::MacroDown md;
+    auto tree = md.parse(content);
+    std::string html = md.render(*tree);
+
     Post p;
     p.author_id = author.id;
-    p.content_html = content; // TODO: Markdown parsing
+    p.content_html = html;
     p.content_source = content;
     p.created_at = mw::timeToSeconds(mw::Clock::now());
     p.is_local = true;
     p.visibility = Visibility::PUBLIC;
     
-    // Generate URI
-    p.uri = Config::get().server_url_root + "/p/" + std::to_string(p.created_at); // Placeholder ID generation
+    p.uri = Config::get().server_url_root + "/p/" +
+            std::to_string(p.created_at);
 
     DO_OR_RETURN(db->createPost(p));
 
-    // Construct Activity
     nlohmann::json activity;
     activity["@context"] = "https://www.w3.org/ns/activitystreams";
     activity["type"] = "Create";
@@ -532,6 +818,54 @@ mw::E<void> App::createPost(const User& author, const std::string& content)
     return {};
 }
 
+mw::E<std::string> App::handleUpload(const mw::HTTPServer::Request& req,
+                                     const User& uploader)
+{
+    if(!req.has_file("file"))
+    {
+        return std::unexpected(mw::runtimeError("No file"));
+    }
+    const auto& file = req.get_file_value("file");
+    
+    auto hash_res = mw::SHA256Hasher().hashToHexStr(file.content);
+    if(!hash_res) return std::unexpected(hash_res.error());
+    std::string hash = *hash_res;
+
+    auto existing = db->getMediaByHash(hash);
+    if(existing && existing.value())
+    {
+        std::filesystem::path p(existing.value()->filename);
+        std::string ext = p.extension().string();
+        return Config::get().server_url_root + "/uploads/" +
+               hash.substr(0,1) + "/" + hash + ext;
+    }
+
+    std::filesystem::path upload_dir = "uploads";
+    upload_dir /= hash.substr(0, 1);
+    std::filesystem::create_directories(upload_dir);
+    
+    std::string ext = std::filesystem::path(file.filename).extension().string();
+    if(ext.empty()) ext = ".bin";
+    
+    std::string final_name = hash + ext;
+    std::filesystem::path final_path = upload_dir / final_name;
+    
+    std::ofstream ofs(final_path, std::ios::binary);
+    ofs.write(file.content.data(), file.content.size());
+    ofs.close();
+
+    Media m;
+    m.hash = hash;
+    m.filename = final_name;
+    m.mime_type = file.content_type;
+    m.uploader_id = uploader.id;
+    
+    DO_OR_RETURN(db->createMedia(m));
+
+    return Config::get().server_url_root + "/uploads/" +
+           hash.substr(0,1) + "/" + final_name;
+}
+
 mw::E<void> App::processActivity(const nlohmann::json& activity, const std::string& sender_id)
 {
     std::string type = activity["type"];
@@ -543,6 +877,10 @@ mw::E<void> App::processActivity(const nlohmann::json& activity, const std::stri
     else if(type == "Follow")
     {
         return handleFollow(activity, sender_id);
+    }
+    else if(type == "Accept")
+    {
+        return handleAccept(activity, sender_id);
     }
     
     return {};
@@ -660,6 +998,29 @@ mw::E<void> App::handleFollow(const nlohmann::json& activity, const std::string&
     return {};
 }
 
+mw::E<void> App::handleAccept(const nlohmann::json& activity, const std::string& sender_id)
+{
+    auto object = activity["object"];
+    if (object.is_object() && object.value("type", "") == "Follow")
+    {
+        std::string actor_uri = json_ld::getId(object, "actor");
+        std::string target_uri = json_ld::getId(object, "object");
+
+        // Verify sender matches target
+        if (target_uri != sender_id) return {};
+
+        auto local_user = db->getUserByUri(actor_uri);
+        auto remote_user = db->getUserByUri(target_uri);
+
+        if (local_user && local_user.value() && remote_user && remote_user.value())
+        {
+            return db->updateFollowStatus(local_user.value()->id, 
+                                          remote_user.value()->id, 1);
+        }
+    }
+    return {};
+}
+
 void App::render(mw::HTTPServer::Response& res, const std::string& template_name,
                  const nlohmann::json& data)
 {
@@ -676,7 +1037,7 @@ void App::render(mw::HTTPServer::Response& res, const std::string& template_name
     }
 }
 
-std::optional<User> App::getCurrentUser(const mw::HTTPServer::Request& req)
+std::optional<Session> App::getCurrentSession(const mw::HTTPServer::Request& req)
 {
     std::string token = getCookie(req, "session");
     if(token.empty()) return std::nullopt;
@@ -686,8 +1047,7 @@ std::optional<User> App::getCurrentUser(const mw::HTTPServer::Request& req)
     {
         if(sess.value()->expires_at > mw::timeToSeconds(mw::Clock::now()))
         {
-            auto user = db->getUserById(sess.value()->user_id);
-            if(user && user.value()) return user.value();
+            return sess.value();
         }
         else
         {
@@ -695,6 +1055,26 @@ std::optional<User> App::getCurrentUser(const mw::HTTPServer::Request& req)
         }
     }
     return std::nullopt;
+}
+
+std::optional<User> App::getCurrentUser(const mw::HTTPServer::Request& req)
+{
+    auto sess = getCurrentSession(req);
+    if(sess)
+    {
+        auto user = db->getUserById(sess->user_id);
+        if(user && user.value()) return user.value();
+    }
+    return std::nullopt;
+}
+
+bool App::checkCSRF(const mw::HTTPServer::Request& req)
+{
+    auto sess = getCurrentSession(req);
+    if(!sess) return false;
+
+    if(!req.has_param("csrf_token")) return false;
+    return req.get_param_value("csrf_token") == sess->csrf_token;
 }
 
 std::string App::generateToken()

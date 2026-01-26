@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}Search - ActPub{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h2>Search</h2>
+        <form action="/search" method="GET" class="mb-4">
+            <div class="input-group">
+                <input type="text" class="form-control" name="q" placeholder="Search for user (username or @user@domain)..." required>
+                <button class="btn btn-primary" type="submit">Search</button>
+            </div>
+        </form>
+
+        {% if result %}
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">{{ result.display_name }}</h5>
+                <h6 class="card-subtitle mb-2 text-muted">@{{ result.username }}{% if result.host %}@{{ result.host }}{% endif %}</h6>
+                <p class="card-text">{{ result.bio }}</p>
+                <a href="{{ result.uri }}" class="card-link">Profile Link</a>
+                
+                {% if logged_in %}
+                <form action="/api/follow" method="POST" class="d-inline float-end">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="uri" value="{{ result.uri }}">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Follow</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+        {% elseif q %}
+        <div class="alert alert-warning">No results found for "{{ q }}".</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
