@@ -27,6 +27,8 @@ struct User
     int64_t created_at;
     std::optional<std::string> avatar_path;
     std::optional<std::string> oidc_subject;
+    std::optional<std::string> inbox;
+    std::optional<std::string> shared_inbox;
 
     bool isLocal() const { return !host.has_value(); }
 };

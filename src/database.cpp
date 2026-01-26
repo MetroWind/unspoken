@@ -51,7 +51,9 @@ mw::E<void> Database::migrate()
                 host TEXT,
                 created_at INTEGER,
                 avatar_path TEXT,
-                oidc_subject TEXT UNIQUE
+                oidc_subject TEXT UNIQUE,
+                inbox TEXT,
+                shared_inbox TEXT
             );)",
 
             R"(CREATE TABLE IF NOT EXISTS posts (
@@ -150,25 +152,31 @@ mw::E<int64_t> Database::createUser(const User& user)
 {
     const char* sql = "INSERT INTO users (username, display_name, bio, "
                       "email, uri, public_key, private_key, host, "
-                      "created_at, avatar_path, oidc_subject) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+                      "created_at, avatar_path, oidc_subject, inbox, shared_inbox) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
-                           user.email, user.uri, user.public_key,
-                           user.private_key, user.host, user.created_at,
-                           user.avatar_path, user.oidc_subject));
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 1, user.username));
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 2, user.display_name));
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 3, user.bio));
+    if(user.email) { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, *user.email)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, std::nullopt)); }
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 5, user.uri));
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 6, user.public_key));
+    if(user.private_key) { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, *user.private_key)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, std::nullopt)); }
+    if(user.host) { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, *user.host)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, std::nullopt)); }
+    DO_OR_RETURN(mw::internal::bindOne(stmt, 9, user.created_at));
+    if(user.avatar_path) { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, *user.avatar_path)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, std::nullopt)); }
+    if(user.oidc_subject) { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, *user.oidc_subject)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, std::nullopt)); }
+    if(user.inbox) { DO_OR_RETURN(mw::internal::bindOne(stmt, 12, *user.inbox)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 12, std::nullopt)); }
+    if(user.shared_inbox) { DO_OR_RETURN(mw::internal::bindOne(stmt, 13, *user.shared_inbox)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 13, std::nullopt)); }
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
 }
 
 using UserTuple = std::tuple<int64_t, std::string, std::string, std::string,
-                             std::optional<std::string>, std::string,
-                             std::string, std::optional<std::string>,
-                             std::optional<std::string>, int64_t,
-                             std::optional<std::string>,
-                             std::optional<std::string>>;
+                             std::string, std::string, std::string,
+                             std::string, std::string, int64_t, std::string, std::string, std::string, std::string>;
 
 static User rowToUser(const UserTuple& row)
 {
@@ -177,14 +185,16 @@ static User rowToUser(const UserTuple& row)
     u.username = std::get<1>(row);
     u.display_name = std::get<2>(row);
     u.bio = std::get<3>(row);
-    u.email = std::get<4>(row);
+    if(!std::get<4>(row).empty()) u.email = std::get<4>(row);
     u.uri = std::get<5>(row);
     u.public_key = std::get<6>(row);
-    u.private_key = std::get<7>(row);
-    u.host = std::get<8>(row);
+    if(!std::get<7>(row).empty()) u.private_key = std::get<7>(row);
+    if(!std::get<8>(row).empty()) u.host = std::get<8>(row);
     u.created_at = std::get<9>(row);
-    u.avatar_path = std::get<10>(row);
-    u.oidc_subject = std::get<11>(row);
+    if(!std::get<10>(row).empty()) u.avatar_path = std::get<10>(row);
+    if(!std::get<11>(row).empty()) u.oidc_subject = std::get<11>(row);
+    if(!std::get<12>(row).empty()) u.inbox = std::get<12>(row);
+    if(!std::get<13>(row).empty()) u.shared_inbox = std::get<13>(row);
     return u;
 }
 
@@ -192,24 +202,16 @@ mw::E<std::optional<User>> Database::getUserById(int64_t id)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject FROM users WHERE id = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
-
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string,
-                                          std::optional<std::string>,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          int64_t, std::optional<std::string>,
-                                          std::optional<std::string>>(
+                                          std::string, std::string, std::string,
+                                          std::string, std::string, std::string,
+                                          int64_t, std::string, std::string, std::string, std::string>(
                                     std::move(stmt))));
 
-    if(rows.empty())
-    {
-        return std::nullopt;
-    }
+    if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
 }
 
@@ -217,22 +219,15 @@ mw::E<std::optional<User>> Database::getUserByUsername(const std::string& name)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject FROM users WHERE username = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE username = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(name));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string,
-                                          std::optional<std::string>,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          int64_t, std::optional<std::string>,
-                                          std::optional<std::string>>(
+                                          std::string, std::string, std::string,
+                                          std::string, std::string, std::string,
+                                          int64_t, std::string, std::string, std::string, std::string>(
                                     std::move(stmt))));
-    if(rows.empty())
-    {
-        return std::nullopt;
-    }
+    if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
 }
 
@@ -240,22 +235,15 @@ mw::E<std::optional<User>> Database::getUserByUri(const std::string& uri)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject FROM users WHERE uri = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE uri = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string,
-                                          std::optional<std::string>,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          int64_t, std::optional<std::string>,
-                                          std::optional<std::string>>(
+                                          std::string, std::string, std::string,
+                                          std::string, std::string, std::string,
+                                          int64_t, std::string, std::string, std::string, std::string>(
                                     std::move(stmt))));
-    if(rows.empty())
-    {
-        return std::nullopt;
-    }
+    if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
 }
 
@@ -263,23 +251,15 @@ mw::E<std::optional<User>> Database::getUserByOidcSubject(const std::string& sub
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject FROM users "
-                      "WHERE oidc_subject = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE oidc_subject = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(sub));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string,
-                                          std::optional<std::string>,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          int64_t, std::optional<std::string>,
-                                          std::optional<std::string>>(
+                                          std::string, std::string, std::string,
+                                          std::string, std::string, std::string,
+                                          int64_t, std::string, std::string, std::string, std::string>(
                                     std::move(stmt))));
-    if(rows.empty())
-    {
-        return std::nullopt;
-    }
+    if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
 }
 

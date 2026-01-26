@@ -29,6 +29,7 @@ App::App(std::shared_ptr<Database> database,
     // inja_env.set_template_path("./templates/");
     http_client = std::make_shared<mw::HTTPSession>();
     sig_verifier = std::make_unique<SignatureVerifier>(http_client);
+    job_queue = std::make_unique<JobQueue>(db, http_client);
 }
 
 mw::E<void> App::run()
@@ -40,6 +41,8 @@ mw::E<void> App::run()
     {
         return std::unexpected(root_url.error());
     }
+
+    job_queue->start();
 
     auto redirect_url = *root_url;
     redirect_url.appendPath("auth/callback");
@@ -443,6 +446,12 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
     if(j.contains("icon") && j["icon"].contains("url"))
     {
         u.avatar_path = j["icon"]["url"];
+    }
+
+    u.inbox = json_ld::getId(j, "inbox");
+    if(j.contains("endpoints") && j["endpoints"].contains("sharedInbox"))
+    {
+        u.shared_inbox = json_ld::getId(j["endpoints"], "sharedInbox");
     }
 
     auto url = mw::URL::fromStr(uri);

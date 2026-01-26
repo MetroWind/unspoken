@@ -1,0 +1,35 @@
+#pragma once
+
+#include <memory>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include "database.hpp"
+#include <mw/http_client.hpp>
+
+class JobQueue
+{
+public:
+    JobQueue(std::shared_ptr<Database> db, 
+             std::shared_ptr<mw::HTTPSessionInterface> http_client);
+    ~JobQueue();
+
+    void start();
+    void stop();
+
+private:
+    void workerLoop();
+    void processJob(const Job& job);
+    
+    // Activity Delivery
+    void deliverActivity(const Job& job);
+
+    std::shared_ptr<Database> db;
+    std::shared_ptr<mw::HTTPSessionInterface> http_client;
+    
+    std::atomic<bool> running{false};
+    std::thread worker_thread;
+    std::mutex cv_m;
+    std::condition_variable cv;
+};
