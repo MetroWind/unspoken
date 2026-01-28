@@ -145,3 +145,58 @@ A polling loop or conditioned variable in a separate thread.
 ## 7. Configuration
 *   Format: YAML.
 *   Fields: `server_domain`, `port`, `db_path`, `oidc_client_id`, `oidc_secret`, `secret_key` (for sessions).
+
+## 8. HTTP Signatures Implementation Details
+
+To ensure secure federation, the server must implement HTTP Signatures according to `draft-cavage-http-signatures-12` (and compatible with Mastodon).
+
+### 8.1. Algorithms & Standards
+*   **Algorithm**: `rsa-sha256` (RSASSA-PKCS1-v1_5 using SHA-256).
+*   **Key Format**: PEM-encoded RSA 2048-bit keys.
+
+### 8.2. Incoming Request Verification
+All incoming requests to `/inbox` and other secured endpoints must be verified via the `Signature` header.
+
+1.  **Header Parsing**: Extract `keyId`, `headers`, and `signature` from the `Signature` HTTP header.
+2.  **Date Validation**: Check the `Date` header. Reject requests where the date is skewed by more than 30 seconds (configurable) from the server time to prevent replay attacks.
+3.  **Digest Verification (POST/PUT)**:
+    *   Compute the SHA-256 hash of the request body.
+    *   Compare the Base64-encoded hash with the incoming `Digest` header (e.g., `SHA-256=...`).
+    *   Reject if they do not match.
+4.  **Public Key Retrieval & Rotation Handling**:
+    *   Extract the Actor URI from `keyId`.
+    *   Check the local database (`users` table) for a cached public key.
+    *   If the key is found, attempt verification.
+    *   **On Verification Failure**: If the signature is invalid but the headers and digest are correct, the remote key may have been rotated. The server MUST re-fetch the Actor object from the remote source to update the cached public key and then retry verification.
+    *   If the key is missing from the database, fetch the Actor object and cache the key.
+    *   *Note*: The fetch request itself must be signed (using the System Actor).
+5.  **Signature Verification**:
+    *   Construct the *signing string* based on the `headers` field (e.g., `(request-target) host date digest`).
+    *   Verify the `signature` against the *signing string* using the retrieved Public Key and `rsa-sha256`.
+
+### 8.3. Outgoing Request Signing
+All outgoing federation requests must be signed.
+
+1.  **Actor Selection**:
+    *   **User Activities**: Sign with the specific user's private key.
+    *   **System/Fetch Activities**: Sign with the "System Actor" private key.
+2.  **Header Preparation**:
+    *   `Host`: Target authority.
+    *   `Date`: Current GMT time.
+    *   `Digest`: (If POST) `SHA-256=` + Base64(SHA256(body)).
+3.  **Signing**:
+    *   Construct the string to sign (typically: `(request-target) host date digest`).
+    *   Generate signature using the private key (`rsa-sha256`).
+4.  **Signature Header**:
+    *   Format: `keyId="<actor_uri>#main-key",headers="(request-target) host date digest",signature="<base64_sig>"`
+
+### 8.4. Key Rotation
+
+#### 8.4.1. Remote Key Rotation
+The server implements a "fetch-on-failure" strategy for remote key rotation. When a signature fails verification with a cached key, the server does not immediately reject the request. Instead, it triggers an asynchronous or immediate re-fetch of the remote Actor's JSON-LD to obtain the latest `publicKeyPem`. Only if verification fails with the newly fetched key is the request definitively rejected with a 401 Unauthorized.
+
+#### 8.4.2. Local Key Rotation
+When a local user (or the System Actor) rotates their RSA key pair:
+1.  **Database Update**: The new `public_key` and `private_key` are updated in the `users` table.
+2.  **Actor Update**: The Actor's JSON-LD representation is updated to reflect the new public key.
+3.  **Propagation**: The server SHOULD generate and enqueue an `Update` activity where the `object` is the updated Actor. This activity is delivered to the `sharedInbox` of all known remote instances to notify them of the change and prompt them to update their cached keys.
