@@ -7,12 +7,14 @@
 #include <condition_variable>
 #include "database.hpp"
 #include <mw/http_client.hpp>
+#include <mw/crypto.hpp>
 
 class JobQueue
 {
 public:
     JobQueue(std::shared_ptr<Database> db, 
-             std::shared_ptr<mw::HTTPSessionInterface> http_client);
+             std::shared_ptr<mw::HTTPSessionInterface> http_client,
+             std::shared_ptr<mw::CryptoInterface> crypto);
     ~JobQueue();
 
     void start();
@@ -27,6 +29,7 @@ private:
 
     std::shared_ptr<Database> db;
     std::shared_ptr<mw::HTTPSessionInterface> http_client;
+    std::shared_ptr<mw::CryptoInterface> crypto;
     
     std::atomic<bool> running{false};
     std::thread worker_thread;

@@ -2,6 +2,7 @@
 
 #include <mw/http_server.hpp>
 #include <mw/http_client.hpp> // For HTTPSessionInterface to fetch keys
+#include <mw/crypto.hpp> // For CryptoInterface
 #include <mw/error.hpp>
 #include <memory>
 #include <string>
@@ -10,7 +11,8 @@
 class SignatureVerifier
 {
 public:
-    explicit SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client);
+    SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client,
+                      std::shared_ptr<mw::CryptoInterface> crypto);
 
     // Verifies the HTTP signature of the incoming request.
     // Returns the ID of the signer (Actor URI) on success.
@@ -20,4 +22,5 @@ public:
 
 private:
     std::shared_ptr<mw::HTTPSessionInterface> http_client;
+    std::shared_ptr<mw::CryptoInterface> crypto;
 };

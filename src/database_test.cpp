@@ -75,7 +75,7 @@ TEST_F(DatabaseTest, PostTimeline)
     p.author_id = *uid;
     p.content_html = "<p>Hello</p>";
     p.content_source = "Hello";
-    p.visibility = Visibility::Public;
+    p.visibility = Visibility::PUBLIC;
     p.created_at = 200;
     p.is_local = true;
 

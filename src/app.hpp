@@ -3,6 +3,7 @@
 #include <memory>
 #include <mw/http_server.hpp>
 #include <mw/auth.hpp>
+#include <mw/crypto.hpp>
 #include <inja/inja.hpp>
 #include "database.hpp"
 #include "signature_verifier.hpp"
@@ -38,6 +39,7 @@ private:
 
     std::shared_ptr<Database> db;
     std::shared_ptr<mw::HTTPSessionInterface> http_client;
+    std::shared_ptr<mw::CryptoInterface> crypto;
     std::unique_ptr<JobQueue> job_queue;
     inja::Environment inja_env;
     std::unique_ptr<mw::AuthOpenIDConnect> auth;

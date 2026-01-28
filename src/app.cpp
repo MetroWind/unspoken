@@ -32,8 +32,9 @@ App::App(std::shared_ptr<Database> database,
 {
     // inja_env.set_template_path("./templates/");
     http_client = std::make_shared<mw::HTTPSession>();
-    sig_verifier = std::make_unique<SignatureVerifier>(http_client);
-    job_queue = std::make_unique<JobQueue>(db, http_client);
+    crypto = std::make_shared<mw::Crypto>();
+    sig_verifier = std::make_unique<SignatureVerifier>(http_client, crypto);
+    job_queue = std::make_unique<JobQueue>(db, http_client, crypto);
 }
 
 mw::E<void> App::run()
@@ -232,7 +233,7 @@ void App::setup()
         u.uri = root_url->appendPath("u").appendPath(username).str();
         u.created_at = mw::timeToSeconds(mw::Clock::now());
         
-        auto keys_res = mw::generateEd25519KeyPair();
+        auto keys_res = crypto->generateEd25519KeyPair();
         if (!keys_res)
         {
             res.status = 500;

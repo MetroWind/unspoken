@@ -7,8 +7,9 @@
 #include <chrono>
 
 JobQueue::JobQueue(std::shared_ptr<Database> db,
-                   std::shared_ptr<mw::HTTPSessionInterface> http_client)
-    : db(db), http_client(http_client)
+                   std::shared_ptr<mw::HTTPSessionInterface> http_client,
+                   std::shared_ptr<mw::CryptoInterface> crypto)
+    : db(db), http_client(http_client), crypto(crypto)
 {
 }
 
@@ -155,7 +156,7 @@ void JobQueue::deliverActivity(const Job& job)
                           "date: " + date + "\n" + 
                           "digest: " + digest;
 
-    auto sig_bytes = mw::sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
+    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
                               *user.private_key, to_sign);
     if(!sig_bytes)
     {

@@ -6,8 +6,9 @@
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
-SignatureVerifier::SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client)
-    : http_client(http_client)
+SignatureVerifier::SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client,
+                                     std::shared_ptr<mw::CryptoInterface> crypto)
+    : http_client(http_client), crypto(crypto)
 {
 }
 
@@ -149,7 +150,7 @@ mw::E<std::string> SignatureVerifier::verify(const mw::HTTPServer::Request& req,
     }
 
     // Assume RSA-SHA256 for now as it's standard for AP
-    auto valid = mw::verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
+    auto valid = crypto->verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
                                      public_key_pem, 
                                      *sig_bytes, 
                                      comparison_string);

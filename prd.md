@@ -49,13 +49,14 @@ Basically just standard micro blog features.
   of the Actor JSON object. All incoming requests should be verified.
   See
   https://www.ietf.org/archive/id/draft-ietf-httpbis-message-signatures-04.html
-  for details.
+  for details. Also follow
+  https://swicg.github.io/activitypub-http-signature/.
 * Use [libmw](https://github.com/MetroWind/libmw) for HTTP server,
   HTTP queries, HTTP signing and verification, sqlite interfacing, and
   error handling. See example of usage in
   https://github.com/MetroWind/shrt . libmw headers are at
   https://github.com/MetroWind/libmw/tree/master/includes/mw . All
-  queries to remote servers are signed with ed25519.
+  queries to remote servers are signed.
 * There should be a “system actor” to sign the queries that are not
   associated with a user.
 * Prefer to use `mw::E<>` vs exceptions.
