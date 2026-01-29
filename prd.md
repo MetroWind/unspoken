@@ -158,6 +158,7 @@ Basically just standard micro blog features.
   and ID references (e.g., actor, object, attributedTo) from either
   URI strings or embedded objects into canonical URIs, ensuring
   interoperability across different Fediverse implementations.
+* All unit tests should be in the same executable.
 
 ## Future works (we don’t need these right now)
 

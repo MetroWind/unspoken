@@ -96,7 +96,20 @@ target_compile_options(actpub PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(actpub PRIVATE ${INCLUDES})
 
 # Tests
-add_executable(database_test src/database_test.cpp src/database.cpp src/config.cpp)
-set_property(TARGET database_test PROPERTY CXX_STANDARD 23)
-target_link_libraries(database_test PRIVATE ${LIBS} GTest::gtest_main)
-target_include_directories(database_test PRIVATE ${INCLUDES})
+add_executable(unit_tests 
+  src/database_test.cpp 
+  src/job_queue_test.cpp
+  src/signature_verifier_test.cpp
+  src/json_ld_test.cpp
+  src/config_test.cpp
+  src/app_test.cpp
+  src/database.cpp 
+  src/config.cpp
+  src/job_queue.cpp
+  src/signature_verifier.cpp
+  src/json_ld.cpp
+  src/app.cpp
+)
+set_property(TARGET unit_tests PROPERTY CXX_STANDARD 23)
+target_link_libraries(unit_tests PRIVATE ${LIBS} GTest::gtest_main GTest::gmock)
+target_include_directories(unit_tests PRIVATE ${INCLUDES})

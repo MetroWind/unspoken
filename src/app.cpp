@@ -239,7 +239,7 @@ void App::setup()
         u.uri = root_url->appendPath("u").appendPath(username).str();
         u.created_at = mw::timeToSeconds(mw::Clock::now());
         
-        auto keys_res = crypto->generateEd25519KeyPair();
+        auto keys_res = crypto->generateKeyPair(mw::KeyType::ED25519);
         if (!keys_res)
         {
             res.status = 500;
