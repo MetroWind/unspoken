@@ -11,8 +11,8 @@
 class SignatureVerifier
 {
 public:
-    SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client,
-                      std::shared_ptr<mw::CryptoInterface> crypto);
+    SignatureVerifier(std::unique_ptr<mw::HTTPSessionInterface> http_client,
+                      std::unique_ptr<mw::CryptoInterface> crypto);
 
     // Verifies the HTTP signature of the incoming request.
     // Returns the ID of the signer (Actor URI) on success.
@@ -21,6 +21,6 @@ public:
                               const std::string& path);
 
 private:
-    std::shared_ptr<mw::HTTPSessionInterface> http_client;
-    std::shared_ptr<mw::CryptoInterface> crypto;
+    std::unique_ptr<mw::HTTPSessionInterface> http_client;
+    std::unique_ptr<mw::CryptoInterface> crypto;
 };

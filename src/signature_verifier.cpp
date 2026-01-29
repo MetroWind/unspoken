@@ -6,12 +6,11 @@
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 
-SignatureVerifier::SignatureVerifier(std::shared_ptr<mw::HTTPSessionInterface> http_client,
-                                     std::shared_ptr<mw::CryptoInterface> crypto)
-    : http_client(http_client), crypto(crypto)
+SignatureVerifier::SignatureVerifier(std::unique_ptr<mw::HTTPSessionInterface> http_client,
+                                       std::unique_ptr<mw::CryptoInterface> crypto)
+    : http_client(std::move(http_client)), crypto(std::move(crypto))
 {
 }
-
 static std::unordered_map<std::string, std::string> parseSignatureHeader(const std::string& header)
 {
     std::unordered_map<std::string, std::string> params;

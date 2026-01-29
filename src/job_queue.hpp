@@ -12,9 +12,9 @@
 class JobQueue
 {
 public:
-    JobQueue(std::shared_ptr<Database> db, 
-             std::shared_ptr<mw::HTTPSessionInterface> http_client,
-             std::shared_ptr<mw::CryptoInterface> crypto);
+    JobQueue(std::unique_ptr<Database> db, 
+             std::unique_ptr<mw::HTTPSessionInterface> http_client,
+             std::unique_ptr<mw::CryptoInterface> crypto);
     ~JobQueue();
 
     void start();
@@ -27,9 +27,9 @@ private:
     // Activity Delivery
     void deliverActivity(const Job& job);
 
-    std::shared_ptr<Database> db;
-    std::shared_ptr<mw::HTTPSessionInterface> http_client;
-    std::shared_ptr<mw::CryptoInterface> crypto;
+    std::unique_ptr<Database> db;
+    std::unique_ptr<mw::HTTPSessionInterface> http_client;
+    std::unique_ptr<mw::CryptoInterface> crypto;
     
     std::atomic<bool> running{false};
     std::thread worker_thread;

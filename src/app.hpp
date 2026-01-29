@@ -12,7 +12,7 @@
 class App : public mw::HTTPServer
 {
 public:
-    App(std::shared_ptr<Database> db, const mw::HTTPServer::ListenAddress& listen);
+    App(std::unique_ptr<Database> db, const mw::HTTPServer::ListenAddress& listen);
     
     mw::E<void> run();
 
@@ -37,9 +37,9 @@ private:
     mw::E<std::optional<User>> resolveRemoteUser(const std::string& username, const std::string& domain);
     mw::E<void> sendFollowActivity(const User& follower, const User& target);
 
-    std::shared_ptr<Database> db;
-    std::shared_ptr<mw::HTTPSessionInterface> http_client;
-    std::shared_ptr<mw::CryptoInterface> crypto;
+    std::unique_ptr<Database> db;
+    std::unique_ptr<mw::HTTPSessionInterface> http_client;
+    std::unique_ptr<mw::CryptoInterface> crypto;
     std::unique_ptr<JobQueue> job_queue;
     inja::Environment inja_env;
     std::unique_ptr<mw::AuthOpenIDConnect> auth;

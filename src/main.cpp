@@ -20,7 +20,7 @@ int main()
         return 1;
     }
 
-    auto db = std::make_shared<Database>(Config::get().db_path);
+    auto db = std::make_unique<Database>(Config::get().db_path);
     auto db_init = db->init();
     if(!db_init)
     {
@@ -36,7 +36,7 @@ int main()
         "0.0.0.0", Config::get().port
     };
 
-    App app(db, listen);
+    App app(std::move(db), listen);
     auto app_run = app.run();
     if(!app_run)
     {

@@ -6,10 +6,10 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 
-JobQueue::JobQueue(std::shared_ptr<Database> db,
-                   std::shared_ptr<mw::HTTPSessionInterface> http_client,
-                   std::shared_ptr<mw::CryptoInterface> crypto)
-    : db(db), http_client(http_client), crypto(crypto)
+JobQueue::JobQueue(std::unique_ptr<Database> db,
+                   std::unique_ptr<mw::HTTPSessionInterface> http_client,
+                   std::unique_ptr<mw::CryptoInterface> crypto)
+    : db(std::move(db)), http_client(std::move(http_client)), crypto(std::move(crypto))
 {
 }
 

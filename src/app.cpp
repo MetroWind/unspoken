@@ -26,15 +26,21 @@ static std::string getCookie(const mw::HTTPServer::Request& req, const std::stri
     return val;
 }
 
-App::App(std::shared_ptr<Database> database,
+App::App(std::unique_ptr<Database> database,
          const mw::HTTPServer::ListenAddress& listen)
-    : mw::HTTPServer(listen), db(database)
+    : mw::HTTPServer(listen), db(std::move(database))
 {
     // inja_env.set_template_path("./templates/");
-    http_client = std::make_shared<mw::HTTPSession>();
-    crypto = std::make_shared<mw::Crypto>();
-    sig_verifier = std::make_unique<SignatureVerifier>(http_client, crypto);
-    job_queue = std::make_unique<JobQueue>(db, http_client, crypto);
+    http_client = std::make_unique<mw::HTTPSession>();
+    crypto = std::make_unique<mw::Crypto>();
+    sig_verifier = std::make_unique<SignatureVerifier>(std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
+    
+    auto job_db = std::make_unique<Database>(Config::get().db_path);
+    if(auto res = job_db->init(); !res)
+    {
+        spdlog::error("Failed to init JobQueue database: {}", mw::errorMsg(res.error()));
+    }
+    job_queue = std::make_unique<JobQueue>(std::move(job_db), std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
 }
 
 mw::E<void> App::run()
