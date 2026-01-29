@@ -12,7 +12,7 @@
 class App : public mw::HTTPServer
 {
 public:
-    App(std::unique_ptr<Database> db, const mw::HTTPServer::ListenAddress& listen);
+    App(std::unique_ptr<DatabaseInterface> db, const mw::HTTPServer::ListenAddress& listen);
     
     mw::E<void> run();
 
@@ -36,8 +36,9 @@ private:
     mw::E<std::string> handleUpload(const mw::HTTPServer::Request& req, const User& uploader);
     mw::E<std::optional<User>> resolveRemoteUser(const std::string& username, const std::string& domain);
     mw::E<void> sendFollowActivity(const User& follower, const User& target);
+    mw::E<void> ensureSystemActor();
 
-    std::unique_ptr<Database> db;
+    std::unique_ptr<DatabaseInterface> db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
     std::unique_ptr<mw::CryptoInterface> crypto;
     std::unique_ptr<JobQueue> job_queue;

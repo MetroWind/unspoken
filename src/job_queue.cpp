@@ -1,12 +1,13 @@
 #include "job_queue.hpp"
 #include "config.hpp"
+#include "http_utils.hpp"
 #include <mw/crypto.hpp>
 #include <mw/url.hpp>
 #include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 #include <chrono>
 
-JobQueue::JobQueue(std::unique_ptr<Database> db,
+JobQueue::JobQueue(std::unique_ptr<DatabaseInterface> db,
                    std::unique_ptr<mw::HTTPSessionInterface> http_client,
                    std::unique_ptr<mw::CryptoInterface> crypto)
     : db(std::move(db)), http_client(std::move(http_client)), crypto(std::move(crypto))
@@ -130,13 +131,7 @@ void JobQueue::deliverActivity(const Job& job)
 
     mw::URL url_obj = *mw::URL::fromStr(inbox);
     std::string target = "post " + url_obj.path();
-    std::string date = mw::timeToISO8601(mw::Clock::now()); // Format? RFC1123?
-    // AP usually expects RFC 7231 Date header, e.g. "Sun, 06 Nov 1994 08:49:37 GMT"
-    // mw::timeToISO8601 gives ISO8601. We need a proper HTTP date helper.
-    // For now, let's use a simpler format or assume libmw has one?
-    // libmw::utils doesn't seem to have httpDate.
-    // I'll implement a basic one or use timeToStr if it fits.
-    // Wait, let's look at mw::utils again.
+    std::string date = http_utils::getHttpDate();
     
     // Digest
     auto digest_bytes = mw::SHA256Hasher().hashToBytes(body);
@@ -164,8 +159,8 @@ void JobQueue::deliverActivity(const Job& job)
     }
     std::string signature = mw::base64Encode(*sig_bytes);
 
-    std::string key_id = sender_uri + "#main-key"; // Convention
-    std::string header = "keyId=\"" + key_id + "\",algorithm=\"rsa-sha256\"," + 
+    std::string key_id = sender_uri + "#main-key";
+    std::string header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\"," + 
                          "headers=\" (request-target) host date digest\",signature=\"" + signature + "\"";
 
     mw::HTTPRequest req(inbox);

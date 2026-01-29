@@ -8,11 +8,15 @@
 #include <string>
 #include <vector>
 
+class DatabaseInterface;
+
 class SignatureVerifier
 {
 public:
     SignatureVerifier(std::unique_ptr<mw::HTTPSessionInterface> http_client,
-                      std::unique_ptr<mw::CryptoInterface> crypto);
+                      std::unique_ptr<mw::CryptoInterface> crypto,
+                      std::unique_ptr<DatabaseInterface> db,
+                      const std::string& system_actor_uri);
 
     // Verifies the HTTP signature of the incoming request.
     // Returns the ID of the signer (Actor URI) on success.
@@ -23,4 +27,8 @@ public:
 private:
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
     std::unique_ptr<mw::CryptoInterface> crypto;
+    std::unique_ptr<DatabaseInterface> db;
+    std::string system_actor_uri;
+
+    mw::E<std::string> fetchAndCacheActor(const std::string& uri);
 };

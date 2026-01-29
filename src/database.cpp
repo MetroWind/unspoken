@@ -149,6 +149,23 @@ mw::E<void> Database::migrate()
     return {};
 }
 
+mw::E<void> Database::updateUser(const User& user)
+{
+    const char* sql = "UPDATE users SET username = ?, display_name = ?, bio = ?, "
+                      "email = ?, uri = ?, public_key = ?, private_key = ?, host = ?, "
+                      "created_at = ?, avatar_path = ?, oidc_subject = ?, inbox = ?, shared_inbox = ? "
+                      "WHERE id = ?;";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+
+    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
+                           user.email, user.uri, user.public_key,
+                           user.private_key, user.host, user.created_at,
+                           user.avatar_path, user.oidc_subject,
+                           user.inbox, user.shared_inbox, user.id));
+
+    return db->execute(std::move(stmt));
+}
+
 mw::E<int64_t> Database::createUser(const User& user)
 {
     const char* sql = "INSERT INTO users (username, display_name, bio, "
@@ -157,19 +174,11 @@ mw::E<int64_t> Database::createUser(const User& user)
                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 1, user.username));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 2, user.display_name));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 3, user.bio));
-    if(user.email) { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, *user.email)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 4, std::nullopt)); }
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 5, user.uri));
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 6, user.public_key));
-    if(user.private_key) { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, *user.private_key)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 7, std::nullopt)); }
-    if(user.host) { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, *user.host)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 8, std::nullopt)); }
-    DO_OR_RETURN(mw::internal::bindOne(stmt, 9, user.created_at));
-    if(user.avatar_path) { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, *user.avatar_path)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 10, std::nullopt)); }
-    if(user.oidc_subject) { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, *user.oidc_subject)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 11, std::nullopt)); }
-    if(user.inbox) { DO_OR_RETURN(mw::internal::bindOne(stmt, 12, *user.inbox)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 12, std::nullopt)); }
-    if(user.shared_inbox) { DO_OR_RETURN(mw::internal::bindOne(stmt, 13, *user.shared_inbox)); } else { DO_OR_RETURN(mw::internal::bindOne(stmt, 13, std::nullopt)); }
+    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
+                           user.email, user.uri, user.public_key,
+                           user.private_key, user.host, user.created_at,
+                           user.avatar_path, user.oidc_subject,
+                           user.inbox, user.shared_inbox));
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();

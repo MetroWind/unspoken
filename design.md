@@ -151,7 +151,7 @@ A polling loop or conditioned variable in a separate thread.
 To ensure secure federation, the server must implement HTTP Signatures according to `draft-cavage-http-signatures-12` (and compatible with Mastodon).
 
 ### 8.1. Algorithms & Standards
-*   **Algorithm**: `rsa-sha256` (RSASSA-PKCS1-v1_5 using SHA-256).
+*   **Algorithm**: `hs2019`.
 *   **Key Format**: PEM-encoded RSA 2048-bit keys.
 
 ### 8.2. Incoming Request Verification
@@ -172,7 +172,7 @@ All incoming requests to `/inbox` and other secured endpoints must be verified v
     *   *Note*: The fetch request itself must be signed (using the System Actor).
 5.  **Signature Verification**:
     *   Construct the *signing string* based on the `headers` field (e.g., `(request-target) host date digest`).
-    *   Verify the `signature` against the *signing string* using the retrieved Public Key and `rsa-sha256`.
+    *   Verify the `signature` against the *signing string* using the retrieved Public Key (expecting `hs2019`).
 
 ### 8.3. Outgoing Request Signing
 All outgoing federation requests must be signed.
@@ -186,9 +186,9 @@ All outgoing federation requests must be signed.
     *   `Digest`: (If POST) `SHA-256=` + Base64(SHA256(body)).
 3.  **Signing**:
     *   Construct the string to sign (typically: `(request-target) host date digest`).
-    *   Generate signature using the private key (`rsa-sha256`).
+    *   Generate signature using the private key (using `hs2019`).
 4.  **Signature Header**:
-    *   Format: `keyId="<actor_uri>#main-key",headers="(request-target) host date digest",signature="<base64_sig>"`
+    *   Format: `keyId="<actor_uri>#main-key",algorithm="hs2019",headers="(request-target) host date digest",signature="<base64_sig>"`
 
 ### 8.4. Key Rotation
 

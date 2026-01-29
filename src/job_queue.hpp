@@ -1,18 +1,19 @@
-#pragma once
-
 #include <memory>
-#include <atomic>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include "database.hpp"
+#include <atomic>
+#include <vector>
+#include <string>
 #include <mw/http_client.hpp>
 #include <mw/crypto.hpp>
+#include "database.hpp"
+#include "types.hpp"
 
 class JobQueue
 {
 public:
-    JobQueue(std::unique_ptr<Database> db, 
+    JobQueue(std::unique_ptr<DatabaseInterface> db,
              std::unique_ptr<mw::HTTPSessionInterface> http_client,
              std::unique_ptr<mw::CryptoInterface> crypto);
     ~JobQueue();
@@ -20,19 +21,18 @@ public:
     void start();
     void stop();
 
-private:
-    void workerLoop();
+protected:
     void processJob(const Job& job);
-    
-    // Activity Delivery
     void deliverActivity(const Job& job);
 
-    std::unique_ptr<Database> db;
+private:
+    void workerLoop();
+
+    std::unique_ptr<DatabaseInterface> db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
     std::unique_ptr<mw::CryptoInterface> crypto;
-    
-    std::atomic<bool> running{false};
     std::thread worker_thread;
     std::mutex cv_m;
     std::condition_variable cv;
+    std::atomic<bool> running{false};
 };

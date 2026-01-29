@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "config.hpp"
 #include "json_ld.hpp"
+#include "http_utils.hpp"
 #include <mw/http_client.hpp>
 #include <mw/url.hpp>
 #include <mw/crypto.hpp>
@@ -26,14 +27,25 @@ static std::string getCookie(const mw::HTTPServer::Request& req, const std::stri
     return val;
 }
 
-App::App(std::unique_ptr<Database> database,
+App::App(std::unique_ptr<DatabaseInterface> database,
          const mw::HTTPServer::ListenAddress& listen)
     : mw::HTTPServer(listen), db(std::move(database))
 {
     // inja_env.set_template_path("./templates/");
     http_client = std::make_unique<mw::HTTPSession>();
     crypto = std::make_unique<mw::Crypto>();
-    sig_verifier = std::make_unique<SignatureVerifier>(std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
+    
+    auto sig_db = std::make_unique<Database>(Config::get().db_path);
+    if(auto res = sig_db->init(); !res)
+    {
+        spdlog::error("Failed to init SignatureVerifier database: {}", mw::errorMsg(res.error()));
+    }
+    
+    auto system_url_res = mw::URL::fromStr(Config::get().server_url_root);
+    std::string system_actor_uri = system_url_res ? system_url_res->str() : "";
+    if (system_actor_uri.back() == '/') system_actor_uri.pop_back();
+
+    sig_verifier = std::make_unique<SignatureVerifier>(std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>(), std::move(sig_db), system_actor_uri);
     
     auto job_db = std::make_unique<Database>(Config::get().db_path);
     if(auto res = job_db->init(); !res)
@@ -52,6 +64,8 @@ mw::E<void> App::run()
     {
         return std::unexpected(root_url.error());
     }
+
+    DO_OR_RETURN(ensureSystemActor());
 
     job_queue->start();
 
@@ -893,6 +907,32 @@ mw::E<void> App::processActivity(const nlohmann::json& activity, const std::stri
     return {};
 }
 
+mw::E<void> App::ensureSystemActor()
+{
+    auto root_url_res = mw::URL::fromStr(Config::get().server_url_root);
+    if (!root_url_res) return std::unexpected(root_url_res.error());
+    std::string system_uri = root_url_res->str();
+    if (system_uri.back() == '/') system_uri.pop_back();
+
+    auto existing = db->getUserByUri(system_uri);
+    if (existing && existing.value()) return {};
+
+    User u;
+    u.username = "__system__";
+    u.uri = system_uri;
+    u.display_name = "System Actor";
+    u.created_at = std::time(nullptr);
+    
+    auto keys_res = crypto->generateKeyPair(mw::KeyType::RSA);
+    if (!keys_res) return std::unexpected(keys_res.error());
+    u.public_key = keys_res->public_key;
+    u.private_key = keys_res->private_key;
+
+    DO_OR_RETURN(db->createUser(u));
+    spdlog::info("System actor created: {}", system_uri);
+    return {};
+}
+
 mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
 {
     auto user = db->getUserByUri(uri);
@@ -901,11 +941,49 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
         return user.value()->id;
     }
 
-    // Fetch Actor
-    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(uri));
+    // Fetch Actor with signed GET
+    auto root_url_res = mw::URL::fromStr(Config::get().server_url_root);
+    if (!root_url_res) return std::unexpected(root_url_res.error());
+    std::string system_uri = root_url_res->str();
+    if (system_uri.back() == '/') system_uri.pop_back();
+
+    auto sys_actor_res = db->getUserByUri(system_uri);
+    if (!sys_actor_res || !sys_actor_res.value()) return std::unexpected(mw::runtimeError("System actor not found"));
+    auto sys_actor = *sys_actor_res.value();
+
+    auto url_res = mw::URL::fromStr(uri);
+    if (!url_res) return std::unexpected(url_res.error());
+    auto url = *url_res;
+
+    std::string path = url.path();
+    if (path.empty()) path = "/";
+    if (!url.query().empty()) path += "?" + url.query();
+
+    std::string date = http_utils::getHttpDate();
+    std::string host = url.host();
+    if (url.port() != "80" && url.port() != "443" && !url.port().empty()) host += ":" + url.port();
+
+    std::string to_sign = "(request-target): get " + path + "\n" +
+                          "host: " + host + "\n" +
+                          "date: " + date;
+
+    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, *sys_actor.private_key, to_sign);
+    if (!sig_bytes) return std::unexpected(sig_bytes.error());
+    std::string signature = mw::base64Encode(*sig_bytes);
+
+    std::string key_id = system_uri + "#main-key";
+    std::string sig_header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\",headers=\"(request-target) host date\",signature=\"" + signature + "\"";
+
+    mw::HTTPRequest req(uri);
+    req.addHeader("Host", host);
+    req.addHeader("Date", date);
+    req.addHeader("Signature", sig_header);
+    req.addHeader("Accept", "application/activity+json");
+
+    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(req));
     if(res_ptr->status != 200)
     {
-        return std::unexpected(mw::httpError(502, "Failed to fetch remote actor"));
+        return std::unexpected(mw::httpError(502, "Failed to fetch remote actor: " + std::to_string(res_ptr->status)));
     }
 
     nlohmann::json j;
@@ -923,7 +1001,7 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
     u.username = j["preferredUsername"];
     u.display_name = j.value("name", "");
     u.bio = j.value("summary", "");
-    u.created_at = mw::timeToSeconds(mw::Clock::now()); // Approximate
+    u.created_at = mw::timeToSeconds(mw::Clock::now()); 
     
     if(j.contains("publicKey") && j["publicKey"].contains("publicKeyPem"))
     {
@@ -945,10 +1023,10 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
         u.shared_inbox = json_ld::getId(j["endpoints"], "sharedInbox");
     }
 
-    auto url = mw::URL::fromStr(uri);
-    if(url)
+    auto url_host = mw::URL::fromStr(uri);
+    if(url_host)
     {
-        u.host = url->host();
+        u.host = url_host->host();
     }
 
     return db->createUser(u);

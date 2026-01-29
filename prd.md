@@ -47,10 +47,11 @@ Basically just standard micro blog features.
   remote actor, and stored in the database. Locally-generated keys are
   stored in the database. Local user’s public keys are served as part
   of the Actor JSON object. All incoming requests should be verified.
-  See
-  https://www.ietf.org/archive/id/draft-ietf-httpbis-message-signatures-04.html
-  for details. Also follow
-  https://swicg.github.io/activitypub-http-signature/.
+  See https://swicg.github.io/activitypub-http-signature/ for details.
+  The HTTP signature should follow
+  https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures .
+  Also assume that the incoming HTTP requests are signed with this
+  standard. Use hs2019 to sign.
 * Use [libmw](https://github.com/MetroWind/libmw) for HTTP server,
   HTTP queries, HTTP signing and verification, sqlite interfacing, and
   error handling. See example of usage in
@@ -171,3 +172,8 @@ Basically just standard micro blog features.
 * Database schema migration: Until the first stable release, the
   schema version will remain 1, so we don’t need to worry about
   migration for now.
+* Full compatibility + fallback logic for all HTTP signature standards
+  and algorithms. Standards are
+  [cavage-12](https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures)
+  and [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421.html).
+  Algorithms are RSA and ED25519.
