@@ -12,7 +12,10 @@
 class App : public mw::HTTPServer
 {
 public:
-    App(std::unique_ptr<DatabaseInterface> db, const mw::HTTPServer::ListenAddress& listen);
+    App(std::unique_ptr<DatabaseInterface> db, 
+        const mw::HTTPServer::ListenAddress& listen,
+        std::unique_ptr<mw::HTTPSessionInterface> http_client = nullptr,
+        std::unique_ptr<mw::CryptoInterface> crypto = nullptr);
     
     mw::E<void> run();
 
@@ -37,6 +40,8 @@ private:
     mw::E<std::optional<User>> resolveRemoteUser(const std::string& username, const std::string& domain);
     mw::E<void> sendFollowActivity(const User& follower, const User& target);
     mw::E<void> ensureSystemActor();
+    mw::E<nlohmann::json> fetchRemoteActor(const std::string& uri, const User& system_actor);
+    User parseRemoteActor(const nlohmann::json& j, const std::string& uri);
 
     std::unique_ptr<DatabaseInterface> db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;

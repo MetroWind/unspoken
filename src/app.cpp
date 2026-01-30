@@ -28,12 +28,16 @@ static std::string getCookie(const mw::HTTPServer::Request& req, const std::stri
 }
 
 App::App(std::unique_ptr<DatabaseInterface> database,
-         const mw::HTTPServer::ListenAddress& listen)
+         const mw::HTTPServer::ListenAddress& listen,
+         std::unique_ptr<mw::HTTPSessionInterface> http_client,
+         std::unique_ptr<mw::CryptoInterface> crypto)
     : mw::HTTPServer(listen), db(std::move(database))
 {
-    // inja_env.set_template_path("./templates/");
-    http_client = std::make_unique<mw::HTTPSession>();
-    crypto = std::make_unique<mw::Crypto>();
+    if (http_client) this->http_client = std::move(http_client);
+    else this->http_client = std::make_unique<mw::HTTPSession>();
+    
+    if (crypto) this->crypto = std::move(crypto);
+    else this->crypto = std::make_unique<mw::Crypto>();
     
     auto sig_db = std::make_unique<Database>(Config::get().db_path);
     if(auto res = sig_db->init(); !res)
@@ -941,7 +945,7 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
         return user.value()->id;
     }
 
-    // Fetch Actor with signed GET
+    // Fetch System Actor
     auto root_url_res = mw::URL::fromStr(Config::get().server_url_root);
     if (!root_url_res) return std::unexpected(root_url_res.error());
     std::string system_uri = root_url_res->str();
@@ -949,8 +953,15 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
 
     auto sys_actor_res = db->getUserByUri(system_uri);
     if (!sys_actor_res || !sys_actor_res.value()) return std::unexpected(mw::runtimeError("System actor not found"));
-    auto sys_actor = *sys_actor_res.value();
+    
+    ASSIGN_OR_RETURN(auto j, fetchRemoteActor(uri, *sys_actor_res.value()));
+    
+    User u = parseRemoteActor(j, uri);
+    return db->createUser(u);
+}
 
+mw::E<nlohmann::json> App::fetchRemoteActor(const std::string& uri, const User& system_actor)
+{
     auto url_res = mw::URL::fromStr(uri);
     if (!url_res) return std::unexpected(url_res.error());
     auto url = *url_res;
@@ -967,11 +978,11 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
                           "host: " + host + "\n" +
                           "date: " + date;
 
-    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, *sys_actor.private_key, to_sign);
+    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, *system_actor.private_key, to_sign);
     if (!sig_bytes) return std::unexpected(sig_bytes.error());
     std::string signature = mw::base64Encode(*sig_bytes);
 
-    std::string key_id = system_uri + "#main-key";
+    std::string key_id = system_actor.uri + "#main-key";
     std::string sig_header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\",headers=\"(request-target) host date\",signature=\"" + signature + "\"";
 
     mw::HTTPRequest req(uri);
@@ -986,16 +997,18 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
         return std::unexpected(mw::httpError(502, "Failed to fetch remote actor: " + std::to_string(res_ptr->status)));
     }
 
-    nlohmann::json j;
     try
     {
-        j = nlohmann::json::parse(res_ptr->payloadAsStr());
+        return nlohmann::json::parse(res_ptr->payloadAsStr());
     }
     catch(...)
     {
         return std::unexpected(mw::httpError(502, "Invalid JSON from remote actor"));
     }
+}
 
+User App::parseRemoteActor(const nlohmann::json& j, const std::string& uri)
+{
     User u;
     u.uri = uri;
     u.username = j["preferredUsername"];
@@ -1028,8 +1041,7 @@ mw::E<int64_t> App::ensureRemoteUser(const std::string& uri)
     {
         u.host = url_host->host();
     }
-
-    return db->createUser(u);
+    return u;
 }
 
 mw::E<void> App::handleCreate(const nlohmann::json& activity, const std::string& sender_id)

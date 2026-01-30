@@ -104,6 +104,7 @@ add_executable(unit_tests
   src/json_ld_test.cpp
   src/config_test.cpp
   src/app_test.cpp
+  src/app_remote_user_test.cpp
   src/database.cpp 
   src/config.cpp
   src/job_queue.cpp
