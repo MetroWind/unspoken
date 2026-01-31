@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(actpub VERSION 0.1.0 LANGUAGES CXX C)
+project(unspoken VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -115,16 +115,16 @@ FetchContent_MakeAvailable(googletest)
 set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp src/signature_verifier.cpp src/job_queue.cpp src/http_utils.cpp src/html_sanitizer.cpp)
 
 # Main Executable
-add_executable(actpub ${SOURCE_FILES})
-set_property(TARGET actpub PROPERTY CXX_STANDARD 23)
-set_property(TARGET actpub PROPERTY CXX_EXTENSIONS FALSE)
-target_link_libraries(actpub PRIVATE ${LIBS})
-target_compile_options(actpub PRIVATE -Wall -Wextra -Wpedantic)
-target_include_directories(actpub PRIVATE ${INCLUDES})
+add_executable(unspoken ${SOURCE_FILES})
+set_property(TARGET unspoken PROPERTY CXX_STANDARD 23)
+set_property(TARGET unspoken PROPERTY CXX_EXTENSIONS FALSE)
+target_link_libraries(unspoken PRIVATE ${LIBS})
+target_compile_options(unspoken PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(unspoken PRIVATE ${INCLUDES})
 
 # Tests
-add_executable(unit_tests 
-  src/database_test.cpp 
+add_executable(unit_tests
+  src/database_test.cpp
   src/job_queue_test.cpp
   src/signature_verifier_test.cpp
   src/signature_integration_test.cpp
@@ -134,7 +134,7 @@ add_executable(unit_tests
   src/app_remote_user_test.cpp
   src/app_secret_key_test.cpp
   src/html_sanitizer_test.cpp
-  src/database.cpp 
+  src/database.cpp
   src/config.cpp
   src/job_queue.cpp
   src/signature_verifier.cpp

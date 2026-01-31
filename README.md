@@ -1,4 +1,4 @@
-# ActPub Microblog Server
+# Unspoken Microblog Server
 
 A lightweight, high-performance ActivityPub microblogging server written in C++23.
 
@@ -41,7 +41,7 @@ Make sure to set `oidc_issuer_url`, `oidc_client_id`, and `oidc_secret` to valid
 ## Run
 
 ```bash
-./build/actpub
+./build/unspoken
 ```
 
 The server will start on the configured port (default 8080).

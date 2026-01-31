@@ -86,9 +86,12 @@ mw::E<void> App::run()
     
     if(!auth_res)
     {
-        return std::unexpected(auth_res.error());
+        spdlog::error("Failed to initialize OIDC: {}. Login will be disabled.", mw::errorMsg(auth_res.error()));
     }
-    auth = std::move(*auth_res);
+    else
+    {
+        auth = std::move(*auth_res);
+    }
 
     spdlog::info("Listening on {}:{}", root_url->host(), conf.port);
 
@@ -187,11 +190,24 @@ void App::handleIndex(const mw::HTTPServer::Request& req, mw::HTTPServer::Respon
 
 void App::handleAuthLogin(const mw::HTTPServer::Request&, mw::HTTPServer::Response& res)
 {
+    if(!auth)
+    {
+        res.status = 503;
+        res.set_content("Authentication service unavailable", "text/plain");
+        return;
+    }
     res.set_redirect(auth->initialURL());
 }
 
 void App::handleAuthCallback(const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res)
 {
+    if(!auth)
+    {
+        res.status = 503;
+        res.set_content("Authentication service unavailable", "text/plain");
+        return;
+    }
+
     if(!req.has_param("code"))
     {
         res.status = 400;
@@ -567,6 +583,8 @@ void App::handleSearch(const mw::HTTPServer::Request& req, mw::HTTPServer::Respo
     auto sess = getCurrentSession(req);
     nlohmann::json data;
     data["logged_in"] = sess.has_value();
+    data["result"] = nullptr;
+    data["q"] = "";
     if(sess)
     {
         auto user = db->getUserById(sess->user_id);
@@ -969,6 +987,16 @@ mw::E<void> App::ensureSystemActor()
 
     auto existing = db->getUserByUri(system_uri);
     if (existing && existing.value()) return {};
+
+    auto existing_by_name = db->getUserByUsername("__system__");
+    if (existing_by_name && existing_by_name.value())
+    {
+        User u = *existing_by_name.value();
+        u.uri = system_uri;
+        DO_OR_RETURN(db->updateUser(u));
+        spdlog::info("Updated system actor URI to: {}", system_uri);
+        return {};
+    }
 
     User u;
     u.username = "__system__";

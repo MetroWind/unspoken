@@ -162,3 +162,56 @@ TEST_F(AppTest, WebFinger_Found)
     app.stop();
     app.wait();
 }
+
+TEST_F(AppTest, SearchPage)
+{
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    auto* db_ptr = db_mock.get();
+
+    User u1;
+    u1.id = 1;
+    u1.username = "alice";
+    u1.display_name = "Alice";
+    u1.uri = "http://localhost:18080/u/alice";
+
+    EXPECT_CALL(*db_ptr, getUserByUsername("alice")).WillRepeatedly(Return(std::make_optional(u1)));
+    EXPECT_CALL(*db_ptr, getSession(_)).WillRepeatedly(Return(std::nullopt));
+
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 18080};
+    App app(std::move(db_mock), listen);
+    
+    auto start_res = app.start();
+    ASSERT_TRUE(start_res) << "Failed to start app: " << mw::errorMsg(start_res.error());
+
+    // Test 1: Search page load (no query)
+    {
+        mw::HTTPSession client;
+        auto res = client.get("http://localhost:18080/search");
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("<form action=\"/search\""));
+    }
+
+    // Test 2: Search with query finding local user
+    {
+        mw::HTTPSession client;
+        auto res = client.get("http://localhost:18080/search?q=alice");
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("Alice"));
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("@alice"));
+    }
+
+    // Test 3: Search with query not found
+    {
+        EXPECT_CALL(*db_ptr, getUserByUsername("bob")).WillRepeatedly(Return(std::nullopt));
+        mw::HTTPSession client;
+        auto res = client.get("http://localhost:18080/search?q=bob");
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("No results found for \"bob\""));
+    }
+    
+    app.stop();
+    app.wait();
+}

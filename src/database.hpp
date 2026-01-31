@@ -55,6 +55,10 @@ public:
     virtual mw::E<void> createSession(const Session& session) = 0;
     virtual mw::E<std::optional<Session>> getSession(const std::string& token) = 0;
     virtual mw::E<void> deleteSession(const std::string& token) = 0;
+
+    // System Config DAO
+    virtual mw::E<std::optional<std::string>> getSystemConfig(const std::string& key) = 0;
+    virtual mw::E<void> setSystemConfig(const std::string& key, const std::string& value) = 0;
 };
 
 class Database : public DatabaseInterface
@@ -104,6 +108,10 @@ public:
     mw::E<void> createSession(const Session& session) override;
     mw::E<std::optional<Session>> getSession(const std::string& token) override;
     mw::E<void> deleteSession(const std::string& token) override;
+
+    // System Config DAO
+    mw::E<std::optional<std::string>> getSystemConfig(const std::string& key) override;
+    mw::E<void> setSystemConfig(const std::string& key, const std::string& value) override;
 
 private:
     std::string db_path;

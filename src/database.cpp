@@ -132,6 +132,11 @@ mw::E<void> Database::migrate()
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );)",
 
+            R"(CREATE TABLE IF NOT EXISTS system_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );)",
+
             "PRAGMA user_version = 1;"
         };
 
@@ -472,7 +477,6 @@ mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(target_id));
     
-    using R = std::vector<UserTuple>;
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
                                           std::string,
                                           std::optional<std::string>,
@@ -609,5 +613,27 @@ mw::E<void> Database::deleteSession(const std::string& token)
     const char* sql = "DELETE FROM sessions WHERE token = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(token));
+    return db->execute(std::move(stmt));
+}
+
+mw::E<std::optional<std::string>> Database::getSystemConfig(const std::string& key)
+{
+    const char* sql = "SELECT value FROM system_config WHERE key = ?;";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(key));
+    ASSIGN_OR_RETURN(auto rows, db->eval<std::string>(std::move(stmt)));
+    
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
+    return std::get<0>(rows[0]);
+}
+
+mw::E<void> Database::setSystemConfig(const std::string& key, const std::string& value)
+{
+    const char* sql = "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?);";
+    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
+    DO_OR_RETURN(stmt.bind(key, value));
     return db->execute(std::move(stmt));
 }

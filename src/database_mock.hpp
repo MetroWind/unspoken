@@ -30,4 +30,7 @@ public:
     MOCK_METHOD(mw::E<void>, createSession, (const Session&), (override));
     MOCK_METHOD(mw::E<std::optional<Session>>, getSession, (const std::string&), (override));
     MOCK_METHOD(mw::E<void>, deleteSession, (const std::string&), (override));
+
+    MOCK_METHOD(mw::E<std::optional<std::string>>, getSystemConfig, (const std::string&), (override));
+    MOCK_METHOD(mw::E<void>, setSystemConfig, (const std::string&, const std::string&), (override));
 };
