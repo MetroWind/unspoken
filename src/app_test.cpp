@@ -11,6 +11,7 @@
 using ::testing::_;
 using ::testing::Return;
 using ::testing::NiceMock;
+using ::testing::HasSubstr;
 
 class AppTest : public ::testing::Test {
 protected:
@@ -19,16 +20,9 @@ protected:
         Config::get().posts_per_page = 20;
         Config::get().db_path = ":memory:";
         Config::get().port = 18080;
-
-        // Create dummy templates
-        std::filesystem::create_directories("templates");
-        std::ofstream("templates/index.html") << "Index Page";
-        std::ofstream("templates/profile.html") << "Profile Page";
-        std::ofstream("templates/search.html") << "Search Page";
     }
 
     void TearDown() override {
-        std::filesystem::remove_all("templates");
     }
 };
 
@@ -64,7 +58,8 @@ TEST_F(AppTest, IndexPage) {
         auto res = client.get("http://localhost:18080/");
         ASSERT_TRUE(res.has_value());
         EXPECT_EQ((*res)->status, 200);
-        EXPECT_EQ((*res)->payloadAsStr(), "Index Page");
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("Alice"));
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("<p>Hello</p>"));
     }
     
     app.stop();
@@ -78,6 +73,7 @@ TEST_F(AppTest, UserProfile) {
     User u1;
     u1.id = 1;
     u1.username = "alice";
+    u1.display_name = "Alice";
     u1.uri = "http://localhost:18080/u/alice";
 
     EXPECT_CALL(*db_ptr, getUserByUsername("alice")).WillRepeatedly(Return(std::make_optional(u1)));
@@ -95,7 +91,7 @@ TEST_F(AppTest, UserProfile) {
         auto res = client.get("http://localhost:18080/u/alice");
         ASSERT_TRUE(res.has_value());
         EXPECT_EQ((*res)->status, 200);
-        EXPECT_EQ((*res)->payloadAsStr(), "Profile Page");
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("Alice"));
     }
     
     app.stop();
