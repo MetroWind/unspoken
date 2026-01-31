@@ -1172,8 +1172,12 @@ void App::render(mw::HTTPServer::Response& res, const std::string& template_name
 {
     try
     {
+        nlohmann::json view_data = data;
+        view_data["site_name"] = Config::get().nodeinfo.name;
+        view_data["site_description"] = Config::get().nodeinfo.description;
+
         std::filesystem::path path = std::filesystem::path(Config::get().data_dir) / "templates" / template_name;
-        res.set_content(inja_env.render_file(path.string(), data), "text/html");
+        res.set_content(inja_env.render_file(path.string(), view_data), "text/html");
     }
     catch(const std::exception& e)
     {

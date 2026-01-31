@@ -20,6 +20,7 @@ protected:
         Config::get().posts_per_page = 20;
         Config::get().db_path = ":memory:";
         Config::get().port = 18080;
+        Config::get().nodeinfo.name = "TestNode";
     }
 
     void TearDown() override {
