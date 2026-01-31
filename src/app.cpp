@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "json_ld.hpp"
 #include "http_utils.hpp"
+#include "html_sanitizer.hpp"
 #include <mw/http_client.hpp>
 #include <mw/url.hpp>
 #include <mw/crypto.hpp>
@@ -119,9 +120,24 @@ void App::setup()
         }
         
         data["posts"] = nlohmann::json::array();
-        auto posts_res = db->getPublicTimeline(20, 0);
+        
+        int page = 1;
+        if(req.has_param("page")) try { page = std::stoi(req.get_param_value("page")); } catch(...) {}
+        if(page < 1) page = 1;
+        int limit = Config::get().posts_per_page;
+        int offset = (page - 1) * limit;
+
+        auto posts_res = db->getPublicTimeline(limit + 1, offset);
+        bool has_next = false;
+
         if(posts_res)
         {
+            if(posts_res->size() > static_cast<size_t>(limit))
+            {
+                has_next = true;
+                posts_res->pop_back();
+            }
+
             for(const auto& p : *posts_res)
             {
                 nlohmann::json pj;
@@ -142,6 +158,10 @@ void App::setup()
                 data["posts"].push_back(pj);
             }
         }
+        
+        data["page"] = page;
+        data["has_next"] = has_next;
+        data["has_prev"] = page > 1;
 
         render(res, "index.html", data);
     });
@@ -625,7 +645,14 @@ void App::setup()
         }
 
         auto sess = getCurrentSession(req);
-        auto posts_res = db->getUserPosts(target.id, 20, 0);
+
+        int page = 1;
+        if(req.has_param("page")) try { page = std::stoi(req.get_param_value("page")); } catch(...) {}
+        if(page < 1) page = 1;
+        int limit = Config::get().posts_per_page;
+        int offset = (page - 1) * limit;
+
+        auto posts_res = db->getUserPosts(target.id, limit + 1, offset);
         
         nlohmann::json data;
         data["user"]["display_name"] = target.display_name;
@@ -641,8 +668,15 @@ void App::setup()
         if(sess) data["csrf_token"] = sess->csrf_token;
 
         data["posts"] = nlohmann::json::array();
+        bool has_next = false;
         if(posts_res)
         {
+            if(posts_res->size() > static_cast<size_t>(limit))
+            {
+                has_next = true;
+                posts_res->pop_back();
+            }
+
             for(const auto& p : *posts_res)
             {
                 nlohmann::json pj;
@@ -651,6 +685,10 @@ void App::setup()
                 data["posts"].push_back(pj);
             }
         }
+        
+        data["page"] = page;
+        data["has_next"] = has_next;
+        data["has_prev"] = page > 1;
 
         render(res, "profile.html", data);
     });
@@ -775,6 +813,8 @@ mw::E<void> App::createPost(const User& author, const std::string& content)
     macrodown::MacroDown md;
     auto tree = md.parse(content);
     std::string html = md.render(*tree);
+    
+    html = HtmlSanitizer::sanitize(html);
 
     Post p;
     p.author_id = author.id;
@@ -1054,7 +1094,7 @@ mw::E<void> App::handleCreate(const nlohmann::json& activity, const std::string&
     Post p;
     p.uri = json_ld::getId(object, "id");
     p.author_id = author_id;
-    p.content_html = object.value("content", "");
+    p.content_html = HtmlSanitizer::sanitize(object.value("content", ""));
     p.content_source = ""; // Remote posts usually don't have source
     p.visibility = Visibility::PUBLIC; // Simplified for now
     

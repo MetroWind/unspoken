@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(actpub VERSION 0.1.0 LANGUAGES CXX)
+project(actpub VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -46,6 +46,12 @@ FetchContent_Declare(
     GIT_TAG master
 )
 
+FetchContent_Declare(
+  gumbo
+  GIT_REPOSITORY https://github.com/google/gumbo-parser.git
+  GIT_TAG master
+)
+
 set(SPDLOG_USE_STD_FORMAT ON)
 set(LIBMW_BUILD_URL ON)
 set(LIBMW_BUILD_SQLITE ON)
@@ -54,6 +60,25 @@ set(LIBMW_BUILD_CRYPTO ON)
 set(INJA_USE_EMBEDDED_JSON FALSE)
 set(INJA_BUILD_TESTS FALSE)
 FetchContent_MakeAvailable(libmw ryml spdlog cxxopts json inja macrodown)
+
+FetchContent_GetProperties(gumbo)
+if(NOT gumbo_POPULATED)
+  FetchContent_Populate(gumbo)
+  add_library(gumbo STATIC
+    ${gumbo_SOURCE_DIR}/src/attribute.c
+    ${gumbo_SOURCE_DIR}/src/char_ref.c
+    ${gumbo_SOURCE_DIR}/src/error.c
+    ${gumbo_SOURCE_DIR}/src/parser.c
+    ${gumbo_SOURCE_DIR}/src/string_buffer.c
+    ${gumbo_SOURCE_DIR}/src/string_piece.c
+    ${gumbo_SOURCE_DIR}/src/tag.c
+    ${gumbo_SOURCE_DIR}/src/tokenizer.c
+    ${gumbo_SOURCE_DIR}/src/utf8.c
+    ${gumbo_SOURCE_DIR}/src/util.c
+    ${gumbo_SOURCE_DIR}/src/vector.c
+  )
+  target_include_directories(gumbo PUBLIC ${gumbo_SOURCE_DIR}/src)
+endif()
 
 # OpenSSL
 find_package(OpenSSL REQUIRED)
@@ -65,6 +90,7 @@ set(INCLUDES
   ${libmw_SOURCE_DIR}/includes
   ${json_SOURCE_DIR}/single_include
   ${inja_SOURCE_DIR}/include
+  ${gumbo_SOURCE_DIR}/src
 )
 set(LIBS
   cxxopts
@@ -76,6 +102,7 @@ set(LIBS
   ryml::ryml
   spdlog::spdlog
   MacroDown::MacroDown
+  gumbo
 )
 
 FetchContent_Declare(
@@ -85,7 +112,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
-set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp src/signature_verifier.cpp src/job_queue.cpp src/http_utils.cpp)
+set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp src/signature_verifier.cpp src/job_queue.cpp src/http_utils.cpp src/html_sanitizer.cpp)
 
 # Main Executable
 add_executable(actpub ${SOURCE_FILES})
@@ -105,6 +132,7 @@ add_executable(unit_tests
   src/config_test.cpp
   src/app_test.cpp
   src/app_remote_user_test.cpp
+  src/html_sanitizer_test.cpp
   src/database.cpp 
   src/config.cpp
   src/job_queue.cpp
@@ -112,6 +140,7 @@ add_executable(unit_tests
   src/json_ld.cpp
   src/app.cpp
   src/http_utils.cpp
+  src/html_sanitizer.cpp
 )
 set_property(TARGET unit_tests PROPERTY CXX_STANDARD 23)
 target_link_libraries(unit_tests PRIVATE ${LIBS} GTest::gtest_main GTest::gmock)

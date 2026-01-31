@@ -16,6 +16,7 @@ struct Config
     std::string oidc_client_id;
     std::string oidc_secret;
     std::string secret_key;
+    int posts_per_page = 20;
     NodeInfoConfig nodeinfo;
 
     static Config& get();

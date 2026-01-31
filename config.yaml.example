@@ -1,10 +1,26 @@
-server_url_root: "http://localhost"
+# Server Configuration
+
+# The public URL of the server (without trailing slash)
+server_url_root: "http://localhost:8080"
+
+# Port to listen on
 port: 8080
+
+# Path to the SQLite database file
 db_path: "actpub.db"
+
+# Number of posts to show per page in timeline and profile
+posts_per_page: 20
+
+# OpenID Connect Configuration (for login)
 oidc_issuer_url: "https://keycloak.example.com/realms/myrealm"
 oidc_client_id: "change_me"
 oidc_secret: "change_me"
+
+# Secret key for session signing (Generate a long random string)
 secret_key: "change_me_random_string"
+
+# NodeInfo Metadata
 nodeinfo:
   name: "ActPub Microblog"
   description: "A C++ ActivityPub Server"

@@ -58,6 +58,10 @@ void Config::load(const std::string& path)
     {
         root["secret_key"] >> secret_key;
     }
+    if(root.has_child("posts_per_page"))
+    {
+        root["posts_per_page"] >> posts_per_page;
+    }
 
     if(root.has_child("nodeinfo"))
     {
