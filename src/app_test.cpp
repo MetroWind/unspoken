@@ -13,9 +13,11 @@ using ::testing::Return;
 using ::testing::NiceMock;
 using ::testing::HasSubstr;
 
-class AppTest : public ::testing::Test {
+class AppTest : public ::testing::Test
+{
 protected:
-    void SetUp() override {
+    void SetUp() override
+    {
         Config::get().server_url_root = "http://localhost:18080";
         Config::get().posts_per_page = 20;
         Config::get().db_path = ":memory:";
@@ -23,11 +25,13 @@ protected:
         Config::get().nodeinfo.name = "TestNode";
     }
 
-    void TearDown() override {
+    void TearDown() override
+    {
     }
 };
 
-TEST_F(AppTest, IndexPage) {
+TEST_F(AppTest, IndexPage)
+{
     auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
     auto* db_ptr = db_mock.get();
 
@@ -67,7 +71,8 @@ TEST_F(AppTest, IndexPage) {
     app.wait();
 }
 
-TEST_F(AppTest, UserProfile) {
+TEST_F(AppTest, UserProfile)
+{
     auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
     auto* db_ptr = db_mock.get();
 
@@ -99,7 +104,8 @@ TEST_F(AppTest, UserProfile) {
     app.wait();
 }
 
-TEST_F(AppTest, PostCreation_Unauthorized) {
+TEST_F(AppTest, PostCreation_Unauthorized)
+{
     auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
     
     mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 18080};
@@ -123,7 +129,8 @@ TEST_F(AppTest, PostCreation_Unauthorized) {
     app.wait();
 }
 
-TEST_F(AppTest, WebFinger_Found) {
+TEST_F(AppTest, WebFinger_Found)
+{
     auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
     auto* db_ptr = db_mock.get();
 

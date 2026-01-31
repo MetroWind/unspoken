@@ -1242,3 +1242,30 @@ std::string App::generateToken()
     for(int i = 0; i < 32; i++) s += charset[dis(gen)];
     return s;
 }
+
+void App::initSecretKey(DatabaseInterface& db)
+{
+    if(!Config::get().secret_key.empty())
+    {
+        spdlog::info("Using secret key from config file");
+    }
+    else
+    {
+        auto key_res = db.getSystemConfig("secret_key");
+        if(key_res && key_res.value())
+        {
+             Config::get().secret_key = *key_res.value();
+             spdlog::info("Using secret key from database");
+        }
+        else
+        {
+             std::string new_key = App::generateToken();
+             Config::get().secret_key = new_key;
+             if(auto set_res = db.setSystemConfig("secret_key", new_key); !set_res)
+             {
+                 spdlog::error("Failed to save secret key: {}", mw::errorMsg(set_res.error()));
+             }
+             spdlog::info("Generated new secret key and stored in database");
+        }
+    }
+}

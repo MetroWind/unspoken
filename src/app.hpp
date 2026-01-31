@@ -84,6 +84,12 @@ public:
     /// Handles follow requests.
     /// Creates a local follow record and sends a Follow activity.
     void handleApiFollow(const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res);
+    
+    static std::string generateToken();
+    
+    /// Initializes the secret key.
+    /// Checks Config, then Database, then generates a new one.
+    static void initSecretKey(DatabaseInterface& db);
 
 protected:
     void setup() override;
@@ -95,7 +101,6 @@ private:
     std::optional<User> getCurrentUser(const mw::HTTPServer::Request& req);
     std::optional<Session> getCurrentSession(const mw::HTTPServer::Request& req);
     bool checkCSRF(const mw::HTTPServer::Request& req);
-    std::string generateToken();
     mw::E<void> processActivity(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<void> handleCreate(const nlohmann::json& activity, const std::string& sender_id);
     mw::E<void> handleFollow(const nlohmann::json& activity, const std::string& sender_id);

@@ -32,6 +32,8 @@ int main()
     spdlog::info("Database initialized successfully at {}",
                  Config::get().db_path);
 
+    App::initSecretKey(*db);
+
     mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{
         "0.0.0.0", Config::get().port
     };

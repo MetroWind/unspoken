@@ -132,6 +132,7 @@ add_executable(unit_tests
   src/config_test.cpp
   src/app_test.cpp
   src/app_remote_user_test.cpp
+  src/app_secret_key_test.cpp
   src/html_sanitizer_test.cpp
   src/database.cpp 
   src/config.cpp
