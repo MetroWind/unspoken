@@ -104,7 +104,9 @@ mw::E<void> App::run()
 
 void App::setup()
 {
-    server.set_mount_point("/uploads", "./uploads");
+    std::filesystem::path upload_path = std::filesystem::path(Config::get().data_dir) / "uploads";
+    std::filesystem::create_directories(upload_path); // Ensure it exists
+    server.set_mount_point("/uploads", upload_path.string());
 
     server.Get("/", [this](const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res) { handleIndex(req, res); });
     server.Get("/auth/login", [this](const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res) { handleAuthLogin(req, res); });
@@ -409,7 +411,7 @@ void App::handleNodeInfo2(const mw::HTTPServer::Request&, mw::HTTPServer::Respon
     const auto& conf = Config::get();
     nlohmann::json j;
     j["version"] = "2.0";
-    j["software"]["name"] = "actpub";
+    j["software"]["name"] = "unspoken";
     j["software"]["version"] = "0.1.0";
     j["protocols"] = {"activitypub"};
     j["services"]["outbound"] = nlohmann::json::array();
@@ -912,7 +914,7 @@ mw::E<std::string> App::handleUpload(const mw::HTTPServer::Request& req,
                hash.substr(0,1) + "/" + hash + ext;
     }
 
-    std::filesystem::path upload_dir = "uploads";
+    std::filesystem::path upload_dir = std::filesystem::path(Config::get().data_dir) / "uploads";
     upload_dir /= hash.substr(0, 1);
     std::filesystem::create_directories(upload_dir);
     
@@ -1170,8 +1172,8 @@ void App::render(mw::HTTPServer::Response& res, const std::string& template_name
 {
     try
     {
-        std::string path = "./templates/" + template_name;
-        res.set_content(inja_env.render_file(path, data), "text/html");
+        std::filesystem::path path = std::filesystem::path(Config::get().data_dir) / "templates" / template_name;
+        res.set_content(inja_env.render_file(path.string(), data), "text/html");
     }
     catch(const std::exception& e)
     {

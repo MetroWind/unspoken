@@ -11,6 +11,7 @@ struct Config
 {
     std::string server_url_root;
     int port;
+    std::string data_dir = ".";
     std::string db_path;
     std::string oidc_issuer_url;
     std::string oidc_client_id;

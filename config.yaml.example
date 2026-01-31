@@ -6,8 +6,9 @@ server_url_root: "http://localhost:8080"
 # Port to listen on
 port: 8080
 
-# Path to the SQLite database file
-db_path: "actpub.db"
+# Directory for data (database, uploads, templates)
+# Defaults to current directory if not set
+data_dir: "."
 
 # Number of posts to show per page in timeline and profile
 posts_per_page: 20
@@ -22,5 +23,5 @@ secret_key: "change_me_random_string"
 
 # NodeInfo Metadata
 nodeinfo:
-  name: "ActPub Microblog"
+  name: "Unspoken Microblog"
   description: "A C++ ActivityPub Server"

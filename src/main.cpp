@@ -8,7 +8,7 @@
 int main()
 {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
-    spdlog::info("ActPub server starting...");
+    spdlog::info("Unspoken server starting...");
 
     try
     {

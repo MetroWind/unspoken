@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iostream>
 #include <stdexcept>
+#include <filesystem>
 #include <ryml.hpp>
 #include <ryml_std.hpp>
 
@@ -38,10 +39,14 @@ void Config::load(const std::string& path)
     {
         root["port"] >> port;
     }
-    if(root.has_child("db_path"))
+    
+    if(root.has_child("data_dir"))
     {
-        root["db_path"] >> db_path;
+        root["data_dir"] >> data_dir;
     }
+
+    db_path = (std::filesystem::path(data_dir) / "unspoken.db").string();
+
     if(root.has_child("oidc_issuer_url"))
     {
         root["oidc_issuer_url"] >> oidc_issuer_url;
