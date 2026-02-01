@@ -68,12 +68,7 @@ App::App(std::unique_ptr<DatabaseInterface> database,
     }
     else
     {
-        auto job_db = std::make_unique<Database>(Config::get().db_path);
-        if(auto res = job_db->init(); !res)
-        {
-            spdlog::error("Failed to init JobQueue database: {}", mw::errorMsg(res.error()));
-        }
-        this->job_queue = std::make_unique<JobQueue>(std::move(job_db), std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
+        this->job_queue = std::make_unique<JobQueue>(*this->db, std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
     }
 }
 

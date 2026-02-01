@@ -121,6 +121,6 @@ TEST_F(SignatureIntegrationTest, OutgoingSignatureGeneration) {
         return &mock_res;
     }));
 
-    TestJobQueue tjq(std::move(d2), std::move(h2), std::make_unique<mw::Crypto>());
+    TestJobQueue tjq(*d2, std::move(h2), std::make_unique<mw::Crypto>());
     tjq.deliverActivity(job);
 }

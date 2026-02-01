@@ -21,15 +21,12 @@ protected:
         test_db = std::make_unique<Database>(db_path);
         test_db->init();
 
-        auto jq_db = std::make_unique<Database>(db_path);
-        jq_db->init();
-
         auto h = std::make_unique<NiceMock<mw::HTTPSessionMock>>();
         http_mock = h.get();
         auto c = std::make_unique<NiceMock<mw::CryptoMock>>();
         crypto_mock = c.get();
 
-        jq = std::make_unique<JobQueue>(std::move(jq_db), std::move(h), std::move(c));
+        jq = std::make_unique<JobQueue>(*test_db, std::move(h), std::move(c));
     }
 
     void TearDown() override {

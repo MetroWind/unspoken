@@ -7,10 +7,10 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 
-JobQueue::JobQueue(std::unique_ptr<DatabaseInterface> db,
+JobQueue::JobQueue(DatabaseInterface& db,
                    std::unique_ptr<mw::HTTPSessionInterface> http_client,
                    std::unique_ptr<mw::CryptoInterface> crypto)
-    : db(std::move(db)), http_client(std::move(http_client)), crypto(std::move(crypto))
+    : db(db), http_client(std::move(http_client)), crypto(std::move(crypto))
 {
 }
 
@@ -43,7 +43,7 @@ void JobQueue::workerLoop()
 {
     while(running)
     {
-        auto jobs_res = db->getPendingJobs(10);
+        auto jobs_res = db.getPendingJobs(10);
         if(!jobs_res)
         {
             spdlog::error("Failed to fetch pending jobs: {}", 
@@ -71,7 +71,7 @@ void JobQueue::workerLoop()
 void JobQueue::processJob(const Job& job)
 {
     // Mark as processing
-    db->updateJob(job.id, 1, job.attempts, job.next_try);
+    db.updateJob(job.id, 1, job.attempts, job.next_try);
 
     try
     {
@@ -83,12 +83,12 @@ void JobQueue::processJob(const Job& job)
         {
             spdlog::warn("Unknown job type: {}", job.type);
             // Mark as failed permanently? Or just delete.
-            db->deleteJob(job.id);
+            db.deleteJob(job.id);
             return;
         }
 
         // Success
-        db->deleteJob(job.id);
+        db.deleteJob(job.id);
     }
     catch(const std::exception& e)
     {
@@ -98,14 +98,14 @@ void JobQueue::processJob(const Job& job)
         int attempts = job.attempts + 1;
         if(attempts >= 5)
         {
-            db->updateJob(job.id, 2, attempts, job.next_try); // Failed
+            db.updateJob(job.id, 2, attempts, job.next_try); // Failed
         }
         else
         {
             // Exponential backoff
             int64_t delay = 60 * (1 << (attempts - 1));
             int64_t next = mw::timeToSeconds(mw::Clock::now()) + delay;
-            db->updateJob(job.id, 0, attempts, next);
+            db.updateJob(job.id, 0, attempts, next);
         }
     }
 }
@@ -118,7 +118,7 @@ void JobQueue::deliverActivity(const Job& job)
     std::string sender_uri = payload["sender_uri"];
 
     // Retrieve sender keys
-    auto user_res = db->getUserByUri(sender_uri);
+    auto user_res = db.getUserByUri(sender_uri);
     if(!user_res || !user_res.value())
     {
         throw std::runtime_error("Sender not found: " + sender_uri);

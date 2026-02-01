@@ -13,7 +13,7 @@
 class JobQueue
 {
 public:
-    JobQueue(std::unique_ptr<DatabaseInterface> db,
+    JobQueue(DatabaseInterface& db,
              std::unique_ptr<mw::HTTPSessionInterface> http_client,
              std::unique_ptr<mw::CryptoInterface> crypto);
     ~JobQueue();
@@ -28,7 +28,7 @@ protected:
 private:
     void workerLoop();
 
-    std::unique_ptr<DatabaseInterface> db;
+    DatabaseInterface& db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
     std::unique_ptr<mw::CryptoInterface> crypto;
     std::thread worker_thread;
