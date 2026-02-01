@@ -128,6 +128,10 @@ void App::setup()
     std::filesystem::create_directories(upload_path); // Ensure it exists
     server.set_mount_point("/uploads", upload_path.string());
 
+    std::filesystem::path static_path = std::filesystem::path(Config::get().data_dir) / "static";
+    std::filesystem::create_directories(static_path);
+    server.set_mount_point("/static", static_path.string());
+
     server.Get("/", [this](const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res) { handleIndex(req, res); });
     server.Get("/auth/login", [this](const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res) { handleAuthLogin(req, res); });
     server.Get("/auth/callback", [this](const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res) { handleAuthCallback(req, res); });

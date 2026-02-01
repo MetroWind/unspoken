@@ -3,11 +3,10 @@
 {% block title %}Setup Username - ActPub{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">Setup your username</div>
-            <div class="card-body">
+<div class="centered-form">
+    <div class="card">
+        <div class="card-header">Setup your username</div>
+        <div class="card-body">
                 <form action="/auth/setup_username" method="POST">
                     <div class="mb-3">
                         <label for="username" class="form-label">Username</label>
@@ -19,6 +18,5 @@
                 </form>
             </div>
         </div>
-    </div>
 </div>
 {% endblock %}
