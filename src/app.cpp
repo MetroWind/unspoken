@@ -31,7 +31,9 @@ static std::string getCookie(const mw::HTTPServer::Request& req, const std::stri
 App::App(std::unique_ptr<DatabaseInterface> database,
          const mw::HTTPServer::ListenAddress& listen,
          std::unique_ptr<mw::HTTPSessionInterface> http_client,
-         std::unique_ptr<mw::CryptoInterface> crypto)
+         std::unique_ptr<mw::CryptoInterface> crypto,
+         std::unique_ptr<SignatureVerifier> sig_verifier,
+         std::unique_ptr<JobQueue> job_queue)
     : mw::HTTPServer(listen), db(std::move(database))
 {
     if (http_client) this->http_client = std::move(http_client);
@@ -40,24 +42,38 @@ App::App(std::unique_ptr<DatabaseInterface> database,
     if (crypto) this->crypto = std::move(crypto);
     else this->crypto = std::make_unique<mw::Crypto>();
     
-    auto sig_db = std::make_unique<Database>(Config::get().db_path);
-    if(auto res = sig_db->init(); !res)
+    if (sig_verifier)
     {
-        spdlog::error("Failed to init SignatureVerifier database: {}", mw::errorMsg(res.error()));
+        this->sig_verifier = std::move(sig_verifier);
     }
-    
-    auto system_url_res = mw::URL::fromStr(Config::get().server_url_root);
-    std::string system_actor_uri = system_url_res ? system_url_res->str() : "";
-    if (system_actor_uri.back() == '/') system_actor_uri.pop_back();
+    else
+    {
+        auto sig_db = std::make_unique<Database>(Config::get().db_path);
+        if(auto res = sig_db->init(); !res)
+        {
+            spdlog::error("Failed to init SignatureVerifier database: {}", mw::errorMsg(res.error()));
+        }
+        
+        auto system_url_res = mw::URL::fromStr(Config::get().server_url_root);
+        std::string system_actor_uri = system_url_res ? system_url_res->str() : "";
+        if (system_actor_uri.back() == '/') system_actor_uri.pop_back();
 
-    sig_verifier = std::make_unique<SignatureVerifier>(std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>(), std::move(sig_db), system_actor_uri);
-    
-    auto job_db = std::make_unique<Database>(Config::get().db_path);
-    if(auto res = job_db->init(); !res)
-    {
-        spdlog::error("Failed to init JobQueue database: {}", mw::errorMsg(res.error()));
+        this->sig_verifier = std::make_unique<SignatureVerifier>(std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>(), std::move(sig_db), system_actor_uri);
     }
-    job_queue = std::make_unique<JobQueue>(std::move(job_db), std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
+    
+    if (job_queue)
+    {
+        this->job_queue = std::move(job_queue);
+    }
+    else
+    {
+        auto job_db = std::make_unique<Database>(Config::get().db_path);
+        if(auto res = job_db->init(); !res)
+        {
+            spdlog::error("Failed to init JobQueue database: {}", mw::errorMsg(res.error()));
+        }
+        this->job_queue = std::make_unique<JobQueue>(std::move(job_db), std::make_unique<mw::HTTPSession>(), std::make_unique<mw::Crypto>());
+    }
 }
 
 mw::E<void> App::run()
@@ -266,7 +282,9 @@ void App::handleAuthSetupUsername(const mw::HTTPServer::Request& req, mw::HTTPSe
         res.set_redirect("/auth/login");
         return;
     }
-    render(res, "setup_username.html", {});
+    nlohmann::json data;
+    data["logged_in"] = false;
+    render(res, "setup_username.html", data);
 }
 
 void App::handleAuthSetupUsernamePost(const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res)

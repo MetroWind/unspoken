@@ -15,7 +15,9 @@ public:
     App(std::unique_ptr<DatabaseInterface> db, 
         const mw::HTTPServer::ListenAddress& listen,
         std::unique_ptr<mw::HTTPSessionInterface> http_client = nullptr,
-        std::unique_ptr<mw::CryptoInterface> crypto = nullptr);
+        std::unique_ptr<mw::CryptoInterface> crypto = nullptr,
+        std::unique_ptr<SignatureVerifier> sig_verifier = nullptr,
+        std::unique_ptr<JobQueue> job_queue = nullptr);
     
     mw::E<void> run();
 
