@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 
 static std::string getCookie(const mw::HTTPServer::Request& req, const std::string& name)
 {
@@ -819,11 +820,51 @@ mw::E<void> App::sendFollowActivity(const User& follower, const User& target)
     return db->enqueueJob(j).transform([](auto){});
 }
 
+mw::E<std::string> App::getWebFingerUrl(const std::string& domain, const std::string& resource)
+{
+    // Try host-meta first
+    std::string host_meta_url = "https://" + domain + "/.well-known/host-meta";
+    auto res_ptr_res = http_client->get(host_meta_url);
+    
+    if(res_ptr_res && (*res_ptr_res)->status == 200)
+    {
+        std::string payload( (*res_ptr_res)->payloadAsStr() );
+        std::regex link_regex("<Link[^>]+>");
+        auto words_begin = std::sregex_iterator(payload.begin(), payload.end(), link_regex);
+        auto words_end = std::sregex_iterator();
+
+        for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+            std::string tag = i->str();
+            if (tag.find("rel=\"lrdd\"") != std::string::npos) {
+                std::regex template_regex("template=\"([^\"]*)\"");
+                std::smatch match;
+                if (std::regex_search(tag, match, template_regex)) {
+                    std::string tmpl = match[1];
+                    // Replace {uri} with encoded resource
+                    std::string encoded_resource = mw::URL::encode(resource);
+                    size_t pos = tmpl.find("{uri}");
+                    if (pos != std::string::npos) {
+                        tmpl.replace(pos, 5, encoded_resource);
+                        return tmpl;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback
+    return "https://" + domain + "/.well-known/webfinger?resource=" + mw::URL::encode(resource);
+}
+
 mw::E<std::optional<User>> App::resolveRemoteUser(const std::string& username, const std::string& domain)
 {
-    std::string wf_url = "https://" + domain + "/.well-known/webfinger?resource=acct:" + username + "@" + domain;
+    std::string resource = "acct:" + username + "@" + domain;
+    ASSIGN_OR_RETURN(auto wf_url, getWebFingerUrl(domain, resource));
     
-    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(wf_url));
+    mw::HTTPRequest req(wf_url);
+    req.addHeader("Accept", "application/jrd+json, application/json");
+
+    ASSIGN_OR_RETURN(auto res_ptr, http_client->get(req));
     if(res_ptr->status != 200) return std::nullopt;
 
     nlohmann::json j;
@@ -838,8 +879,11 @@ mw::E<std::optional<User>> App::resolveRemoteUser(const std::string& username, c
     {
         for(const auto& link : j["links"])
         {
-            if(link.value("rel", "") == "self" && 
-               link.value("type", "") == "application/activity+json")
+            std::string rel = link.value("rel", "");
+            std::string type = link.value("type", "");
+            if(rel == "self" && 
+               (type == "application/activity+json" || 
+                type.find("application/ld+json") != std::string::npos))
             {
                 actor_uri = link.value("href", "");
                 break;

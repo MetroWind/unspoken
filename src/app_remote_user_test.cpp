@@ -153,3 +153,99 @@ TEST_F(AppRemoteUserTest, EnsureRemoteUserFetchSuccess) {
     EXPECT_TRUE(res.has_value());
     EXPECT_EQ(res.value(), 123);
 }
+
+TEST_F(AppRemoteUserTest, ResolveRemoteUser_HostMeta) {
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    auto http_mock = std::make_unique<NiceMock<mw::HTTPSessionMock>>();
+    auto db_ptr = db_mock.get();
+    auto http_ptr = http_mock.get();
+
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 0};
+    App app(std::move(db_mock), listen, std::move(http_mock), nullptr);
+
+    auto set_payload = [](mw::HTTPResponse& resp, const std::string& data) {
+        resp.payload.resize(data.size());
+        std::transform(data.begin(), data.end(), resp.payload.begin(), 
+                       [](char c) { return std::byte(c); });
+    };
+
+    // 1. host-meta request
+    std::string host_meta_xml = R"(<?xml version="1.0" encoding="UTF-8"?><XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><Link type="application/xrd+xml" template="https://example.com/api/webfinger?resource={uri}" rel="lrdd" /></XRD>)";
+    mw::HTTPResponse host_meta_resp;
+    host_meta_resp.status = 200;
+    set_payload(host_meta_resp, host_meta_xml);
+
+    // 2. WebFinger request (using template)
+    std::string webfinger_json = R"({"links":[{"rel":"self","type":"application/activity+json","href":"https://example.com/users/alice"}]})";
+    mw::HTTPResponse wf_resp;
+    wf_resp.status = 200;
+    set_payload(wf_resp, webfinger_json);
+    
+    // Expect host-meta call (getWebFingerUrl calls get(string) -> get(HTTPRequest))
+    EXPECT_CALL(*http_ptr, get(testing::_))
+        .WillOnce(Invoke([&](const mw::HTTPRequest& req) -> mw::E<const mw::HTTPResponse*> {
+            EXPECT_EQ(req.url, "https://example.com/.well-known/host-meta");
+            return &host_meta_resp;
+        }))
+        .WillOnce(Invoke([&](const mw::HTTPRequest& req) -> mw::E<const mw::HTTPResponse*> {
+            // Template replacement verification
+            EXPECT_EQ(req.url, "https://example.com/api/webfinger?resource=acct%3Aalice%40example.com");
+            return &wf_resp; 
+        }));
+
+    User u; u.id = 123; u.uri = "https://example.com/users/alice";
+    EXPECT_CALL(*db_ptr, getUserByUri("https://example.com/users/alice"))
+        .WillRepeatedly(Return(std::make_optional(u)));
+    EXPECT_CALL(*db_ptr, getUserById(123))
+        .WillRepeatedly(Return(std::make_optional(u)));
+
+    auto res = app.resolveRemoteUser("alice", "example.com");
+    EXPECT_TRUE(res.has_value());
+    EXPECT_TRUE(res.value().has_value());
+    EXPECT_EQ(res.value()->id, 123);
+}
+
+TEST_F(AppRemoteUserTest, ResolveRemoteUser_Fallback) {
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    auto http_mock = std::make_unique<NiceMock<mw::HTTPSessionMock>>();
+    auto db_ptr = db_mock.get();
+    auto http_ptr = http_mock.get();
+
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 0};
+    App app(std::move(db_mock), listen, std::move(http_mock), nullptr);
+
+    auto set_payload = [](mw::HTTPResponse& resp, const std::string& data) {
+        resp.payload.resize(data.size());
+        std::transform(data.begin(), data.end(), resp.payload.begin(), 
+                       [](char c) { return std::byte(c); });
+    };
+
+    // 1. host-meta request (Fail)
+    mw::HTTPResponse host_meta_resp;
+    host_meta_resp.status = 404;
+
+    // 2. WebFinger request (Fallback)
+    std::string webfinger_json = R"({"links":[{"rel":"self","type":"application/activity+json","href":"https://example.com/users/bob"}]})";
+    mw::HTTPResponse wf_resp;
+    wf_resp.status = 200;
+    set_payload(wf_resp, webfinger_json);
+    
+    // Expect host-meta call
+    EXPECT_CALL(*http_ptr, get(testing::_))
+        .WillOnce(Return(&host_meta_resp))
+        .WillOnce(Invoke([&](const mw::HTTPRequest& req) -> mw::E<const mw::HTTPResponse*> {
+            EXPECT_EQ(req.url, "https://example.com/.well-known/webfinger?resource=acct%3Abob%40example.com");
+            return &wf_resp; 
+        }));
+
+    User u; u.id = 456; u.uri = "https://example.com/users/bob";
+    EXPECT_CALL(*db_ptr, getUserByUri("https://example.com/users/bob"))
+        .WillRepeatedly(Return(std::make_optional(u)));
+    EXPECT_CALL(*db_ptr, getUserById(456))
+        .WillRepeatedly(Return(std::make_optional(u)));
+
+    auto res = app.resolveRemoteUser("bob", "example.com");
+    EXPECT_TRUE(res.has_value());
+    EXPECT_TRUE(res.value().has_value());
+    EXPECT_EQ(res.value()->id, 456);
+}

@@ -115,6 +115,7 @@ private:
     mw::E<void> ensureSystemActor();
     mw::E<nlohmann::json> fetchRemoteActor(const std::string& uri, const User& system_actor);
     User parseRemoteActor(const nlohmann::json& j, const std::string& uri);
+    mw::E<std::string> getWebFingerUrl(const std::string& domain, const std::string& resource);
 
     std::unique_ptr<DatabaseInterface> db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
