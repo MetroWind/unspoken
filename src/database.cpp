@@ -53,7 +53,10 @@ mw::E<void> Database::migrate()
                 avatar_path TEXT,
                 oidc_subject TEXT UNIQUE,
                 inbox TEXT,
-                shared_inbox TEXT
+                shared_inbox TEXT,
+                outbox TEXT,
+                followers TEXT,
+                following TEXT
             );)",
 
             R"(CREATE TABLE IF NOT EXISTS posts (
@@ -158,7 +161,8 @@ mw::E<void> Database::updateUser(const User& user)
 {
     const char* sql = "UPDATE users SET username = ?, display_name = ?, bio = ?, "
                       "email = ?, uri = ?, public_key = ?, private_key = ?, host = ?, "
-                      "created_at = ?, avatar_path = ?, oidc_subject = ?, inbox = ?, shared_inbox = ? "
+                      "created_at = ?, avatar_path = ?, oidc_subject = ?, inbox = ?, shared_inbox = ?, "
+                      "outbox = ?, followers = ?, following = ? "
                       "WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
@@ -166,7 +170,9 @@ mw::E<void> Database::updateUser(const User& user)
                            user.email, user.uri, user.public_key,
                            user.private_key, user.host, user.created_at,
                            user.avatar_path, user.oidc_subject,
-                           user.inbox, user.shared_inbox, user.id));
+                           user.inbox, user.shared_inbox, 
+                           user.outbox, user.followers, user.following,
+                           user.id));
 
     return db->execute(std::move(stmt));
 }
@@ -175,15 +181,17 @@ mw::E<int64_t> Database::createUser(const User& user)
 {
     const char* sql = "INSERT INTO users (username, display_name, bio, "
                       "email, uri, public_key, private_key, host, "
-                      "created_at, avatar_path, oidc_subject, inbox, shared_inbox) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+                      "created_at, avatar_path, oidc_subject, inbox, shared_inbox, "
+                      "outbox, followers, following) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
     DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
                            user.email, user.uri, user.public_key,
                            user.private_key, user.host, user.created_at,
                            user.avatar_path, user.oidc_subject,
-                           user.inbox, user.shared_inbox));
+                           user.inbox, user.shared_inbox, user.outbox,
+                           user.followers, user.following));
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
@@ -193,6 +201,9 @@ using UserTuple = std::tuple<int64_t, std::string, std::string, std::string,
                              std::optional<std::string>, std::string,
                              std::string, std::optional<std::string>,
                              std::optional<std::string>, int64_t,
+                             std::optional<std::string>,
+                             std::optional<std::string>,
+                             std::optional<std::string>,
                              std::optional<std::string>,
                              std::optional<std::string>,
                              std::optional<std::string>,
@@ -215,6 +226,9 @@ static User rowToUser(const UserTuple& row)
     u.oidc_subject = std::get<11>(row);
     u.inbox = std::get<12>(row);
     u.shared_inbox = std::get<13>(row);
+    u.outbox = std::get<14>(row);
+    u.followers = std::get<15>(row);
+    u.following = std::get<16>(row);
     return u;
 }
 
@@ -222,13 +236,15 @@ mw::E<std::optional<User>> Database::getUserById(int64_t id)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE id = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox, "
+                      "outbox, followers, following FROM users WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
                                           std::string, std::string, std::string,
                                           std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string>(
+                                          int64_t, std::string, std::string, std::string, std::string,
+                                          std::string, std::string, std::string>(
                                     std::move(stmt))));
 
     if(rows.empty()) return std::nullopt;
@@ -239,13 +255,15 @@ mw::E<std::optional<User>> Database::getUserByUsername(const std::string& name)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE username = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox, "
+                      "outbox, followers, following FROM users WHERE username = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(name));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
                                           std::string, std::string, std::string,
                                           std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string>(
+                                          int64_t, std::string, std::string, std::string, std::string,
+                                          std::string, std::string, std::string>(
                                     std::move(stmt))));
     if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
@@ -255,13 +273,15 @@ mw::E<std::optional<User>> Database::getUserByUri(const std::string& uri)
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE uri = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox, "
+                      "outbox, followers, following FROM users WHERE uri = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
                                           std::string, std::string, std::string,
                                           std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string>(
+                                          int64_t, std::string, std::string, std::string, std::string,
+                                          std::string, std::string, std::string>(
                                     std::move(stmt))));
     if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
@@ -271,13 +291,15 @@ mw::E<std::optional<User>> Database::getUserByOidcSubject(const std::string& sub
 {
     const char* sql = "SELECT id, username, display_name, bio, email, uri, "
                       "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox FROM users WHERE oidc_subject = ?;";
+                      "avatar_path, oidc_subject, inbox, shared_inbox, "
+                      "outbox, followers, following FROM users WHERE oidc_subject = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(sub));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
                                           std::string, std::string, std::string,
                                           std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string>(
+                                          int64_t, std::string, std::string, std::string, std::string,
+                                          std::string, std::string, std::string>(
                                     std::move(stmt))));
     if(rows.empty()) return std::nullopt;
     return rowToUser(rows[0]);
@@ -471,7 +493,7 @@ mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
     const char* sql = "SELECT u.id, u.username, u.display_name, u.bio, "
                       "u.email, u.uri, u.public_key, u.private_key, u.host, "
                       "u.created_at, u.avatar_path, u.oidc_subject, "
-                      "u.inbox, u.shared_inbox "
+                      "u.inbox, u.shared_inbox, u.outbox, u.followers, u.following "
                       "FROM follows f JOIN users u ON f.follower_id = u.id "
                       "WHERE f.target_id = ? AND f.status = 1;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
@@ -484,6 +506,9 @@ mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
                                           std::optional<std::string>,
                                           std::optional<std::string>,
                                           int64_t, std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
+                                          std::optional<std::string>,
                                           std::optional<std::string>,
                                           std::optional<std::string>,
                                           std::optional<std::string>>(

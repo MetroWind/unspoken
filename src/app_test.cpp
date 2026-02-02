@@ -23,12 +23,14 @@ protected:
         Config::get().server_url_root = "http://localhost:18080";
         Config::get().posts_per_page = 20;
         Config::get().db_path = ":memory:";
+        Config::get().data_dir = ".";
         Config::get().port = 18080;
         Config::get().nodeinfo.name = "TestNode";
     }
 
     void TearDown() override
     {
+        Config::get() = Config();
     }
 };
 

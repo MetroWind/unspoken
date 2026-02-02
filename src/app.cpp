@@ -700,6 +700,15 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req, mw::HTTPServer::
     int offset = (page - 1) * limit;
 
     auto posts_res = db->getUserPosts(target.id, limit + 1, offset);
+    if ((!posts_res || posts_res->empty()) && !target.isLocal() && target.outbox)
+    {
+        // Try to fetch remote outbox
+        auto fetch_res = fetchRemoteOutbox(*user_res.value());
+        if (fetch_res)
+        {
+            posts_res = db->getUserPosts(target.id, limit + 1, offset);
+        }
+    }
     
     nlohmann::json data;
     data["user"]["display_name"] = target.display_name;
@@ -1145,6 +1154,68 @@ mw::E<nlohmann::json> App::fetchRemoteActor(const std::string& uri, const User& 
     }
 }
 
+mw::E<void> App::fetchRemoteOutbox(const User& user)
+{
+    if (!user.outbox) return {};
+
+    // Use system actor to fetch
+    auto root_url_res = mw::URL::fromStr(Config::get().server_url_root);
+    if (!root_url_res) return std::unexpected(root_url_res.error());
+    std::string system_uri = root_url_res->str();
+    if (system_uri.back() == '/') system_uri.pop_back();
+
+    auto sys_actor_res = db->getUserByUri(system_uri);
+    if (!sys_actor_res || !sys_actor_res.value()) return std::unexpected(mw::runtimeError("System actor not found"));
+
+    ASSIGN_OR_RETURN(auto j, fetchRemoteActor(*user.outbox, *sys_actor_res.value()));
+
+    // j is OrderedCollection or OrderedCollectionPage
+    nlohmann::json items;
+    if (j.contains("orderedItems"))
+    {
+        items = j["orderedItems"];
+    }
+    else if (j.contains("first"))
+    {
+        // For simplicity, just fetch the first page if it's a URI
+        std::string first_page_uri = json_ld::getId(j, "first");
+        if (!first_page_uri.empty())
+        {
+            ASSIGN_OR_RETURN(auto page_j, fetchRemoteActor(first_page_uri, *sys_actor_res.value()));
+            if (page_j.contains("orderedItems"))
+            {
+                items = page_j["orderedItems"];
+            }
+        }
+    }
+
+    if (items.is_array())
+    {
+        for (const auto& item : items)
+        {
+            // Each item can be a Create activity or just the object (Note)
+            nlohmann::json activity = item;
+            if (item.is_string()) continue; // Skip URIs for now
+
+            if (item.contains("type") && item["type"] == "Create")
+            {
+                handleCreate(item, user.uri);
+            }
+            else if (item.contains("type") && item["type"] == "Note")
+            {
+                // Fake a Create activity
+                nlohmann::json fake_create;
+                fake_create["type"] = "Create";
+                fake_create["actor"] = user.uri;
+                fake_create["object"] = item;
+                handleCreate(fake_create, user.uri);
+            }
+        }
+    }
+
+    return {};
+}
+
 User App::parseRemoteActor(const nlohmann::json& j, const std::string& uri)
 {
     User u;
@@ -1169,6 +1240,10 @@ User App::parseRemoteActor(const nlohmann::json& j, const std::string& uri)
     }
 
     u.inbox = json_ld::getId(j, "inbox");
+    u.outbox = json_ld::getId(j, "outbox");
+    u.followers = json_ld::getId(j, "followers");
+    u.following = json_ld::getId(j, "following");
+    
     if(j.contains("endpoints") && j["endpoints"].contains("sharedInbox"))
     {
         u.shared_inbox = json_ld::getId(j["endpoints"], "sharedInbox");
@@ -1265,8 +1340,8 @@ void App::render(mw::HTTPServer::Response& res, const std::string& template_name
         view_data["site_name"] = Config::get().nodeinfo.name;
         view_data["site_description"] = Config::get().nodeinfo.description;
 
-        std::filesystem::path path = std::filesystem::path(Config::get().data_dir) / "templates" / template_name;
-        res.set_content(inja_env.render_file(path.string(), view_data), "text/html");
+        std::filesystem::path template_file = std::filesystem::absolute(std::filesystem::path(Config::get().data_dir) / "templates" / template_name);
+        res.set_content(inja_env.render_file(template_file.string(), view_data), "text/html");
     }
     catch(const std::exception& e)
     {

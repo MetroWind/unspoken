@@ -113,6 +113,7 @@ private:
     mw::E<std::optional<User>> resolveRemoteUser(const std::string& username, const std::string& domain);
     mw::E<void> sendFollowActivity(const User& follower, const User& target);
     mw::E<void> ensureSystemActor();
+    mw::E<void> fetchRemoteOutbox(const User& user);
     mw::E<nlohmann::json> fetchRemoteActor(const std::string& uri, const User& system_actor);
     User parseRemoteActor(const nlohmann::json& j, const std::string& uri);
     mw::E<std::string> getWebFingerUrl(const std::string& domain, const std::string& resource);

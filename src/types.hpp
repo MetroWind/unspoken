@@ -29,6 +29,9 @@ struct User
     std::optional<std::string> oidc_subject;
     std::optional<std::string> inbox;
     std::optional<std::string> shared_inbox;
+    std::optional<std::string> outbox;
+    std::optional<std::string> followers;
+    std::optional<std::string> following;
 
     bool isLocal() const { return !host.has_value(); }
 };
