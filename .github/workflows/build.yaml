@@ -24,8 +24,8 @@ jobs:
       run: |
         sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
         sudo apt-get update
-        sudo apt install -y g++-13 gcc-13
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 60 --slave /usr/bin/g++ g++ /usr/bin/g++-13
+        sudo apt install -y g++-14 gcc-14
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 --slave /usr/bin/g++ g++ /usr/bin/g++-14
 
     - name: Install dependencies
       run: "sudo apt install -y curl libcurl4-openssl-dev sqlite3 libsqlite3-dev libssl-dev"
