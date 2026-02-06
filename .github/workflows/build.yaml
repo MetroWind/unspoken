@@ -55,7 +55,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: "${{github.workspace}}/shrt.tar.zstd"
+        asset_path: "${{github.workspace}}/unspoken.tar.zstd"
         asset_name: unspoken.tar.zstd
         asset_content_type: application/zstd
 
