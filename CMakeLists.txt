@@ -106,13 +106,6 @@ set(LIBS
   gumbo
 )
 
-FetchContent_Declare(
-  googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG v1.14.0
-)
-FetchContent_MakeAvailable(googletest)
-
 set(SOURCE_FILES src/main.cpp src/config.cpp src/database.cpp src/app.cpp src/json_ld.cpp src/signature_verifier.cpp src/job_queue.cpp src/http_utils.cpp src/html_sanitizer.cpp)
 
 # Main Executable
@@ -124,7 +117,14 @@ target_compile_options(unspoken PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(unspoken PRIVATE ${INCLUDES})
 
 # Tests
-if(SHRT_BUILD_TESTS)
+if(UNSPOKEN_BUILD_TESTS)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.14.0
+  )
+  FetchContent_MakeAvailable(googletest)
+
   add_executable(unit_tests
     src/database_test.cpp
     src/job_queue_test.cpp
