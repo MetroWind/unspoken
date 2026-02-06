@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(unspoken VERSION 0.1.0 LANGUAGES CXX C)
+option(UNSPOKEN_BUILD_TESTS "Build unit tests" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -123,26 +124,28 @@ target_compile_options(unspoken PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(unspoken PRIVATE ${INCLUDES})
 
 # Tests
-add_executable(unit_tests
-  src/database_test.cpp
-  src/job_queue_test.cpp
-  src/signature_verifier_test.cpp
-  src/signature_integration_test.cpp
-  src/json_ld_test.cpp
-  src/config_test.cpp
-  src/app_test.cpp
-  src/app_remote_user_test.cpp
-  src/app_secret_key_test.cpp
-  src/html_sanitizer_test.cpp
-  src/database.cpp
-  src/config.cpp
-  src/job_queue.cpp
-  src/signature_verifier.cpp
-  src/json_ld.cpp
-  src/app.cpp
-  src/http_utils.cpp
-  src/html_sanitizer.cpp
-)
-set_property(TARGET unit_tests PROPERTY CXX_STANDARD 23)
-target_link_libraries(unit_tests PRIVATE ${LIBS} GTest::gtest_main GTest::gmock)
-target_include_directories(unit_tests PRIVATE ${INCLUDES})
+if(SHRT_BUILD_TESTS)
+  add_executable(unit_tests
+    src/database_test.cpp
+    src/job_queue_test.cpp
+    src/signature_verifier_test.cpp
+    src/signature_integration_test.cpp
+    src/json_ld_test.cpp
+    src/config_test.cpp
+    src/app_test.cpp
+    src/app_remote_user_test.cpp
+    src/app_secret_key_test.cpp
+    src/html_sanitizer_test.cpp
+    src/database.cpp
+    src/config.cpp
+    src/job_queue.cpp
+    src/signature_verifier.cpp
+    src/json_ld.cpp
+    src/app.cpp
+    src/http_utils.cpp
+    src/html_sanitizer.cpp
+  )
+  set_property(TARGET unit_tests PROPERTY CXX_STANDARD 23)
+  target_link_libraries(unit_tests PRIVATE ${LIBS} GTest::gtest_main GTest::gmock)
+  target_include_directories(unit_tests PRIVATE ${INCLUDES})
+endif()
