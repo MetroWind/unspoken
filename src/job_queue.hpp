@@ -3,8 +3,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <vector>
-#include <string>
 #include <mw/http_client.hpp>
 #include <mw/crypto.hpp>
 #include "database.hpp"
