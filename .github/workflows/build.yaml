@@ -19,7 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         pacman -Syu --noconfirm
-        pacman -S --noconfirm git cmake
+        pacman -S --noconfirm git cmake zstd
         # Add user builder
         useradd -m builder
         echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
@@ -36,6 +36,12 @@ jobs:
           makepkg -s --noconfirm
         "
         
+    - name: Compress Binary
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      run: |
+        # Compress the binary built by makepkg
+        zstd packages/arch/src/unspoken/build/unspoken -o unspoken.zst
+
     - name: Find Package File
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       id: find_package
@@ -56,7 +62,7 @@ jobs:
         draft: true
         prerelease: false
 
-    - name: Upload Release Asset
+    - name: Upload Package Asset
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       uses: actions/upload-release-asset@v1.0.1
       env:
@@ -65,6 +71,17 @@ jobs:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ${{ steps.find_package.outputs.pkg_path }}
         asset_name: unspoken-git.pkg.tar.zst
+        asset_content_type: application/zstd
+
+    - name: Upload Binary Asset
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: unspoken.zst
+        asset_name: unspoken.zst
         asset_content_type: application/zstd
 
     - uses: eregon/publish-release@v1
