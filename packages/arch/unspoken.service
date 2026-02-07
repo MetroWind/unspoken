@@ -1,0 +1,14 @@
+[Unit]
+Description=Unspoken ActivityPub Server
+After=network.target
+
+[Service]
+User=unspoken
+Group=unspoken
+WorkingDirectory=/var/lib/unspoken
+ExecStart=/usr/bin/unspoken --config /etc/unspoken.yaml
+Restart=on-failure
+StateDirectory=unspoken
+
+[Install]
+WantedBy=multi-user.target
