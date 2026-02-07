@@ -64,7 +64,7 @@ jobs:
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ${{ steps.find_package.outputs.pkg_path }}
-        asset_name: ${{ steps.find_package.outputs.pkg_name }}
+        asset_name: unspoken-git.pkg.tar.zst
         asset_content_type: application/zstd
 
     - uses: eregon/publish-release@v1
