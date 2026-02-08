@@ -1,5 +1,5 @@
 build/
 .cache/
+unspoken.db*
 actpub.db
-config.yaml
 config.yaml
