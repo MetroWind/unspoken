@@ -21,7 +21,7 @@ source=("git+https://github.com/MetroWind/unspoken.git"
 sha256sums=('SKIP'
             'fa5e506b9f38111e022400f22f7f07ecf4c22d14170ef2f299e2d36ab02b8a3c'
             '2a9d055c1bde413534474299a7617adf311578060765a017def1da2f43909ea2'
-            '6403f63a5c63b04d61200f9b0216b2c05e2a6a5e2b3425e049d6e8d69ad35fa8')
+            'd77b6de2abdefa0a5b8e4baae4fdcc699e1a51bcfb68c1dfddb0609834f5ecd5')
 
 pkgver() {
     cd "$srcdir/${pkgname%-git}"

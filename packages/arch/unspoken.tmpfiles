@@ -1,3 +1,4 @@
 d /var/lib/unspoken 0750 unspoken unspoken -
 d /var/lib/unspoken/uploads 0750 unspoken unspoken -
 Z /var/lib/unspoken - unspoken unspoken
+z /etc/unspoken.yaml 0600 unspoken unspoken

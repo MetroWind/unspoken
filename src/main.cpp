@@ -9,7 +9,7 @@
 
 int main(int argc, char* argv[])
 {
-    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
+    spdlog::set_pattern("[%l] %v");
     spdlog::info("Unspoken server starting...");
 
     cxxopts::Options options("unspoken", "ActivityPub Microblog Server");
