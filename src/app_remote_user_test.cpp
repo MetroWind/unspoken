@@ -234,7 +234,7 @@ TEST_F(AppRemoteUserTest, ResolveRemoteUser_Fallback) {
     EXPECT_CALL(*http_ptr, get(testing::_))
         .WillOnce(Return(&host_meta_resp))
         .WillOnce(Invoke([&](const mw::HTTPRequest& req) -> mw::E<const mw::HTTPResponse*> {
-            EXPECT_EQ(req.url, "https://example.com/.well-known/webfinger?resource=acct%3Abob%40example.com");
+            EXPECT_EQ(req.url, "https://example.com/.well-known/webfinger?resource=acct%3abob%40example.com");
             return &wf_resp; 
         }));
 

@@ -23,7 +23,7 @@ static std::unordered_map<std::string, std::string> parseSignatureHeader(const s
     std::string key, val;
     bool in_quote = false;
     bool parsing_key = true;
-    
+
     for (char c : header)
     {
         if (parsing_key)
@@ -79,7 +79,18 @@ mw::E<std::string> SignatureVerifier::fetchAndCacheActor(const std::string& uri)
     if (!sig_bytes) return std::unexpected(sig_bytes.error());
     std::string signature = mw::base64Encode(*sig_bytes);
 
-    std::string key_id = system_actor_uri + "#main-key";
+    auto sys_uri = mw::URL::fromStr(system_actor_uri);
+    std::string key_id = system_actor_uri;
+    if(sys_uri)
+    {
+        sys_uri->fragment("main-key");
+        key_id = sys_uri->str();
+    }
+    else
+    {
+        key_id += "#main-key";
+    }
+
     std::string sig_header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\",headers=\"(request-target) host date\",signature=\"" + signature + "\"";
 
     mw::HTTPRequest req(uri);
@@ -90,7 +101,7 @@ mw::E<std::string> SignatureVerifier::fetchAndCacheActor(const std::string& uri)
 
     auto res_ptr = http_client->get(req);
     if (!res_ptr) return std::unexpected(res_ptr.error());
-    
+
     if ((*res_ptr)->status != 200) return std::unexpected(mw::httpError(502, "Failed to fetch actor: " + std::to_string((*res_ptr)->status)));
 
     try
@@ -181,7 +192,7 @@ mw::E<std::string> SignatureVerifier::verify(const mw::HTTPServer::Request& req,
     if (!req.has_header("Signature")) return std::unexpected(mw::httpError(401, "Missing Signature header"));
 
     auto params = parseSignatureHeader(req.get_header_value("Signature"));
-    if (params.find("keyId") == params.end() || 
+    if (params.find("keyId") == params.end() ||
         params.find("signature") == params.end() ||
         params.find("headers") == params.end())
     {
@@ -191,14 +202,23 @@ mw::E<std::string> SignatureVerifier::verify(const mw::HTTPServer::Request& req,
     std::string key_id = params["keyId"];
     std::string signature_base64 = params["signature"];
     std::string headers_str = params["headers"];
-    
+
     auto sig_bytes = mw::base64Decode(signature_base64);
     if (!sig_bytes) return std::unexpected(mw::httpError(400, "Invalid base64 signature"));
 
     // Extract Actor URI from keyId (usually actor_uri#main-key)
     std::string actor_uri = key_id;
-    size_t hash_pos = actor_uri.find('#');
-    if (hash_pos != std::string::npos) actor_uri = actor_uri.substr(0, hash_pos);
+    auto k_url = mw::URL::fromStr(key_id);
+    if(k_url)
+    {
+        k_url->fragment(nullptr); // Remove fragment
+        actor_uri = k_url->str();
+    }
+    else
+    {
+        size_t hash_pos = actor_uri.find('#');
+        if(hash_pos != std::string::npos) actor_uri = actor_uri.substr(0, hash_pos);
+    }
 
     auto construct_comparison_string = [&](const std::string& headers) -> std::string {
         std::string comparison_string;
@@ -231,7 +251,7 @@ mw::E<std::string> SignatureVerifier::verify(const mw::HTTPServer::Request& req,
     if (comparison_string.empty()) return std::unexpected(mw::httpError(400, "Failed to construct comparison string"));
 
     auto verify_with_key = [&](const std::string& pem) -> bool {
-        auto valid = crypto->verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
+        auto valid = crypto->verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256,
                                          pem, *sig_bytes, comparison_string);
         return valid && *valid;
     };
@@ -246,7 +266,7 @@ mw::E<std::string> SignatureVerifier::verify(const mw::HTTPServer::Request& req,
     // Fetch-on-failure or initial fetch
     auto fetch_res = fetchAndCacheActor(actor_uri);
     if (!fetch_res) return std::unexpected(fetch_res.error());
-    
+
     if (verify_with_key(*fetch_res)) return actor_uri;
 
     return std::unexpected(mw::httpError(401, "Invalid Signature"));

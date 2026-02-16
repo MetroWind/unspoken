@@ -160,6 +160,12 @@ void JobQueue::deliverActivity(const Job& job)
     std::string signature = mw::base64Encode(*sig_bytes);
 
     std::string key_id = sender_uri + "#main-key";
+    auto s_url = mw::URL::fromStr(sender_uri);
+    if(s_url)
+    {
+        s_url->fragment("main-key");
+        key_id = s_url->str();
+    }
     std::string header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\"," + 
                          "headers=\" (request-target) host date digest\",signature=\"" + signature + "\"";
 
