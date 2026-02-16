@@ -1,9 +1,11 @@
 #include "config.hpp"
-#include <fstream>
-#include <sstream>
-#include <iostream>
-#include <stdexcept>
+
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+
 #include <ryml.hpp>
 #include <ryml_std.hpp>
 
@@ -39,7 +41,7 @@ void Config::load(const std::string& path)
     {
         root["port"] >> port;
     }
-    
+
     if(root.has_child("data_dir"))
     {
         root["data_dir"] >> data_dir;

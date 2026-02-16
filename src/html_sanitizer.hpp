@@ -2,7 +2,8 @@
 
 #include <string>
 
-class HtmlSanitizer {
+class HtmlSanitizer
+{
 public:
     static std::string sanitize(const std::string& input);
 };

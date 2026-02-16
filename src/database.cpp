@@ -1,13 +1,12 @@
 #include "database.hpp"
+
+#include <iostream>
+
 #include <mw/error.hpp>
 #include <mw/utils.hpp>
 #include <spdlog/spdlog.h>
-#include <iostream>
 
-Database::Database(const std::string& path)
-    : db_path(path)
-{
-}
+Database::Database(const std::string& path) : db_path(path) {}
 
 mw::E<void> Database::init()
 {
@@ -140,8 +139,7 @@ mw::E<void> Database::migrate()
                 value TEXT
             );)",
 
-            "PRAGMA user_version = 1;"
-        };
+            "PRAGMA user_version = 1;"};
 
         for(const auto& sql : statements)
         {
@@ -159,55 +157,52 @@ mw::E<void> Database::migrate()
 
 mw::E<void> Database::updateUser(const User& user)
 {
-    const char* sql = "UPDATE users SET username = ?, display_name = ?, bio = ?, "
-                      "email = ?, uri = ?, public_key = ?, private_key = ?, host = ?, "
-                      "created_at = ?, avatar_path = ?, oidc_subject = ?, inbox = ?, shared_inbox = ?, "
-                      "outbox = ?, followers = ?, following = ? "
-                      "WHERE id = ?;";
+    const char* sql =
+        "UPDATE users SET username = ?, display_name = ?, bio = ?, "
+        "email = ?, uri = ?, public_key = ?, private_key = ?, host = ?, "
+        "created_at = ?, avatar_path = ?, oidc_subject = ?, inbox = ?, "
+        "shared_inbox = ?, "
+        "outbox = ?, followers = ?, following = ? "
+        "WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
-                           user.email, user.uri, user.public_key,
-                           user.private_key, user.host, user.created_at,
-                           user.avatar_path, user.oidc_subject,
-                           user.inbox, user.shared_inbox, 
-                           user.outbox, user.followers, user.following,
-                           user.id));
+    DO_OR_RETURN(stmt.bind(
+        user.username, user.display_name, user.bio, user.email, user.uri,
+        user.public_key, user.private_key, user.host, user.created_at,
+        user.avatar_path, user.oidc_subject, user.inbox, user.shared_inbox,
+        user.outbox, user.followers, user.following, user.id));
 
     return db->execute(std::move(stmt));
 }
 
 mw::E<int64_t> Database::createUser(const User& user)
 {
-    const char* sql = "INSERT INTO users (username, display_name, bio, "
-                      "email, uri, public_key, private_key, host, "
-                      "created_at, avatar_path, oidc_subject, inbox, shared_inbox, "
-                      "outbox, followers, following) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+    const char* sql =
+        "INSERT INTO users (username, display_name, bio, "
+        "email, uri, public_key, private_key, host, "
+        "created_at, avatar_path, oidc_subject, inbox, shared_inbox, "
+        "outbox, followers, following) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
 
-    DO_OR_RETURN(stmt.bind(user.username, user.display_name, user.bio,
-                           user.email, user.uri, user.public_key,
-                           user.private_key, user.host, user.created_at,
-                           user.avatar_path, user.oidc_subject,
-                           user.inbox, user.shared_inbox, user.outbox,
-                           user.followers, user.following));
+    DO_OR_RETURN(stmt.bind(
+        user.username, user.display_name, user.bio, user.email, user.uri,
+        user.public_key, user.private_key, user.host, user.created_at,
+        user.avatar_path, user.oidc_subject, user.inbox, user.shared_inbox,
+        user.outbox, user.followers, user.following));
 
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
 }
 
-using UserTuple = std::tuple<int64_t, std::string, std::string, std::string,
-                             std::optional<std::string>, std::string,
-                             std::string, std::optional<std::string>,
-                             std::optional<std::string>, int64_t,
-                             std::optional<std::string>,
-                             std::optional<std::string>,
-                             std::optional<std::string>,
-                             std::optional<std::string>,
-                             std::optional<std::string>,
-                             std::optional<std::string>,
-                             std::optional<std::string>>;
+using UserTuple =
+    std::tuple<int64_t, std::string, std::string, std::string,
+               std::optional<std::string>, std::string, std::string,
+               std::optional<std::string>, std::optional<std::string>, int64_t,
+               std::optional<std::string>, std::optional<std::string>,
+               std::optional<std::string>, std::optional<std::string>,
+               std::optional<std::string>, std::optional<std::string>,
+               std::optional<std::string>>;
 
 static User rowToUser(const UserTuple& row)
 {
@@ -240,32 +235,39 @@ mw::E<std::optional<User>> Database::getUserById(int64_t id)
                       "outbox, followers, following FROM users WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string,
-                                          std::string, std::string, std::string>(
-                                    std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string, std::string, int64_t,
+                  std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string>(std::move(stmt))));
 
-    if(rows.empty()) return std::nullopt;
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
 mw::E<std::optional<User>> Database::getUserByUsername(const std::string& name)
 {
-    const char* sql = "SELECT id, username, display_name, bio, email, uri, "
-                      "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox, "
-                      "outbox, followers, following FROM users WHERE username = ?;";
+    const char* sql =
+        "SELECT id, username, display_name, bio, email, uri, "
+        "public_key, private_key, host, created_at, "
+        "avatar_path, oidc_subject, inbox, shared_inbox, "
+        "outbox, followers, following FROM users WHERE username = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(name));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string,
-                                          std::string, std::string, std::string>(
-                                    std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string, std::string, int64_t,
+                  std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string>(std::move(stmt))));
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -277,31 +279,39 @@ mw::E<std::optional<User>> Database::getUserByUri(const std::string& uri)
                       "outbox, followers, following FROM users WHERE uri = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string,
-                                          std::string, std::string, std::string>(
-                                    std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string, std::string, int64_t,
+                  std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string>(std::move(stmt))));
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
-mw::E<std::optional<User>> Database::getUserByOidcSubject(const std::string& sub)
+mw::E<std::optional<User>>
+Database::getUserByOidcSubject(const std::string& sub)
 {
-    const char* sql = "SELECT id, username, display_name, bio, email, uri, "
-                      "public_key, private_key, host, created_at, "
-                      "avatar_path, oidc_subject, inbox, shared_inbox, "
-                      "outbox, followers, following FROM users WHERE oidc_subject = ?;";
+    const char* sql =
+        "SELECT id, username, display_name, bio, email, uri, "
+        "public_key, private_key, host, created_at, "
+        "avatar_path, oidc_subject, inbox, shared_inbox, "
+        "outbox, followers, following FROM users WHERE oidc_subject = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(sub));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          std::string, std::string, std::string,
-                                          int64_t, std::string, std::string, std::string, std::string,
-                                          std::string, std::string, std::string>(
-                                    std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string, std::string, int64_t,
+                  std::string, std::string, std::string, std::string,
+                  std::string, std::string, std::string>(std::move(stmt))));
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     return rowToUser(rows[0]);
 }
 
@@ -322,9 +332,9 @@ mw::E<int64_t> Database::createPost(const Post& post)
     return db->lastInsertRowID();
 }
 
-using PostTuple = std::tuple<int64_t, std::string, int64_t, std::string,
-                             std::string, std::optional<std::string>, int,
-                             int64_t, int>;
+using PostTuple =
+    std::tuple<int64_t, std::string, int64_t, std::string, std::string,
+               std::optional<std::string>, int, int64_t, int>;
 
 static Post rowToPost(const PostTuple& row)
 {
@@ -348,10 +358,11 @@ mw::E<std::optional<Post>> Database::getPostById(int64_t id)
                       "created_at, is_local FROM posts WHERE id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(id));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, int64_t, std::string, std::string,
+                  std::optional<std::string>, int, int64_t, int>(
+            std::move(stmt))));
     if(rows.empty())
     {
         return std::nullopt;
@@ -366,10 +377,11 @@ mw::E<std::optional<Post>> Database::getPostByUri(const std::string& uri)
                       "created_at, is_local FROM posts WHERE uri = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(uri));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, int64_t, std::string, std::string,
+                  std::optional<std::string>, int, int64_t, int>(
+            std::move(stmt))));
     if(rows.empty())
     {
         return std::nullopt;
@@ -389,10 +401,11 @@ mw::E<std::vector<Post>> Database::getTimeline(int64_t user_id, int limit,
                       "ORDER BY p.created_at DESC LIMIT ? OFFSET ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(user_id, user_id, limit, offset));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, int64_t, std::string, std::string,
+                  std::optional<std::string>, int, int64_t, int>(
+            std::move(stmt))));
 
     std::vector<Post> posts;
     for(const auto& row : rows)
@@ -412,10 +425,11 @@ mw::E<std::vector<Post>> Database::getUserPosts(int64_t author_id, int limit,
                       "LIMIT ? OFFSET ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(author_id, limit, offset));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, int64_t, std::string, std::string,
+                  std::optional<std::string>, int, int64_t, int>(
+            std::move(stmt))));
 
     std::vector<Post> posts;
     for(const auto& row : rows)
@@ -434,10 +448,11 @@ mw::E<std::vector<Post>> Database::getPublicTimeline(int limit, int offset)
                       "LIMIT ? OFFSET ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(limit, offset));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, int64_t,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, int64_t, std::string, std::string,
+                  std::optional<std::string>, int, int64_t, int>(
+            std::move(stmt))));
 
     std::vector<Post> posts;
     for(const auto& row : rows)
@@ -452,13 +467,13 @@ mw::E<void> Database::createFollow(const Follow& follow)
     const char* sql = "INSERT OR REPLACE INTO follows (follower_id, "
                       "target_id, status, uri) VALUES (?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
-    DO_OR_RETURN(stmt.bind(follow.follower_id, follow.target_id,
-                           follow.status, follow.uri));
+    DO_OR_RETURN(stmt.bind(follow.follower_id, follow.target_id, follow.status,
+                           follow.uri));
     return db->execute(std::move(stmt));
 }
 
-mw::E<void> Database::updateFollowStatus(int64_t follower_id,
-                                         int64_t target_id, int status)
+mw::E<void> Database::updateFollowStatus(int64_t follower_id, int64_t target_id,
+                                         int status)
 {
     const char* sql = "UPDATE follows SET status = ? WHERE follower_id = ? "
                       "AND target_id = ?;";
@@ -474,8 +489,8 @@ mw::E<std::optional<Follow>> Database::getFollow(int64_t follower_id,
                       "FROM follows WHERE follower_id = ? AND target_id = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(follower_id, target_id));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, int64_t, int,
-                                          std::string>(std::move(stmt))));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, int64_t, int, std::string>(
+                                    std::move(stmt))));
     if(rows.empty())
     {
         return std::nullopt;
@@ -490,29 +505,26 @@ mw::E<std::optional<Follow>> Database::getFollow(int64_t follower_id,
 
 mw::E<std::vector<User>> Database::getFollowers(int64_t target_id)
 {
-    const char* sql = "SELECT u.id, u.username, u.display_name, u.bio, "
-                      "u.email, u.uri, u.public_key, u.private_key, u.host, "
-                      "u.created_at, u.avatar_path, u.oidc_subject, "
-                      "u.inbox, u.shared_inbox, u.outbox, u.followers, u.following "
-                      "FROM follows f JOIN users u ON f.follower_id = u.id "
-                      "WHERE f.target_id = ? AND f.status = 1;";
+    const char* sql =
+        "SELECT u.id, u.username, u.display_name, u.bio, "
+        "u.email, u.uri, u.public_key, u.private_key, u.host, "
+        "u.created_at, u.avatar_path, u.oidc_subject, "
+        "u.inbox, u.shared_inbox, u.outbox, u.followers, u.following "
+        "FROM follows f JOIN users u ON f.follower_id = u.id "
+        "WHERE f.target_id = ? AND f.status = 1;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(target_id));
-    
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string,
-                                          std::optional<std::string>,
-                                          std::string, std::string,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          int64_t, std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>,
-                                          std::optional<std::string>>(
-                                    std::move(stmt))));
+
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string,
+                  std::optional<std::string>, std::string, std::string,
+                  std::optional<std::string>, std::optional<std::string>,
+                  int64_t, std::optional<std::string>,
+                  std::optional<std::string>, std::optional<std::string>,
+                  std::optional<std::string>, std::optional<std::string>,
+                  std::optional<std::string>, std::optional<std::string>>(
+            std::move(stmt))));
 
     std::vector<User> users;
     for(const auto& row : rows)
@@ -539,9 +551,14 @@ mw::E<std::optional<Media>> Database::getMediaByHash(const std::string& hash)
                       "FROM media WHERE hash = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(hash));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          std::string, int64_t>(std::move(stmt))));
-    if(rows.empty()) return std::nullopt;
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, std::string, int64_t>(
+            std::move(stmt))));
+    if(rows.empty())
+    {
+        return std::nullopt;
+    }
     Media m;
     m.id = std::get<0>(rows[0]);
     m.hash = std::get<1>(rows[0]);
@@ -556,8 +573,8 @@ mw::E<int64_t> Database::enqueueJob(const Job& job)
     const char* sql = "INSERT INTO jobs (type, payload, attempts, "
                       "next_try, status) VALUES (?, ?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
-    DO_OR_RETURN(stmt.bind(job.type, job.payload, job.attempts,
-                           job.next_try, job.status));
+    DO_OR_RETURN(stmt.bind(job.type, job.payload, job.attempts, job.next_try,
+                           job.status));
     DO_OR_RETURN(db->execute(std::move(stmt)));
     return db->lastInsertRowID();
 }
@@ -568,8 +585,10 @@ mw::E<std::vector<Job>> Database::getPendingJobs(int limit)
                       "FROM jobs WHERE status = 0 AND next_try <= ? LIMIT ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(mw::timeToSeconds(mw::Clock::now()), limit));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-                                          int, int64_t, int>(std::move(stmt))));
+    ASSIGN_OR_RETURN(
+        auto rows,
+        (db->eval<int64_t, std::string, std::string, int, int64_t, int>(
+            std::move(stmt))));
 
     std::vector<Job> jobs;
     for(const auto& row : rows)
@@ -598,29 +617,33 @@ mw::E<void> Database::updateJob(int64_t id, int status, int attempts,
 
 mw::E<void> Database::deleteJob(int64_t id)
 {
-    ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(
-                                    "DELETE FROM jobs WHERE id = ?;"));
+    ASSIGN_OR_RETURN(auto stmt,
+                     db->statementFromStr("DELETE FROM jobs WHERE id = ?;"));
     DO_OR_RETURN(stmt.bind(id));
     return db->execute(std::move(stmt));
 }
 
 mw::E<void> Database::createSession(const Session& session)
 {
-    const char* sql = "INSERT INTO sessions (token, user_id, expires_at, csrf_token) "
-                      "VALUES (?, ?, ?, ?);";
+    const char* sql =
+        "INSERT INTO sessions (token, user_id, expires_at, csrf_token) "
+        "VALUES (?, ?, ?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
-    DO_OR_RETURN(stmt.bind(session.token, session.user_id, session.expires_at, session.csrf_token));
+    DO_OR_RETURN(stmt.bind(session.token, session.user_id, session.expires_at,
+                           session.csrf_token));
     return db->execute(std::move(stmt));
 }
 
 mw::E<std::optional<Session>> Database::getSession(const std::string& token)
 {
-    const char* sql = "SELECT token, user_id, expires_at, csrf_token FROM sessions "
-                      "WHERE token = ?;";
+    const char* sql =
+        "SELECT token, user_id, expires_at, csrf_token FROM sessions "
+        "WHERE token = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(token));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<std::string, int64_t,
-                                          int64_t, std::string>(std::move(stmt))));
+    ASSIGN_OR_RETURN(auto rows,
+                     (db->eval<std::string, int64_t, int64_t, std::string>(
+                         std::move(stmt))));
     if(rows.empty())
     {
         return std::nullopt;
@@ -641,13 +664,14 @@ mw::E<void> Database::deleteSession(const std::string& token)
     return db->execute(std::move(stmt));
 }
 
-mw::E<std::optional<std::string>> Database::getSystemConfig(const std::string& key)
+mw::E<std::optional<std::string>>
+Database::getSystemConfig(const std::string& key)
 {
     const char* sql = "SELECT value FROM system_config WHERE key = ?;";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(key));
     ASSIGN_OR_RETURN(auto rows, db->eval<std::string>(std::move(stmt)));
-    
+
     if(rows.empty())
     {
         return std::nullopt;
@@ -655,9 +679,11 @@ mw::E<std::optional<std::string>> Database::getSystemConfig(const std::string& k
     return std::get<0>(rows[0]);
 }
 
-mw::E<void> Database::setSystemConfig(const std::string& key, const std::string& value)
+mw::E<void> Database::setSystemConfig(const std::string& key,
+                                      const std::string& value)
 {
-    const char* sql = "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?);";
+    const char* sql =
+        "INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?);";
     ASSIGN_OR_RETURN(auto stmt, db->statementFromStr(sql));
     DO_OR_RETURN(stmt.bind(key, value));
     return db->execute(std::move(stmt));

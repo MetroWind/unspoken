@@ -3,8 +3,7 @@
 namespace json_ld
 {
 
-std::vector<std::string> asList(const nlohmann::json& j, 
-                                const std::string& key)
+std::vector<std::string> asList(const nlohmann::json& j, const std::string& key)
 {
     std::vector<std::string> result;
     if(!j.contains(key))

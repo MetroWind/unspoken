@@ -1,37 +1,34 @@
 #include "html_sanitizer.hpp"
-#include <gumbo.h>
-#include <vector>
-#include <unordered_set>
-#include <sstream>
+
 #include <algorithm>
 #include <iostream>
+#include <sstream>
+#include <unordered_set>
+#include <vector>
+
+#include <gumbo.h>
 
 namespace
 {
 
 const std::unordered_set<std::string> ALLOWED_TAGS = {
-    "a", "abbr", "acronym", "b", "blockquote", "code", "em", "i", 
-    "li", "ol", "ul", "p", "pre", "strong", "br", "div", "span", 
-    "img", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
-    "table", "thead", "tbody", "tr", "th", "td", "caption"
-};
+    "a",  "abbr", "acronym", "b",      "blockquote", "code",  "em",
+    "i",  "li",   "ol",      "ul",     "p",          "pre",   "strong",
+    "br", "div",  "span",    "img",    "h1",         "h2",    "h3",
+    "h4", "h5",   "h6",      "hr",     "table",      "thead", "tbody",
+    "tr", "th",   "td",      "caption"};
 
 const std::unordered_set<std::string> ALLOWED_ATTRIBUTES = {
-    "href", "title", "class", "src", "alt", "width", "height", "rel", "target"
-};
+    "href", "title", "class", "src", "alt", "width", "height", "rel", "target"};
 
-const std::unordered_set<std::string> URL_ATTRIBUTES = {
-    "href", "src"
-};
+const std::unordered_set<std::string> URL_ATTRIBUTES = {"href", "src"};
 
-const std::unordered_set<std::string> SAFE_SCHEMES = {
-    "http", "https", "mailto", "xmpp", "magnet"
-};
+const std::unordered_set<std::string> SAFE_SCHEMES = {"http", "https", "mailto",
+                                                      "xmpp", "magnet"};
 
 const std::unordered_set<std::string> VOID_TAGS = {
-    "area", "base", "br", "col", "embed", "hr", "img", "input", 
-    "link", "meta", "param", "source", "track", "wbr"
-};
+    "area",  "base", "br",   "col",   "embed",  "hr",    "img",
+    "input", "link", "meta", "param", "source", "track", "wbr"};
 
 bool isAllowedTag(const std::string& tag)
 {
@@ -58,7 +55,7 @@ bool isSafeUrl(const std::string& url)
     {
         return true; // Relative URL
     }
-    
+
     // Check scheme
     std::string scheme;
     for(char c : url)
@@ -80,12 +77,24 @@ std::string escapeHtml(const std::string& data)
     {
         switch(data[pos])
         {
-            case '&':  buffer.append("&amp;");       break;
-            case '"': buffer.append("&quot;");      break;
-            case '\'': buffer.append("&apos;");      break;
-            case '<':  buffer.append("&lt;");        break;
-            case '>':  buffer.append("&gt;");        break;
-            default:   buffer.append(&data[pos], 1); break;
+        case '&':
+            buffer.append("&amp;");
+            break;
+        case '"':
+            buffer.append("&quot;");
+            break;
+        case '\'':
+            buffer.append("&apos;");
+            break;
+        case '<':
+            buffer.append("&lt;");
+            break;
+        case '>':
+            buffer.append("&gt;");
+            break;
+        default:
+            buffer.append(&data[pos], 1);
+            break;
         }
     }
     return buffer;
@@ -120,10 +129,11 @@ void traverse(GumboNode* node, std::stringstream& ss)
     }
 
     // Special handling for style/script to drop content
-    if(tag == "script" || tag == "style" || tag == "iframe" || tag == "object" || 
-        tag == "embed" || tag == "applet" || tag == "meta" || tag == "link" || tag == "title")
+    if(tag == "script" || tag == "style" || tag == "iframe" ||
+       tag == "object" || tag == "embed" || tag == "applet" || tag == "meta" ||
+       tag == "link" || tag == "title")
     {
-        return; 
+        return;
     }
 
     bool allowed = isAllowedTag(tag);
@@ -134,7 +144,8 @@ void traverse(GumboNode* node, std::stringstream& ss)
         GumboVector* attributes = &node->v.element.attributes;
         for(unsigned int i = 0; i < attributes->length; ++i)
         {
-            GumboAttribute* attr = static_cast<GumboAttribute*>(attributes->data[i]);
+            GumboAttribute* attr =
+                static_cast<GumboAttribute*>(attributes->data[i]);
             std::string attr_name = attr->name;
             std::string attr_val = attr->value;
 
@@ -150,7 +161,7 @@ void traverse(GumboNode* node, std::stringstream& ss)
                 ss << " " << attr_name << "=\"" << escapeHtml(attr_val) << "\"";
             }
         }
-        
+
         if(isVoidTag(tag))
         {
             ss << " />";
@@ -179,15 +190,15 @@ void traverse(GumboNode* node, std::stringstream& ss)
 std::string HtmlSanitizer::sanitize(const std::string& input)
 {
     GumboOutput* output = gumbo_parse(input.c_str());
-    
+
     std::stringstream ss;
-    
+
     // Gumbo wraps in <html><head>...</head><body>...</body></html>
     // We want to extract content of body.
-    
+
     GumboNode* root = output->root;
     GumboNode* body = nullptr;
-    
+
     if(root->type == GUMBO_NODE_ELEMENT)
     {
         // Find body
@@ -195,10 +206,12 @@ std::string HtmlSanitizer::sanitize(const std::string& input)
         {
             // usually head is 0, body is 1
             // But verify
-            for(unsigned int i=0; i<root->v.element.children.length; ++i)
+            for(unsigned int i = 0; i < root->v.element.children.length; ++i)
             {
-                GumboNode* child = static_cast<GumboNode*>(root->v.element.children.data[i]);
-                if(child->type == GUMBO_NODE_ELEMENT && child->v.element.tag == GUMBO_TAG_BODY)
+                GumboNode* child =
+                    static_cast<GumboNode*>(root->v.element.children.data[i]);
+                if(child->type == GUMBO_NODE_ELEMENT &&
+                   child->v.element.tag == GUMBO_TAG_BODY)
                 {
                     body = child;
                     break;
@@ -206,7 +219,7 @@ std::string HtmlSanitizer::sanitize(const std::string& input)
             }
         }
     }
-    
+
     if(body)
     {
         GumboVector* children = &body->v.element.children;

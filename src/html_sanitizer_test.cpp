@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+
 #include "html_sanitizer.hpp"
 
 TEST(HtmlSanitizerTest, BasicText)
@@ -22,7 +23,7 @@ TEST(HtmlSanitizerTest, DisallowedTags)
 TEST(HtmlSanitizerTest, DisallowedTagsWithContent)
 {
     std::string input = "<iframe>Bad content</iframe>";
-    EXPECT_EQ(HtmlSanitizer::sanitize(input), ""); 
+    EXPECT_EQ(HtmlSanitizer::sanitize(input), "");
 }
 
 TEST(HtmlSanitizerTest, UnknownTags)
@@ -33,9 +34,11 @@ TEST(HtmlSanitizerTest, UnknownTags)
 
 TEST(HtmlSanitizerTest, Attributes)
 {
-    std::string input = "<a href=\"https://example.com\" onclick=\"bad()\">Link</a>";
+    std::string input =
+        "<a href=\"https://example.com\" onclick=\"bad()\">Link</a>";
     // onclick should be removed.
-    EXPECT_EQ(HtmlSanitizer::sanitize(input), "<a href=\"https://example.com\">Link</a>");
+    EXPECT_EQ(HtmlSanitizer::sanitize(input),
+              "<a href=\"https://example.com\">Link</a>");
 }
 
 TEST(HtmlSanitizerTest, UnsafeUrl)

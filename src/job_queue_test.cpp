@@ -1,23 +1,30 @@
-#include <gtest/gtest.h>
-#include <gmock/gmock.h>
-#include "job_queue.hpp"
-#include "database.hpp"
-#include <mw/http_client_mock.hpp>
-#include <mw/crypto_mock.hpp>
+#include <chrono>
 #include <filesystem>
 #include <thread>
-#include <chrono>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include <mw/crypto_mock.hpp>
+#include <mw/http_client_mock.hpp>
+
+#include "database.hpp"
+#include "job_queue.hpp"
 
 using ::testing::_;
-using ::testing::Return;
 using ::testing::NiceMock;
+using ::testing::Return;
 
-class JobQueueTest : public ::testing::Test {
+class JobQueueTest : public ::testing::Test
+{
 protected:
-    void SetUp() override {
+    void SetUp() override
+    {
         db_path = "test_jobqueue.db";
-        if (std::filesystem::exists(db_path)) std::filesystem::remove(db_path);
-        
+        if(std::filesystem::exists(db_path))
+        {
+            std::filesystem::remove(db_path);
+        }
+
         test_db = std::make_unique<Database>(db_path);
         test_db->init();
 
@@ -29,11 +36,18 @@ protected:
         jq = std::make_unique<JobQueue>(*test_db, std::move(h), std::move(c));
     }
 
-    void TearDown() override {
-        if(jq) jq->stop();
+    void TearDown() override
+    {
+        if(jq)
+        {
+            jq->stop();
+        }
         jq.reset();
         test_db.reset();
-        if (std::filesystem::exists(db_path)) std::filesystem::remove(db_path);
+        if(std::filesystem::exists(db_path))
+        {
+            std::filesystem::remove(db_path);
+        }
     }
 
     std::string db_path;
@@ -43,13 +57,15 @@ protected:
     mw::CryptoMock* crypto_mock;
 };
 
-TEST_F(JobQueueTest, StartStop) {
+TEST_F(JobQueueTest, StartStop)
+{
     jq->start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     jq->stop();
 }
 
-TEST_F(JobQueueTest, ProcessJob) {
+TEST_F(JobQueueTest, ProcessJob)
+{
     Job j;
     j.type = "deliver_activity";
     j.payload = R"({
@@ -69,18 +85,23 @@ TEST_F(JobQueueTest, ProcessJob) {
     u.private_key = "PRIVKEY";
     test_db->createUser(u);
 
-    EXPECT_CALL(*crypto_mock, sign(_, _, _)).WillOnce(Return(std::vector<unsigned char>{'s','i','g'}));
-    
+    EXPECT_CALL(*crypto_mock, sign(_, _, _))
+        .WillOnce(Return(std::vector<unsigned char>{'s', 'i', 'g'}));
+
     mw::HTTPResponse mock_res;
     mock_res.status = 202;
     EXPECT_CALL(*http_mock, post(_)).WillOnce(Return(&mock_res));
 
     jq->start();
-    
+
     int retries = 0;
-    while(retries++ < 20) {
+    while(retries++ < 20)
+    {
         auto jobs = test_db->getPendingJobs(1);
-        if (jobs && jobs->empty()) break;
+        if(jobs && jobs->empty())
+        {
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+
 #include <nlohmann/json.hpp>
 
 namespace json_ld
@@ -9,7 +10,7 @@ namespace json_ld
 
 // Normalizes a field that can be a single string or a list of strings
 // into a vector of strings.
-std::vector<std::string> asList(const nlohmann::json& j, 
+std::vector<std::string> asList(const nlohmann::json& j,
                                 const std::string& key);
 
 // Normalizes a field that can be a string (URI) or an object (Link/Object)

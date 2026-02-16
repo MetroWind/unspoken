@@ -1,11 +1,14 @@
 #include "job_queue.hpp"
-#include "config.hpp"
-#include "http_utils.hpp"
+
+#include <chrono>
+
 #include <mw/crypto.hpp>
 #include <mw/url.hpp>
-#include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
-#include <chrono>
+#include <spdlog/spdlog.h>
+
+#include "config.hpp"
+#include "http_utils.hpp"
 
 JobQueue::JobQueue(DatabaseInterface& db,
                    std::unique_ptr<mw::HTTPSessionInterface> http_client,
@@ -21,7 +24,10 @@ JobQueue::~JobQueue()
 
 void JobQueue::start()
 {
-    if(running) return;
+    if(running)
+    {
+        return;
+    }
     running = true;
     worker_thread = std::thread(&JobQueue::workerLoop, this);
     spdlog::info("JobQueue started");
@@ -29,7 +35,10 @@ void JobQueue::start()
 
 void JobQueue::stop()
 {
-    if(!running) return;
+    if(!running)
+    {
+        return;
+    }
     running = false;
     cv.notify_all();
     if(worker_thread.joinable())
@@ -46,7 +55,7 @@ void JobQueue::workerLoop()
         auto jobs_res = db.getPendingJobs(10);
         if(!jobs_res)
         {
-            spdlog::error("Failed to fetch pending jobs: {}", 
+            spdlog::error("Failed to fetch pending jobs: {}",
                           mw::errorMsg(jobs_res.error()));
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
@@ -56,13 +65,17 @@ void JobQueue::workerLoop()
         if(jobs.empty())
         {
             std::unique_lock<std::mutex> lk(cv_m);
-            cv.wait_for(lk, std::chrono::seconds(5), [this]{ return !running; });
+            cv.wait_for(lk, std::chrono::seconds(5),
+                        [this] { return !running; });
             continue;
         }
 
         for(const auto& job : jobs)
         {
-            if(!running) break;
+            if(!running)
+            {
+                break;
+            }
             processJob(job);
         }
     }
@@ -93,7 +106,7 @@ void JobQueue::processJob(const Job& job)
     catch(const std::exception& e)
     {
         spdlog::error("Job {} failed: {}", job.id, e.what());
-        
+
         // Retry logic
         int attempts = job.attempts + 1;
         if(attempts >= 5)
@@ -132,30 +145,34 @@ void JobQueue::deliverActivity(const Job& job)
     mw::URL url_obj = *mw::URL::fromStr(inbox);
     std::string target = "post " + url_obj.path();
     std::string date = http_utils::getHttpDate();
-    
+
     // Digest
     auto digest_bytes = mw::SHA256Hasher().hashToBytes(body);
-    if(!digest_bytes) throw std::runtime_error("Failed to hash body");
+    if(!digest_bytes)
+    {
+        throw std::runtime_error("Failed to hash body");
+    }
     std::string digest = "SHA-256=" + mw::base64Encode(*digest_bytes);
 
     std::string host = url_obj.host();
-    if(url_obj.port() != "80" && url_obj.port() != "443" && !url_obj.port().empty())
+    if(url_obj.port() != "80" && url_obj.port() != "443" &&
+       !url_obj.port().empty())
     {
         host += ":" + url_obj.port();
     }
 
     // Signing String
     // (request-target) host date digest
-    std::string to_sign = "(request-target): " + target + "\n" + 
-                          "host: " + host + "\n" + 
-                          "date: " + date + "\n" + 
+    std::string to_sign = "(request-target): " + target + "\n" +
+                          "host: " + host + "\n" + "date: " + date + "\n" +
                           "digest: " + digest;
 
-    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256, 
-                              *user.private_key, to_sign);
+    auto sig_bytes = crypto->sign(mw::SignatureAlgorithm::RSA_V1_5_SHA256,
+                                  *user.private_key, to_sign);
     if(!sig_bytes)
     {
-        throw std::runtime_error("Failed to sign request: " + mw::errorMsg(sig_bytes.error()));
+        throw std::runtime_error("Failed to sign request: " +
+                                 mw::errorMsg(sig_bytes.error()));
     }
     std::string signature = mw::base64Encode(*sig_bytes);
 
@@ -166,8 +183,10 @@ void JobQueue::deliverActivity(const Job& job)
         s_url->fragment("main-key");
         key_id = s_url->str();
     }
-    std::string header = "keyId=\"" + key_id + "\",algorithm=\"hs2019\"," + 
-                         "headers=\" (request-target) host date digest\",signature=\"" + signature + "\"";
+    std::string header =
+        "keyId=\"" + key_id + "\",algorithm=\"hs2019\"," +
+        "headers=\" (request-target) host date digest\",signature=\"" +
+        signature + "\"";
 
     mw::HTTPRequest req(inbox);
     req.setPayload(body);
@@ -180,12 +199,14 @@ void JobQueue::deliverActivity(const Job& job)
     auto res = http_client->post(req);
     if(!res)
     {
-        throw std::runtime_error("HTTP POST failed: " + mw::errorMsg(res.error()));
+        throw std::runtime_error("HTTP POST failed: " +
+                                 mw::errorMsg(res.error()));
     }
-    
+
     int status = (*res)->status;
     if(status < 200 || status >= 300)
     {
-        throw std::runtime_error("HTTP POST returned status " + std::to_string(status));
+        throw std::runtime_error("HTTP POST returned status " +
+                                 std::to_string(status));
     }
 }

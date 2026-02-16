@@ -1,11 +1,13 @@
+#include <filesystem>
+#include <iostream>
+
+#include <cxxopts.hpp>
+#include <mw/error.hpp>
+#include <spdlog/spdlog.h>
+
+#include "app.hpp"
 #include "config.hpp"
 #include "database.hpp"
-#include "app.hpp"
-#include <iostream>
-#include <spdlog/spdlog.h>
-#include <mw/error.hpp>
-#include <cxxopts.hpp>
-#include <filesystem>
 
 int main(int argc, char* argv[])
 {
@@ -13,14 +15,15 @@ int main(int argc, char* argv[])
     spdlog::info("Unspoken server starting...");
 
     cxxopts::Options options("unspoken", "ActivityPub Microblog Server");
-    options.add_options()
-        ("c,config", "Path to config file", cxxopts::value<std::string>()->default_value("config.yaml"))
-        ("d,data-dir", "Data directory override", cxxopts::value<std::string>())
-        ("h,help", "Print usage");
+    options.add_options()(
+        "c,config", "Path to config file",
+        cxxopts::value<std::string>()->default_value("config.yaml"))(
+        "d,data-dir", "Data directory override",
+        cxxopts::value<std::string>())("h,help", "Print usage");
 
     auto result = options.parse(argc, argv);
 
-    if (result.count("help"))
+    if(result.count("help"))
     {
         std::cout << options.help() << std::endl;
         return 0;
@@ -34,15 +37,17 @@ int main(int argc, char* argv[])
     }
     catch(const std::exception& e)
     {
-        spdlog::critical("Failed to load config from {}: {}", config_path, e.what());
+        spdlog::critical("Failed to load config from {}: {}", config_path,
+                         e.what());
         return 1;
     }
 
-    if (result.count("data-dir"))
+    if(result.count("data-dir"))
     {
         std::string data_dir = result["data-dir"].as<std::string>();
         Config::get().data_dir = data_dir;
-        Config::get().db_path = (std::filesystem::path(data_dir) / "unspoken.db").string();
+        Config::get().db_path =
+            (std::filesystem::path(data_dir) / "unspoken.db").string();
         spdlog::info("Data directory overridden by command line: {}", data_dir);
     }
 
@@ -60,9 +65,8 @@ int main(int argc, char* argv[])
 
     App::initSecretKey(*db);
 
-    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{
-        "0.0.0.0", Config::get().port
-    };
+    mw::HTTPServer::ListenAddress listen =
+        mw::IPSocketInfo{"0.0.0.0", Config::get().port};
 
     App app(std::move(db), listen);
     auto app_run = app.run();

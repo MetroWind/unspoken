@@ -1,7 +1,9 @@
-#include <gtest/gtest.h>
-#include "database.hpp"
 #include <filesystem>
+
+#include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
+
+#include "database.hpp"
 
 class DatabaseTest : public ::testing::Test
 {
@@ -9,13 +11,13 @@ protected:
     void SetUp() override
     {
         db_path = "test_actpub.db";
-        if (std::filesystem::exists(db_path))
+        if(std::filesystem::exists(db_path))
         {
             std::filesystem::remove(db_path);
         }
         db = std::make_unique<Database>(db_path);
         auto res = db->init();
-        if (!res)
+        if(!res)
         {
             FAIL() << "Failed to init database: " << mw::errorMsg(res.error());
         }
@@ -24,7 +26,7 @@ protected:
     void TearDown() override
     {
         db.reset();
-        if (std::filesystem::exists(db_path))
+        if(std::filesystem::exists(db_path))
         {
             std::filesystem::remove(db_path);
         }
@@ -107,8 +109,10 @@ TEST_F(DatabaseTest, PostTimeline)
 TEST_F(DatabaseTest, FollowDAO)
 {
     User u1, u2;
-    u1.username = "u1"; u1.uri="u1";
-    u2.username = "u2"; u2.uri="u2";
+    u1.username = "u1";
+    u1.uri = "u1";
+    u2.username = "u2";
+    u2.uri = "u2";
     auto id1 = *db->createUser(u1);
     auto id2 = *db->createUser(u2);
 
@@ -117,7 +121,7 @@ TEST_F(DatabaseTest, FollowDAO)
     f.target_id = id2;
     f.status = 0;
     f.uri = "follow_uri";
-    
+
     ASSERT_TRUE(db->createFollow(f));
 
     auto got = db->getFollow(id1, id2);
@@ -137,7 +141,9 @@ TEST_F(DatabaseTest, FollowDAO)
 
 TEST_F(DatabaseTest, MediaDAO)
 {
-    User u; u.username="u"; u.uri="u";
+    User u;
+    u.username = "u";
+    u.uri = "u";
     auto uid = *db->createUser(u);
 
     Media m;
@@ -162,7 +168,7 @@ TEST_F(DatabaseTest, JobDAO)
     j.attempts = 0;
     j.status = 0;
     j.next_try = 100;
-    
+
     auto jid = db->enqueueJob(j);
     ASSERT_TRUE(jid.has_value());
 
@@ -174,7 +180,7 @@ TEST_F(DatabaseTest, JobDAO)
     ASSERT_TRUE(db->updateJob(*jid, 1, 1, 200));
     // It shouldn't be pending anymore if we query for pending?
     // Implementation of getPendingJobs usually filters by status=0 and time.
-    
+
     jobs = db->getPendingJobs(10);
     EXPECT_TRUE(jobs->empty()); // Status 1 is not pending? 0=Pending.
 
@@ -183,7 +189,9 @@ TEST_F(DatabaseTest, JobDAO)
 
 TEST_F(DatabaseTest, SessionDAO)
 {
-    User u; u.username="u"; u.uri="u";
+    User u;
+    u.username = "u";
+    u.uri = "u";
     auto uid = *db->createUser(u);
 
     Session s;

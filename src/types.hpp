@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string>
-#include <optional>
-#include <vector>
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
 
 enum class Visibility : int
 {
@@ -33,7 +33,10 @@ struct User
     std::optional<std::string> followers;
     std::optional<std::string> following;
 
-    bool isLocal() const { return !host.has_value(); }
+    bool isLocal() const
+    {
+        return !host.has_value();
+    }
 };
 
 struct Post
@@ -94,5 +97,4 @@ struct Session
     int64_t expires_at;
 
     std::string csrf_token;
-
 };
