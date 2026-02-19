@@ -148,4 +148,9 @@ if(UNSPOKEN_BUILD_TESTS)
   set_property(TARGET unit_tests PROPERTY CXX_STANDARD 23)
   target_link_libraries(unit_tests PRIVATE ${LIBS} GTest::gtest_main GTest::gmock)
   target_include_directories(unit_tests PRIVATE ${INCLUDES})
+  set_target_properties(unit_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}
+  )
 endif()

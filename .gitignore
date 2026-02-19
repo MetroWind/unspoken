@@ -3,3 +3,5 @@ build/
 unspoken.db*
 actpub.db
 config.yaml
+unit_tests
+data.db
