@@ -151,6 +151,9 @@ private:
     mw::E<std::string> getWebFingerUrl(const std::string& domain,
                                        const std::string& resource);
 
+    void logRemoteActivity(const mw::HTTPServer::Request& req,
+                           const mw::HTTPServer::Response& res);
+
     std::unique_ptr<DatabaseInterface> db;
     std::unique_ptr<mw::HTTPSessionInterface> http_client;
     std::unique_ptr<mw::CryptoInterface> crypto;

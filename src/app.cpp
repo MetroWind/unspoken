@@ -593,6 +593,15 @@ void App::handleNodeInfo2(const mw::HTTPServer::Request&,
     res.set_content(j.dump(), "application/json");
 }
 
+void App::logRemoteActivity(const mw::HTTPServer::Request& req,
+                            const mw::HTTPServer::Response& res)
+{
+    std::string remote_host =
+        req.has_header("Host") ? req.get_header_value("Host") : "unknown";
+    spdlog::info("Remote activity: host={} method={} url={} status={}",
+                 remote_host, req.method, req.path, res.status);
+}
+
 void App::handleInbox(const mw::HTTPServer::Request& req,
                       mw::HTTPServer::Response& res)
 {
@@ -609,14 +618,17 @@ void App::handleInbox(const mw::HTTPServer::Request& req,
             spdlog::error("Failed to process activity: {}",
                           mw::errorMsg(process_res.error()));
             res.status = 500;
+            logRemoteActivity(req, res);
             return;
         }
         res.status = 202;
+        logRemoteActivity(req, res);
     }
     catch(const std::exception& e)
     {
         res.status = 400;
         res.set_content("Invalid JSON", "text/plain");
+        logRemoteActivity(req, res);
     }
 }
 
@@ -869,28 +881,38 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
         j["name"] = target.display_name;
         j["summary"] = target.bio;
 
-        std::string base_url = mw::URL::fromStr(Config::get().server_url_root)
-                                   ->appendPath("u")
-                                   .appendPath(target.username)
-                                   .str();
+        auto base_url = mw::URL::fromStr(Config::get().server_url_root);
+        base_url->appendPath("u").appendPath(target.username);
+        std::string base_url_str = base_url->str();
 
         if(is_local)
         {
-            j["inbox"] = base_url + "/inbox";
-            j["outbox"] = base_url + "/outbox";
-            j["followers"] = base_url + "/followers";
-            j["following"] = base_url + "/following";
+            auto local_inbox = *base_url;
+            j["inbox"] = local_inbox.appendPath("inbox").str();
+            auto local_outbox = *base_url;
+            j["outbox"] = local_outbox.appendPath("outbox").str();
+            auto local_followers = *base_url;
+            j["followers"] = local_followers.appendPath("followers").str();
+            auto local_following = *base_url;
+            j["following"] = local_following.appendPath("following").str();
         }
         else
         {
             auto use_or_compute =
                 [&base_url](const std::optional<std::string>& opt,
                             const char* path) -> std::string
-            { return (opt && !opt->empty()) ? *opt : base_url + path; };
-            j["inbox"] = use_or_compute(target.inbox, "/inbox");
-            j["outbox"] = use_or_compute(target.outbox, "/outbox");
-            j["followers"] = use_or_compute(target.followers, "/followers");
-            j["following"] = use_or_compute(target.following, "/following");
+            {
+                if(opt && !opt->empty())
+                {
+                    return *opt;
+                }
+                auto url = *base_url;
+                return url.appendPath(path).str();
+            };
+            j["inbox"] = use_or_compute(target.inbox, "inbox");
+            j["outbox"] = use_or_compute(target.outbox, "outbox");
+            j["followers"] = use_or_compute(target.followers, "followers");
+            j["following"] = use_or_compute(target.following, "following");
         }
 
         auto t_uri = mw::URL::fromStr(target.uri);
@@ -908,8 +930,16 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
         j["publicKey"] = {{"id", key_id},
                           {"owner", target.uri},
                           {"publicKeyPem", target.public_key}};
-        auto root_url = mw::URL::fromStr(Config::get().server_url_root);
-        j["endpoints"]["sharedInbox"] = root_url->appendPath("inbox").str();
+
+        if(target.shared_inbox && !target.shared_inbox->empty())
+        {
+            j["endpoints"]["sharedInbox"] = *target.shared_inbox;
+        }
+        else
+        {
+            auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+            j["endpoints"]["sharedInbox"] = root_url->appendPath("inbox").str();
+        }
 
         res.set_content(j.dump(), "application/activity+json");
         return;
