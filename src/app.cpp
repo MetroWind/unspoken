@@ -875,12 +875,18 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
                            .appendPath(target.username)
                            .str()
                      : user_url;
-        j["inbox"] = target.inbox ? *target.inbox : base_url + "/inbox";
-        j["outbox"] = target.outbox ? *target.outbox : base_url + "/outbox";
-        j["followers"] =
-            target.followers ? *target.followers : base_url + "/followers";
-        j["following"] =
-            target.following ? *target.following : base_url + "/following";
+        auto has_non_empty = [](const std::optional<std::string>& opt)
+        { return opt && !opt->empty(); };
+        j["inbox"] =
+            has_non_empty(target.inbox) ? *target.inbox : base_url + "/inbox";
+        j["outbox"] = has_non_empty(target.outbox) ? *target.outbox
+                                                   : base_url + "/outbox";
+        j["followers"] = has_non_empty(target.followers)
+                             ? *target.followers
+                             : base_url + "/followers";
+        j["following"] = has_non_empty(target.following)
+                             ? *target.following
+                             : base_url + "/following";
 
         auto t_uri = mw::URL::fromStr(target.uri);
         std::string key_id = target.uri;
@@ -899,8 +905,9 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
                           {"publicKeyPem", target.public_key}};
         auto root_url = mw::URL::fromStr(Config::get().server_url_root);
         j["endpoints"]["sharedInbox"] =
-            target.shared_inbox ? *target.shared_inbox
-                                : root_url->appendPath("inbox").str();
+            has_non_empty(target.shared_inbox)
+                ? *target.shared_inbox
+                : root_url->appendPath("inbox").str();
 
         res.set_content(j.dump(), "application/activity+json");
         return;
