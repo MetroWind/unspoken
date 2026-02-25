@@ -61,6 +61,11 @@ public:
     void handleWebFinger(const mw::HTTPServer::Request& req,
                          mw::HTTPServer::Response& res);
 
+    /// Handles host-meta XRD discovery requests.
+    /// Returns XRD XML with webfinger template.
+    void handleHostMeta(const mw::HTTPServer::Request& req,
+                        mw::HTTPServer::Response& res);
+
     /// Handles NodeInfo discovery requests.
     /// Returns links to the supported NodeInfo versions.
     void handleNodeInfo(const mw::HTTPServer::Request& req,

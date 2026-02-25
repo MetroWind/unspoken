@@ -185,6 +185,10 @@ void App::setup()
                [this](const mw::HTTPServer::Request& req,
                       mw::HTTPServer::Response& res)
                { handleWebFinger(req, res); });
+    server.Get("/.well-known/host-meta",
+               [this](const mw::HTTPServer::Request& req,
+                      mw::HTTPServer::Response& res)
+               { handleHostMeta(req, res); });
     server.Get("/.well-known/nodeinfo",
                [this](const mw::HTTPServer::Request& req,
                       mw::HTTPServer::Response& res)
@@ -528,6 +532,23 @@ void App::handleWebFinger(const mw::HTTPServer::Request& req,
     j["links"].push_back(link_profile);
 
     res.set_content(j.dump(), "application/jrd+json");
+}
+
+void App::handleHostMeta(const mw::HTTPServer::Request&,
+                         mw::HTTPServer::Response& res)
+{
+    auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+    root_url->appendPath(".well-known/webfinger");
+    root_url->query("resource={uri}");
+
+    std::string xrd = R"(<?xml version="1.0" encoding="UTF-8"?>
+<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">
+  <Link type="application/xrd+xml" template=")" +
+                      root_url->str() +
+                      R"(" rel="lrdd" />
+</XRD>)";
+
+    res.set_content(xrd, "application/xrd+xml");
 }
 
 void App::handleNodeInfo(const mw::HTTPServer::Request&,

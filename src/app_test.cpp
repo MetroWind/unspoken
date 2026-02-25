@@ -254,6 +254,29 @@ TEST_F(AppTest, NodeInfo)
     app.wait();
 }
 
+TEST_F(AppTest, HostMeta)
+{
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 18080};
+    App app(std::move(db_mock), listen);
+
+    auto start_res = app.start();
+    ASSERT_TRUE(start_res);
+
+    {
+        mw::HTTPSession client;
+        auto res = client.get("http://localhost:18080/.well-known/host-meta");
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+        EXPECT_THAT((*res)->payloadAsStr(), HasSubstr("application/xrd+xml"));
+        EXPECT_THAT((*res)->payloadAsStr(),
+                    HasSubstr("http://localhost:18080/.well-known/webfinger?"
+                              "resource={uri}"));
+    }
+    app.stop();
+    app.wait();
+}
+
 TEST_F(AppTest, AuthEndpoints_Unavailable)
 {
     auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
