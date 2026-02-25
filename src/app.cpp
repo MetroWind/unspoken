@@ -844,6 +844,16 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
     }
     auto target = *user_res.value();
 
+    std::string user_url = target.uri;
+    bool is_local = target.host == std::nullopt || target.host->empty();
+    if(is_local && !user_url.starts_with("http"))
+    {
+        user_url = mw::URL::fromStr(Config::get().server_url_root)
+                       ->appendPath("u")
+                       .appendPath(target.username)
+                       .str();
+    }
+
     // Check Accept header for JSON
     if(req.has_header("Accept") &&
        req.get_header_value("Accept").find("application/activity+json") !=
@@ -852,17 +862,25 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
         nlohmann::json j;
         j["@context"] = {"https://www.w3.org/ns/activitystreams",
                          "https://w3id.org/security/v1"};
-        j["id"] = target.uri;
+        j["id"] = user_url;
         j["type"] = "Person";
         j["preferredUsername"] = target.username;
         j["name"] = target.display_name;
         j["summary"] = target.bio;
-        j["inbox"] = target.inbox ? *target.inbox : "";
-        j["outbox"] = target.outbox ? *target.outbox : "";
-        j["followers"] = target.followers ? *target.followers : "";
-        j["following"] = target.following ? *target.following : "";
-        j["endpoints"]["sharedInbox"] =
-            target.shared_inbox ? *target.shared_inbox : "";
+
+        std::string base_url =
+            is_local ? mw::URL::fromStr(Config::get().server_url_root)
+                           ->appendPath("u")
+                           .appendPath(target.username)
+                           .str()
+                     : user_url;
+        j["inbox"] = target.inbox ? *target.inbox : base_url + "/inbox";
+        j["outbox"] = target.outbox ? *target.outbox : base_url + "/outbox";
+        j["followers"] =
+            target.followers ? *target.followers : base_url + "/followers";
+        j["following"] =
+            target.following ? *target.following : base_url + "/following";
+
         auto t_uri = mw::URL::fromStr(target.uri);
         std::string key_id = target.uri;
         if(t_uri)
@@ -878,6 +896,10 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
         j["publicKey"] = {{"id", key_id},
                           {"owner", target.uri},
                           {"publicKeyPem", target.public_key}};
+        auto root_url = mw::URL::fromStr(Config::get().server_url_root);
+        j["endpoints"]["sharedInbox"] =
+            target.shared_inbox ? *target.shared_inbox
+                                : root_url->appendPath("inbox").str();
 
         res.set_content(j.dump(), "application/activity+json");
         return;
