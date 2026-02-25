@@ -41,6 +41,12 @@ The database schema uses integer IDs for local foreign keys but stores ActivityP
 *   `host`: TEXT (NULL for local, domain for remote)
 *   `created_at`: INTEGER
 *   `avatar_path`: TEXT
+*   `oidc_subject`: TEXT UNIQUE (OIDC subject identifier)
+*   `inbox`: TEXT (Remote user's inbox URL, computed for local users)
+*   `shared_inbox`: TEXT (Remote user's shared inbox URL)
+*   `outbox`: TEXT (Remote user's outbox URL, computed for local users)
+*   `followers`: TEXT (Remote user's followers URL, computed for local users)
+*   `following`: TEXT (Remote user's following URL, computed for local users)
 
 #### `posts`
 *   `id`: INTEGER PK AUTOINCREMENT
@@ -58,11 +64,18 @@ The database schema uses integer IDs for local foreign keys but stores ActivityP
 *   `target_id`: INTEGER FK(users)
 *   `status`: INTEGER (0=Pending, 1=Accepted)
 *   `uri`: TEXT (AP Activity ID)
+*   PRIMARY KEY (follower_id, target_id)
 
 #### `likes` / `announces`
 *   `user_id`: INTEGER FK(users)
 *   `post_id`: INTEGER FK(posts)
 *   `created_at`: INTEGER
+*   PRIMARY KEY (user_id, post_id)
+
+#### `bookmarks`
+*   `user_id`: INTEGER FK(users)
+*   `post_id`: INTEGER FK(posts)
+*   PRIMARY KEY (user_id, post_id)
 
 #### `jobs`
 *   `id`: INTEGER PK AUTOINCREMENT
@@ -78,6 +91,16 @@ The database schema uses integer IDs for local foreign keys but stores ActivityP
 *   `filename`: TEXT
 *   `mime_type`: TEXT
 *   `uploader_id`: INTEGER FK(users)
+
+#### `sessions`
+*   `token`: TEXT PRIMARY KEY
+*   `user_id`: INTEGER FK(users)
+*   `expires_at`: INTEGER
+*   `csrf_token`: TEXT
+
+#### `system_config`
+*   `key`: TEXT PRIMARY KEY
+*   `value`: TEXT
 
 ## 4. Modules Detail
 
@@ -109,10 +132,23 @@ Encapsulates all SQL queries.
 *   **Router**:
     *   `GET /`: Home timeline (Public or User's).
     *   `GET /u/{username}`: Profile (HTML or JSON based on Accept header).
+    *   `GET /u/{username}/outbox`: User's outbox (OrderedCollection).
     *   `GET /p/{id}`: Post detail (HTML or JSON).
-    *   `POST /u/{username}/inbox`: AP Inbox.
+    *   `POST /u/{username}/inbox`: User's inbox (also handles shared inbox at `/inbox`).
+    *   `POST /inbox`: Shared inbox for federation.
     *   `POST /auth/login`: Start OIDC flow.
     *   `GET /auth/callback`: OIDC callback.
+    *   `GET /auth/setup_username`: Username setup form.
+    *   `POST /auth/setup_username`: Username setup handler.
+    *   `GET /auth/logout`: Logout handler.
+    *   `POST /post`: Create new post.
+    *   `GET /search`: Search page.
+    *   `POST /api/upload`: Upload media.
+    *   `POST /api/follow`: Follow a user.
+    *   `GET /.well-known/webfinger`: WebFinger endpoint.
+    *   `GET /.well-known/host-meta`: Host metadata.
+    *   `GET /.well-known/nodeinfo`: NodeInfo endpoint.
+    *   `GET /nodeinfo/2.0`: NodeInfo v2.0.
 *   **Controllers**:
     *   `WebController`: Renders Inja templates.
     *   `ActivityPubController`: Returns JSON-LD.
@@ -125,7 +161,16 @@ A polling loop or conditioned variable in a separate thread.
 4.  On Success: Delete job.
 5.  On Failure: Increment `attempts`, calculate exponential backoff, update `next_try`, set `status=0`.
 
-## 5. Security & Privacy
+## 5. Actor JSON Generation
+
+When serving the Actor JSON for a user (`GET /u/{username}` with `Accept: application/activity+json`):
+
+*   **Local users**: All endpoints (inbox, outbox, followers, following) are computed from the server URL (e.g., `https://example.com/u/{username}/inbox`).
+*   **Remote users**: Endpoints are read from the database if available.
+*   **sharedInbox**: Always uses the server's main `/inbox` URL.
+*   **Public Key**: Always served from the database (local or cached remote key).
+
+## 6. Security & Privacy
 
 *   **HTTP Signatures**: Strict verification for all incoming federation traffic.
 *   **CSRF**: Token generation and validation for all local POST forms.
@@ -135,26 +180,29 @@ A polling loop or conditioned variable in a separate thread.
     *   *Followers-Only*: Served only if request is signed by a follower (for AP) or viewer is logged-in follower (Web).
     *   *Direct*: Filtered strictly by audience.
 
-## 6. File Handling
+## 7. File Handling
 *   **Uploads**:
     *   Calculate SHA256.
     *   Path: `uploads/{first_char}/{hash}.{ext}`.
     *   Deduplication: Check if hash exists in DB/Filesystem before saving.
 *   **Serving**: Static file handler in `libmw`.
 
-## 7. Configuration
+## 8. Configuration
 *   Format: YAML.
 *   Fields: `server_domain`, `port`, `db_path`, `oidc_client_id`, `oidc_secret`, `secret_key` (for sessions).
 
-## 8. HTTP Signatures Implementation Details
+## 9. HTTP Signatures Implementation Details
 
 To ensure secure federation, the server must implement HTTP Signatures according to `draft-cavage-http-signatures-12` (and compatible with Mastodon).
 
-### 8.1. Algorithms & Standards
-*   **Algorithm**: `hs2019`.
-*   **Key Format**: PEM-encoded RSA 2048-bit keys.
+### 9.1. Algorithms & Standards
+*   **Key Types**: 
+    *   Local users: ED25519 keys (stored in PEM format)
+    *   System Actor: RSA keys (for signing fetch requests)
+*   **Signature Algorithm**: RSA v1.5 SHA-256
+*   **Key Format**: PEM-encoded keys
 
-### 8.2. Incoming Request Verification
+### 9.2. Incoming Request Verification
 All incoming requests to `/inbox` and other secured endpoints must be verified via the `Signature` header.
 
 1.  **Header Parsing**: Extract `keyId`, `headers`, and `signature` from the `Signature` HTTP header.
@@ -172,9 +220,9 @@ All incoming requests to `/inbox` and other secured endpoints must be verified v
     *   *Note*: The fetch request itself must be signed (using the System Actor).
 5.  **Signature Verification**:
     *   Construct the *signing string* based on the `headers` field (e.g., `(request-target) host date digest`).
-    *   Verify the `signature` against the *signing string* using the retrieved Public Key (expecting `hs2019`).
+    *   Verify the `signature` against the *signing string* using the retrieved Public Key (expecting `RSA v1.5 SHA-256`).
 
-### 8.3. Outgoing Request Signing
+### 9.3. Outgoing Request Signing
 All outgoing federation requests must be signed.
 
 1.  **Actor Selection**:
@@ -186,17 +234,17 @@ All outgoing federation requests must be signed.
     *   `Digest`: (If POST) `SHA-256=` + Base64(SHA256(body)).
 3.  **Signing**:
     *   Construct the string to sign (typically: `(request-target) host date digest`).
-    *   Generate signature using the private key (using `hs2019`).
+    *   Generate signature using the private key (using `RSA v1.5 SHA-256`).
 4.  **Signature Header**:
-    *   Format: `keyId="<actor_uri>#main-key",algorithm="hs2019",headers="(request-target) host date digest",signature="<base64_sig>"`
+    *   Format: `keyId="<actor_uri>#main-key",algorithm="rsa-sha256",headers="(request-target) host date digest",signature="<base64_sig>"`
 
-### 8.4. Key Rotation
+### 9.4. Key Rotation
 
-#### 8.4.1. Remote Key Rotation
+#### 9.4.1. Remote Key Rotation
 The server implements a "fetch-on-failure" strategy for remote key rotation. When a signature fails verification with a cached key, the server does not immediately reject the request. Instead, it triggers an asynchronous or immediate re-fetch of the remote Actor's JSON-LD to obtain the latest `publicKeyPem`. Only if verification fails with the newly fetched key is the request definitively rejected with a 401 Unauthorized.
 
-#### 8.4.2. Local Key Rotation
-When a local user (or the System Actor) rotates their RSA key pair:
+#### 9.4.2. Local Key Rotation
+When a local user (or the System Actor) rotates their key pair:
 1.  **Database Update**: The new `public_key` and `private_key` are updated in the `users` table.
 2.  **Actor Update**: The Actor's JSON-LD representation is updated to reflect the new public key.
 3.  **Propagation**: The server SHOULD generate and enqueue an `Update` activity where the `object` is the updated Actor. This activity is delivered to the `sharedInbox` of all known remote instances to notify them of the change and prompt them to update their cached keys.
