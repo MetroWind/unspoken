@@ -869,24 +869,29 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
         j["name"] = target.display_name;
         j["summary"] = target.bio;
 
-        std::string base_url =
-            is_local ? mw::URL::fromStr(Config::get().server_url_root)
-                           ->appendPath("u")
-                           .appendPath(target.username)
-                           .str()
-                     : user_url;
-        auto has_non_empty = [](const std::optional<std::string>& opt)
-        { return opt && !opt->empty(); };
-        j["inbox"] =
-            has_non_empty(target.inbox) ? *target.inbox : base_url + "/inbox";
-        j["outbox"] = has_non_empty(target.outbox) ? *target.outbox
-                                                   : base_url + "/outbox";
-        j["followers"] = has_non_empty(target.followers)
-                             ? *target.followers
-                             : base_url + "/followers";
-        j["following"] = has_non_empty(target.following)
-                             ? *target.following
-                             : base_url + "/following";
+        std::string base_url = mw::URL::fromStr(Config::get().server_url_root)
+                                   ->appendPath("u")
+                                   .appendPath(target.username)
+                                   .str();
+
+        if(is_local)
+        {
+            j["inbox"] = base_url + "/inbox";
+            j["outbox"] = base_url + "/outbox";
+            j["followers"] = base_url + "/followers";
+            j["following"] = base_url + "/following";
+        }
+        else
+        {
+            auto use_or_compute =
+                [&base_url](const std::optional<std::string>& opt,
+                            const char* path) -> std::string
+            { return (opt && !opt->empty()) ? *opt : base_url + path; };
+            j["inbox"] = use_or_compute(target.inbox, "/inbox");
+            j["outbox"] = use_or_compute(target.outbox, "/outbox");
+            j["followers"] = use_or_compute(target.followers, "/followers");
+            j["following"] = use_or_compute(target.following, "/following");
+        }
 
         auto t_uri = mw::URL::fromStr(target.uri);
         std::string key_id = target.uri;
@@ -904,10 +909,7 @@ void App::handleUserProfile(const mw::HTTPServer::Request& req,
                           {"owner", target.uri},
                           {"publicKeyPem", target.public_key}};
         auto root_url = mw::URL::fromStr(Config::get().server_url_root);
-        j["endpoints"]["sharedInbox"] =
-            has_non_empty(target.shared_inbox)
-                ? *target.shared_inbox
-                : root_url->appendPath("inbox").str();
+        j["endpoints"]["sharedInbox"] = root_url->appendPath("inbox").str();
 
         res.set_content(j.dump(), "application/activity+json");
         return;
