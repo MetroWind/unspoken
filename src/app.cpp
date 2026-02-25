@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "commit.hpp"
 #include "config.hpp"
 #include "html_sanitizer.hpp"
 #include "http_utils.hpp"
@@ -1778,6 +1779,7 @@ void App::render(mw::HTTPServer::Response& res,
         nlohmann::json view_data = data;
         view_data["site_name"] = Config::get().nodeinfo.name;
         view_data["site_description"] = Config::get().nodeinfo.description;
+        view_data["commit"] = COMMIT_GIT_HASH;
 
         std::filesystem::path template_file = std::filesystem::absolute(
             std::filesystem::path(Config::get().data_dir) / "templates" /

@@ -1,0 +1,3 @@
+#ifndef COMMIT_HPP
+#define COMMIT_GIT_HASH "@GIT_COMMIT_HASH@"
+#endif

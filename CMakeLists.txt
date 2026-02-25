@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
 project(unspoken VERSION 0.1.0 LANGUAGES CXX C)
+
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_COMMIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+configure_file(
+    ${CMAKE_SOURCE_DIR}/src/commit.hpp.in
+    ${CMAKE_SOURCE_DIR}/src/commit.hpp
+    @ONLY
+)
+
 option(UNSPOKEN_BUILD_TESTS "Build unit tests" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
