@@ -654,3 +654,111 @@ TEST_F(AppTest, PostCreation_Authorized)
     app.stop();
     app.wait();
 }
+
+TEST_F(AppTest, ActorJsonLocalUser)
+{
+    Config::get().server_url_root = "http://localhost:18081";
+    Config::get().port = 18081;
+
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    auto* db_ptr = db_mock.get();
+
+    User u1;
+    u1.id = 1;
+    u1.username = "alice";
+    u1.display_name = "Alice";
+    u1.bio = "Hello world";
+    u1.uri = "http://localhost:18081/u/alice";
+    u1.public_key =
+        "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----";
+
+    EXPECT_CALL(*db_ptr, getUserByUsername("alice"))
+        .WillRepeatedly(Return(std::make_optional(u1)));
+
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 18081};
+    App app(std::move(db_mock), listen);
+
+    auto start_res = app.start();
+    ASSERT_TRUE(start_res);
+
+    {
+        mw::HTTPSession client;
+        mw::HTTPRequest req("http://localhost:18081/u/alice");
+        req.addHeader("Accept", "application/activity+json");
+        auto res = client.get(req);
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+
+        auto j = nlohmann::json::parse((*res)->payloadAsStr());
+        EXPECT_EQ(j["type"], "Person");
+        EXPECT_EQ(j["preferredUsername"], "alice");
+        EXPECT_EQ(j["name"], "Alice");
+        EXPECT_EQ(j["summary"], "Hello world");
+
+        EXPECT_EQ(j["inbox"], "http://localhost:18081/u/alice/inbox");
+        EXPECT_EQ(j["outbox"], "http://localhost:18081/u/alice/outbox");
+        EXPECT_EQ(j["followers"], "http://localhost:18081/u/alice/followers");
+        EXPECT_EQ(j["following"], "http://localhost:18081/u/alice/following");
+        EXPECT_EQ(j["endpoints"]["sharedInbox"],
+                  "http://localhost:18081/inbox");
+    }
+
+    app.stop();
+    app.wait();
+}
+
+TEST_F(AppTest, ActorJsonRemoteUser)
+{
+    Config::get().server_url_root = "http://localhost:18082";
+    Config::get().port = 18082;
+
+    auto db_mock = std::make_unique<NiceMock<DatabaseMock>>();
+    auto* db_ptr = db_mock.get();
+
+    User u1;
+    u1.id = 1;
+    u1.username = "bob";
+    u1.display_name = "Bob";
+    u1.bio = "Remote user";
+    u1.uri = "https://remote.example/users/bob";
+    u1.host = "remote.example";
+    u1.public_key =
+        "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----";
+    u1.inbox = "https://remote.example/users/bob/inbox";
+    u1.shared_inbox = "https://remote.example/inbox";
+    u1.outbox = "https://remote.example/users/bob/outbox";
+    u1.followers = "https://remote.example/users/bob/followers";
+    u1.following = "https://remote.example/users/bob/following";
+
+    EXPECT_CALL(*db_ptr, getUserByUsername("bob"))
+        .WillRepeatedly(Return(std::make_optional(u1)));
+
+    mw::HTTPServer::ListenAddress listen = mw::IPSocketInfo{"127.0.0.1", 18082};
+    App app(std::move(db_mock), listen);
+
+    auto start_res = app.start();
+    ASSERT_TRUE(start_res);
+
+    {
+        mw::HTTPSession client;
+        mw::HTTPRequest req("http://localhost:18082/u/bob");
+        req.addHeader("Accept", "application/activity+json");
+        auto res = client.get(req);
+        ASSERT_TRUE(res.has_value());
+        EXPECT_EQ((*res)->status, 200);
+
+        auto j = nlohmann::json::parse((*res)->payloadAsStr());
+        EXPECT_EQ(j["type"], "Person");
+        EXPECT_EQ(j["preferredUsername"], "bob");
+
+        EXPECT_EQ(j["inbox"], "https://remote.example/users/bob/inbox");
+        EXPECT_EQ(j["outbox"], "https://remote.example/users/bob/outbox");
+        EXPECT_EQ(j["followers"], "https://remote.example/users/bob/followers");
+        EXPECT_EQ(j["following"], "https://remote.example/users/bob/following");
+        EXPECT_EQ(j["endpoints"]["sharedInbox"],
+                  "https://remote.example/inbox");
+    }
+
+    app.stop();
+    app.wait();
+}
