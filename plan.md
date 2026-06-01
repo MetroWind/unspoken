@@ -40,16 +40,18 @@ Phases 4–5 hold most of the risk and iteration.
 
 **Goal:** a buildable project that loads config and answers one route.
 
-- [ ] `CMakeLists.txt` modeled on shrt: C++23, FetchContent for
-      libmw/nlohmann-json/Inja/ryml/MacroDown, find_package for
-      OpenSSL/SQLite3.
-- [ ] `unspoken` and `unspoken_test` targets; wire in the test framework.
-- [ ] `commit.hpp.in` → `commit.hpp` (git hash).
-- [ ] Config struct + ryml loader (§5), full schema, validation, defaults,
+- [x] `CMakeLists.txt` modeled on shrt: C++23, FetchContent for
+      libmw/nlohmann-json/Inja/ryml/MacroDown. (OpenSSL/SQLite3 come in
+      transitively via `mw::crypto`/`mw::sqlite`, which find_package them
+      internally, so no explicit find_package is needed here.)
+- [x] `unspoken` and `unspoken_test` targets; wire in the test framework
+      (GoogleTest via FetchContent, `gtest_discover_tests`).
+- [x] `commit.hpp.in` → `commit.hpp` (git hash).
+- [x] Config struct + ryml loader (§5), full schema, validation, defaults,
       `public_domain` fallback to `url_root` host.
-- [ ] libmw HTTP server boot; bind to `listen_address`/`listen_port`.
-- [ ] A trivial health/static route to prove the server answers.
-- [ ] Logging.
+- [x] libmw HTTP server boot; bind to `listen_address`/`listen_port`.
+- [x] A trivial health/static route to prove the server answers.
+- [x] Logging.
 
 **Exit:** `cmake --build` succeeds; server starts; config errors are
 fatal with a clear message; a GET returns 200.
@@ -60,15 +62,19 @@ fatal with a clear message; a GET returns 200.
 
 **Goal:** the persistence layer, fully tested in isolation.
 
-- [ ] struct module: `User`, `RemoteActor`, `Post`, `Attachment`,
+- [x] struct module: `User`, `RemoteActor`, `Post`, `Attachment`,
       `Follow`, `Like`, `Boost`, `Reaction`, `Cursor`, `Activity`,
-      `Visibility`, the `AS_PUBLIC` constant.
-- [ ] DB init: open, `PRAGMA journal_mode=WAL`, `busy_timeout`,
-      `user_version` dispatch (create schema at v1).
-- [ ] All tables + indices from design §7.3.
-- [ ] Connection-per-thread strategy + `withWriteRetry` wrapper.
-- [ ] Data-module functions (design §7.4) with `E<>` returns.
-- [ ] DB interface + mock (`database_mock.hpp`) so upper layers are
+      `Visibility`, the `AS_PUBLIC` constant. (`src/structs.hpp`)
+- [x] DB init: open, `PRAGMA journal_mode=WAL`, `busy_timeout`,
+      `user_version` dispatch (create schema at v1). (busy_timeout is set
+      via `PRAGMA` since the fetched libmw's `connectFile` takes no
+      timeout arg.)
+- [x] All tables + indices from design §7.3.
+- [x] Connection-per-thread strategy + `withWriteRetry` wrapper. (Each
+      thread constructs its own `DataSourceSQLite` over the same file;
+      `withWriteRetry` retries transient busy/locked errors.)
+- [x] Data-module functions (design §7.4) with `E<>` returns.
+- [x] DB interface + mock (`data_mock.hpp`) so upper layers are
       testable without real SQL.
 
 **Tests:** CRUD round-trips on in-memory SQLite; **cursor pagination

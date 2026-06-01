@@ -1296,7 +1296,9 @@ Keycloak's access/refresh tokens are **not persisted** — OIDC only
 establishes identity once. After login the user rides our **own
 stateful, DB-backed session**:
 - A random opaque token in `sessions` (with `expires_at`), set as a
-  cookie that is **`Secure`, `HttpOnly`, `SameSite=Lax`**.
+  cookie that is **`Secure`, `HttpOnly`, `SameSite=Lax`**. The cookie is
+  named with the project prefix (`unspoken-session`) per the naming
+  convention in §16.10.
 - **Current-user resolution goes through a single abstraction** (§1.2):
   one function `E<std::optional<User>> currentUser(const Request&)` reads
   the cookie, looks up the session, returns the user. The future C2S API
@@ -1440,9 +1442,18 @@ Search both local and remote users. A query that looks like a handle
 actor resolution → display/follow. Local username/display-name matches
 come from the DB. (Full-text post search is future work, §20.)
 
----
+### 16.10 Client-side storage naming
 
-## 17. Attachments
+**Every cookie and every `localStorage`/`sessionStorage` key set by the
+frontend is prefixed with `unspoken-`.** This namespaces our state so it
+cannot collide with another app sharing the origin — relevant because the
+service may be hosted under a path on a shared host (e.g.
+`https://mws.rocks/fedi/`, §6.1), where cookies set at the host apex are
+visible to sibling apps. Examples: `unspoken-session` (the session
+cookie, §15.4), `unspoken-csrf` if a token is ever mirrored client-side
+(the canonical CSRF token is the per-session value in §16.4). Pick a
+single constant for the prefix and reference it everywhere rather than
+hard-coding the literal string at each call site.
 
 PRD lines 151–166.
 

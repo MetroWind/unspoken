@@ -6,3 +6,5 @@ config.yaml
 unit_tests
 data.db
 src/commit.hpp
+
+cmake_test_discovery_*.json
