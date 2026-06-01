@@ -16,8 +16,14 @@ Basically just standard micro blog features.
 * User can choose post visibility (scope) when writing new posts.
   Valid visibilities are Public, Unlisted, Followers-Only, and Direct
   messaging.
+* User can set a content warning and mark a post or its media as
+  sensitive when writing (mapped to the `summary` and `sensitive`
+  fields). Content behind a warning is collapsed and sensitive media is
+  hidden until revealed — for both local and remote posts.
 * User can replay to posts
-* User can repost (“boost”) posts
+* User can repost (“boost”) posts. Only Public and Unlisted posts can
+  be boosted; Followers-Only and Direct posts cannot. Incoming
+  `Announce` activities targeting non-public objects are ignored.
 * User can like posts (post author sees who liked their posts)
 * User can bookmark posts (Doesn’t involve federation)
 * User can react to posts with emoji (pleroma-like reactions)
@@ -40,18 +46,31 @@ Basically just standard micro blog features.
 
 ## Tech features
 
-* Use sqlite for database. WAL should be turned on.
-* Implement the (ActivityPub
-  protocol)[https://www.w3.org/TR/activitypub/] to federate with other
-  servers. Public key should be retrieved first when encountering a
-  remote actor, and stored in the database. Locally-generated keys are
-  stored in the database. Local user’s public keys are served as part
-  of the Actor JSON object. All incoming requests should be verified.
-  See https://swicg.github.io/activitypub-http-signature/ for details.
-  The HTTP signature should follow
-  https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures .
-  Also assume that the incoming HTTP requests are signed with this
-  standard. Use hs2019 to sign.
+* Use sqlite for database with WAL turned on. Background workers and
+  request handlers access the database concurrently, so the database
+  layer must tolerate write contention without spurious failures (lock
+  contention is waited on / retried, with a configurable busy timeout).
+* Implement the [ActivityPub
+  protocol](https://www.w3.org/TR/activitypub/) to federate with other
+  servers. Local users’ key pairs are generated and stored in the
+  database, and their public keys are served as part of the Actor JSON
+  object. A remote actor’s public key is retrieved on first encounter
+  (with a signed GET — see the system actor below, so it works against
+  peers that require authorized fetch) and cached in the database.
+* HTTP signatures follow
+  https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures
+  (see also https://swicg.github.io/activitypub-http-signature/):
+  * All incoming requests must be verified. Verification must accept
+    both `rsa-sha256` and `hs2019` signatures (most of the live
+    Fediverse signs with `rsa-sha256`).
+  * Outgoing requests are signed with `rsa-sha256`.
+  * Incoming requests whose `Date` header is outside a configurable
+    skew window (default 5 minutes) are rejected.
+  * On `POST`/`PUT`, the `Digest` header must be verified against the
+    request body, and `digest` must be among the signed headers (so the
+    signature actually covers body integrity).
+  * If verification fails against a cached remote key, the key is
+    re-fetched once and verification retried (to handle key rotation).
 * Use [libmw](https://github.com/MetroWind/libmw) for HTTP server,
   HTTP queries, HTTP signing and verification, sqlite interfacing, and
   error handling. See example of usage in
@@ -60,6 +79,13 @@ Basically just standard micro blog features.
   queries to remote servers are signed.
 * There should be a “system actor” to sign the queries that are not
   associated with a user.
+* All outbound HTTP requests to remote-controlled URLs (actor
+  resolution, thread/object fetching, WebFinger) must be protected
+  against SSRF: only `https` is allowed, and a request is rejected if
+  its destination resolves to a private, loopback, link-local, ULA, or
+  cloud-metadata address. Filtering is based on the actual connected IP
+  (so it is robust against DNS rebinding), and redirects are capped and
+  re-validated on every hop.
 * Prefer to use `mw::E<>` vs exceptions.
 * Use cmake as the build system. An example cmakelist file which uses
   libmw can be found at
@@ -71,12 +97,25 @@ Basically just standard micro blog features.
   [MacroDown](https://git.xeno.darksair.org/macrodown/tree/master)
   library for markdown rendering.
   * Mention and tag parsing in posts. This is done by defining custom
-    markups in MacroDown. Mentions and tags can be extracted by
-    iterating the syntax tree.
+    markups in MacroDown. Mentions and tags are extracted by iterating
+    the syntax tree, and feed two places: the activity’s `tag` array (as
+    `Mention`/`Hashtag` objects) and the recipient addressing
+    (mentioned actors are added to `to`/`cc`; for Direct visibility the
+    recipients are exactly the mentioned actors).
 * Incoming Delete, Update and Undo activities should be handled
-  accordingly.
+  accordingly. Delete/Undo activities referencing objects the server
+  does not know about are accepted silently. Incoming activities are
+  deduplicated by their `id` so that redelivery is idempotent.
 * Local operations like Delete and Update should be federated to
   remote servers.
+* Implement inbox forwarding (ActivityPub §8.1.2): an inbound activity
+  is forwarded to a local followers collection when it is seen for the
+  first time, is addressed to a collection the server owns, and
+  references an object the server owns (resolved by recursion, bounded
+  by the same configurable limit as thread fetching). Because a
+  forwarded activity’s HTTP signature is the forwarder’s rather than the
+  author’s, forwarded activities are verified by re-fetching the
+  referenced object from its origin server.
 * The backend will have a number of modules:
   * A struct module that contains class/struct definition of notable
     objects (users, activities, etc.)
@@ -85,8 +124,24 @@ Basically just standard micro blog features.
     example
   * A federation module that contains the ActivityPub logic.
   * An app module that has the HTTP server and request handlers.
-* `.well-known/webfinger` and `.well-known/nodeinfo` endpoints. Fields
-  in nodeinfo are configured in the config file.
+* Although the client-to-server (C2S) API is future work (it will be
+  driven by mobile-client support — see below), v1 must not preclude it:
+  request handlers stay thin, with all business logic in the
+  service/federation/data layers so it can be reused by a future API;
+  and authentication resolves the current user through a single
+  abstraction (cookie sessions in v1) that can later also accept OAuth
+  bearer tokens. The integer IDs and the id-keyed cursor pagination
+  already align with the Mastodon API’s string IDs and `max_id`/`min_id`
+  cursoring, so no rework is expected there.
+* `.well-known/webfinger` and `.well-known/nodeinfo` endpoints (the
+  nodeinfo fields are configured in the config file). WebFinger must
+  resolve for both the public domain and the URL-root host, and in both
+  cases return the canonical subject `acct:<user>@<public_domain>` with
+  a `self` link to the actor ID on the URL root (resolving on the
+  URL-root host is required so remote servers that encounter an actor ID
+  first still derive the public-domain handle). When the public domain
+  differs from the URL-root host, the operator’s reverse proxy must
+  serve these `.well-known` paths from the public domain.
 * Use nlohmann/json for JSON manipulation
 * Use a job queue / background workers system to make expensive
   requests async (for example when creating a new post). Failed
@@ -102,6 +157,10 @@ Basically just standard micro blog features.
   is `a1b2c3`, it will be renamed to `a1b2c3.jpg`, and stored as a
   file at `<attachment_dir>/a/a1b2c3.jpg`. Duplicated uploads with
   reuse existing files in the server.
+* A global maximum upload size is configurable in the config file;
+  uploads exceeding it are rejected. Uploaded images (including SVG) are
+  displayed inline as images; uploaded non-image files are served as
+  downloads (never rendered inline).
 * Remote attachment will not be stored in the server. It is up to the
   frontend to download and display the attachment. There will be not
   media cache or proxy on the server.
@@ -113,10 +172,18 @@ Basically just standard micro blog features.
   example.
 * Database schema will be versioned (integer, starting from 1). The
   schema version is stored with `PRAGMA user_version`.
-* The server URL root will be configured in the YAML file. All URLs
-  are “sub URLs” of the URL root. Examples of server URL root:
+* The server URL root (the internal service address) will be configured
+  in the YAML file. All actor IDs and ActivityPub endpoints are “sub
+  URLs” of the URL root. Examples of server URL root:
   * `https://f.mws.rocks/`
   * `https://mws.rocks/fedi/`
+* A public domain — the domain that appears in user handles
+  (`@user@<public_domain>`) — is configurable separately and defaults to
+  the host of the URL root. This allows hosting the service on one
+  (e.g. long internal) domain while exposing clean handles on another.
+  Handles always use a bare domain (no path); actor IDs and all
+  endpoints stay on the URL root. User handles are displayed using the
+  public domain throughout the UI.
 * URL pattern:
   * Users: `<url_root>/u/<username>`
   * Posts: `<url_root>/p/<id>`
@@ -127,6 +194,12 @@ Basically just standard micro blog features.
 * The Users and Posts URL will serve HTML to browser, and
   `application/activity+json` to other servers, based on the `Accept`
   header.
+* Followers-Only and Direct posts must only be served to authorized
+  requesters. For ActivityPub fetches the requester is identified by the
+  HTTP signature (so an unsigned/anonymous request cannot be
+  authorized); for the HTML page, by the logged-in session. Unauthorized
+  requests return `404` (not `403`) so the existence of a private post
+  is not revealed.
 * For efficiency, delivering to a remote instance's sharedInbox is
   preferred over delivering to every individual follower on that
   instance.
@@ -136,10 +209,24 @@ Basically just standard micro blog features.
   database with `AUTOINCREMENT`. The URI of the posts is also a column
   in the post table, which is indexed and unique.
 * User sessions are stateful, with tokens persisted in the database.
+* Authentication uses the OpenID Connect Authorization Code flow against
+  the configured provider (Keycloak). The issuer URL, client ID, and
+  client secret are in the config file; endpoints are obtained from the
+  issuer’s discovery document. The login `state` (CSRF) and the returned
+  ID token (signature, issuer, audience, expiry, and `nonce`) must be
+  validated. A local account is keyed to the OIDC subject (`sub`); on
+  first login the user is asked to set a username, which is unique and
+  immutable once set. OIDC access/refresh tokens are not persisted —
+  after login the user rides the local database-backed session above.
+  Logout clears the local session only. Any user who can authenticate
+  with the provider may register.
 * The HTML content from other servers should be sanitized.
 * Searching for remote users will involve WebFinger lookup.
 * The ActivityPub endpoints for outbox, followers, and following (and
   others if nessesary) should be paginated (`OrderedCollectionPage`).
+  Pagination is cursor-based (stable under insertion and deletion), not
+  offset-based; this applies to both these endpoints and the HTML
+  timeline.
 * All state-changing forms (Login, Post, Follow, Like, etc.) must have
   CSRF (Cross-Site Request Forgery) protection
 * When the user is viewing a thread, and if some of the posts are not
@@ -153,12 +240,19 @@ Basically just standard micro blog features.
      timeline on Mastodon but keeps it public accessible).
    * Followers-Only: `to: [Followers]`, `cc: []`
    * Direct: `to: [Mentioned_Users]`, `cc: []`
+   * `Public_Collection` is the special ActivityPub URI
+     `https://www.w3.org/ns/activitystreams#Public`; its presence in
+     addressing is what marks a post as public.
 * JSON Normalization: Implement a dedicated parsing layer to handle
   ActivityPub polymorphism. This must transparently normalize fields
   such as addressing (to/cc) from either strings or arrays into lists,
   and ID references (e.g., actor, object, attributedTo) from either
   URI strings or embedded objects into canonical URIs, ensuring
-  interoperability across different Fediverse implementations.
+  interoperability across different Fediverse implementations. The
+  public addressing marker must be recognized in all of its legal forms
+  on input (the full IRI `https://www.w3.org/ns/activitystreams#Public`,
+  `as:Public`, and bare `Public`); the full IRI is always emitted on
+  output.
 * All unit tests should be in the same executable.
 
 ## Future works (we don’t need these right now)
@@ -166,6 +260,10 @@ Basically just standard micro blog features.
 * For client API (C2S), we will go the pleroma route:
   mastodon-compatible API with extensions. See
   https://docs-develop.pleroma.social/backend/development/API/differences_in_mastoapi_responses/
+  The primary motivation is supporting mobile clients. It will reuse the
+  v1 service layer and add OAuth token issuance (with Keycloak OIDC as
+  the login backend, Pleroma-style). v1 leaves architectural space for
+  this (see the readiness note in Tech features).
 * Moderation and server-blocking
 * Full text search
 * Notifications
