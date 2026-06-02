@@ -8,6 +8,7 @@
 #include "app.hpp"
 #include "commit.hpp"
 #include "config.hpp"
+#include "data.hpp"
 
 int main(int argc, char** argv)
 {
@@ -42,6 +43,20 @@ int main(int argc, char** argv)
                       mw::errorMsg(config.error()));
         return 1;
     }
+
+    // Initialize the database (create the schema at v1 if fresh) once at
+    // startup so a misconfigured/unwritable DB is a clear fatal error
+    // rather than surfacing later on a request thread. Each thread opens
+    // its own connection afterward (design §7.2).
+    auto db_init = unspoken::DataSourceSQLite::fromFile(
+        config->database_path, config->sqlite_busy_timeout_ms);
+    if(!db_init.has_value())
+    {
+        spdlog::error("Failed to open database {}: {}", config->database_path,
+                      mw::errorMsg(db_init.error()));
+        return 1;
+    }
+    db_init->reset();
 
     App app(*config);
     auto start = app.start();

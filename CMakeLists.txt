@@ -91,6 +91,8 @@ set(SOURCE_FILES
   src/structs.hpp
   src/data.cpp
   src/data.hpp
+  src/auth.cpp
+  src/auth.hpp
   src/app.cpp
   src/app.hpp
 )
@@ -129,6 +131,7 @@ if(UNSPOKEN_BUILD_TESTS)
   set(TEST_FILES
     src/config_test.cpp
     src/data_test.cpp
+    src/auth_test.cpp
   )
 
   # ctest --test-dir build

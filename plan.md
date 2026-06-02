@@ -89,26 +89,51 @@ contention.
 
 **Goal:** real login, the single current-user abstraction, CSRF.
 
-- [ ] OIDC discovery from `<issuer>/.well-known/openid-configuration`.
-- [ ] `/login`: generate `state`+`nonce`, persist (`pending_logins`),
+- [x] OIDC discovery from `<issuer>/.well-known/openid-configuration`.
+      (Implemented in-app in `src/auth.cpp`, **not** via
+      `mw::AuthOpenIDConnect`: that helper exposes neither the ID token
+      nor JWKS validation, so it cannot satisfy the design's §15.3
+      requirement. See the note below.)
+- [x] `/login`: generate `state`+`nonce`, persist (`pending_logins`),
       redirect to authorization endpoint.
-- [ ] `/callback`: validate `state`; exchange code; **validate ID token**
-      (JWKS signature, `iss`, `aud`, `exp`, `nonce`).
-- [ ] Identity keyed on `(iss, sub)`; lookup-or-route-to-setup.
-- [ ] `/setup-username`: validate (charset/length/reserved/unique),
-      generate RSA keypair, create user, immutable username.
-- [ ] Sessions table; `Secure`/`HttpOnly`/`SameSite=Lax` cookie.
-- [ ] `currentUser(Request)` single abstraction (design §15.4) — the seam
+- [x] `/callback`: validate `state`; exchange code; **validate ID token**
+      (JWKS signature, `iss`, `aud`, `exp`, `nonce`). Full RS256 + JWKS
+      verification done in-app (`validateIdToken`); JWK→PEM via OpenSSL 3.
+- [x] Identity keyed on `(iss, sub)`; lookup-or-route-to-setup.
+- [x] `/setup-username`: validate (charset/length/reserved/unique),
+      generate RSA keypair, create user, immutable username. (Pre-auth
+      identity is carried across the redirect in an AES-256-GCM-sealed
+      `unspoken-setup` cookie — no schema change needed.)
+- [x] Sessions table; `Secure`/`HttpOnly`/`SameSite=Lax` cookie.
+- [x] `currentUser(Request)` single abstraction (design §15.4) — the seam
       the future C2S API extends.
-- [ ] CSRF: per-session token, hidden form field, verify on POST.
-- [ ] `/logout` clears local session.
+- [x] CSRF: per-session token, hidden form field, verify on POST.
+      (Token is a server-key-keyed digest of the session token; a separate
+      family guards the pre-session `/setup-username` POST.)
+- [x] `/logout` clears local session.
 
-**Tests:** state mismatch rejected; ID-token validation (mock JWKS);
-session lifecycle; CSRF accept/reject.
+**Tests:** state mismatch rejected; ID-token validation (signature/iss/
+aud/exp/nonce, all from a generated keypair); session lifecycle; CSRF
+accept/reject; base64url round-trip; JWK↔PEM. All in `auth_test.cpp`.
 
 **Exit:** can log into Keycloak, create an account, ride a session.
+✅ Builds green; 50 tests pass; server boots and serves `/`, `/login`,
+`/callback`, `/setup-username`, `/logout`.
 
 > Review checkpoint: OIDC token validation.
+
+> **Decision (Phase 2):** the OIDC flow is implemented directly in
+> `src/auth.cpp` rather than through `mw::AuthOpenIDConnect`. The libmw
+> helper does discovery + code exchange + userinfo but does not expose the
+> `id_token`, omits `state`/`nonce` from the auth URL, and has no
+> JWKS/ID-token validation — so it cannot meet design §15.3. Implementing
+> in-app lets us validate the ID token fully (signature via JWKS, `iss`,
+> `aud`, `exp`, `nonce`).
+>
+> **libmw `base64Decode` bug (fixed):** it rejected empty input and
+> dropped the final byte(s) on the unpadded 3-char tail. Reported via a
+> feature-request doc, fixed in libmw, and the temporary in-app codec was
+> removed — `auth.cpp`'s `base64Url*` now delegate to `mw::base64*`.
 
 ---
 
