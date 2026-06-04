@@ -194,19 +194,17 @@ serving) verified end-to-end against a running instance.
 
 - [x] JSON-LD normalization layer (§9): addressing string/array, ref
       string/object, all three public-marker input forms.
-- [ ] SSRF-safe outbound fetch (§11): https-only, resolved-IP blocklist,
+- [x] SSRF-safe outbound fetch (§11): https-only, resolved-IP blocklist,
       IPv4-mapped normalization, rebinding-proof connect, redirect cap +
       re-validate.
-- [ ] HTTP signature **verification** (§10.1): rsa-sha256 + hs2019,
+- [x] HTTP signature **verification** (§10.1): rsa-sha256 + hs2019,
       clock-skew, digest-bound-to-signature on POST, no silent bypass.
-- [ ] System actor (§12.2): keypair, served JSON, signs keyless GETs.
-      (Keypair persistence and `/actor` JSON are implemented; signing
-      keyless GETs lands with HTTP signature signing / remote fetch.)
-- [ ] Remote actor resolution (§12.3): system-signed GET, cache.
+- [x] System actor (§12.2): keypair, served JSON, signs keyless GETs.
+- [x] Remote actor resolution (§12.3): system-signed GET, cache.
 - [x] Serve Actor JSON (computed) and Object JSON via content negotiation
       (§12.1, §16.2).
 - [x] WebFinger on both domains + canonical subject; NodeInfo (§12.4).
-- [ ] Private-post authz (§16.6): signature-actor (AP) / session (HTML);
+- [x] Private-post authz (§16.6): signature-actor (AP) / session (HTML);
       **404 not 403**; unsigned private fetch → 404.
 
 **Tests:** signature verify suite (good/bad digest/skew/missing-digest/
@@ -224,7 +222,7 @@ and display a remote actor's profile.
 
 **Goal:** activities flow both directions, reliably.
 
-- [ ] HTTP signature **signing** (§10.2): rsa-sha256 cavage; digest on
+- [x] HTTP signature **signing** (§10.2): rsa-sha256 cavage; digest on
       POST; user key vs system key.
 - [ ] Job queue + workers (§14): claim-once transaction, backoff/retry,
       give-up at `job_max_retries`.

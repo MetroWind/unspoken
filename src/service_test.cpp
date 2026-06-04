@@ -120,6 +120,64 @@ TEST(ServiceUri, ActorAndHandle)
     EXPECT_EQ(svc.handleFor("alice"), "@alice@f.test");
 }
 
+TEST(ServiceAuthz, ActorCanViewFollowersPostWhenAcceptedFollower)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    NewPost np;
+    np.local_author_id = alice.id;
+    np.content_html = "<p>secret</p>";
+    np.visibility = Visibility::FOLLOWERS;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, svc.recipientsFor(Visibility::FOLLOWERS, "alice", {}),
+        "https://f.test/p/"));
+
+    Follow f;
+    f.follower_uri = "https://remote.test/u/bob";
+    f.followee_uri = svc.actorUri("alice");
+    f.state = FollowState::ACCEPTED;
+    EXPECT_TRUE(mw::isExpected(db->addFollow(f)));
+
+    ASSIGN_OR_FAIL(bool allowed,
+                   svc.canActorViewPost(post, "https://remote.test/u/bob"));
+    EXPECT_TRUE(allowed);
+    ASSIGN_OR_FAIL(bool denied,
+                   svc.canActorViewPost(post, "https://remote.test/u/eve"));
+    EXPECT_FALSE(denied);
+}
+
+TEST(ServiceAuthz, ActorCanViewDirectPostOnlyWhenAddressed)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    NewPost np;
+    np.local_author_id = alice.id;
+    np.content_html = "<p>dm</p>";
+    np.visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np,
+        svc.recipientsFor(Visibility::DIRECT, "alice",
+                          {"https://remote.test/u/bob"}),
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(bool allowed,
+                   svc.canActorViewPost(post, "https://remote.test/u/bob"));
+    EXPECT_TRUE(allowed);
+    ASSIGN_OR_FAIL(bool denied,
+                   svc.canActorViewPost(post, "https://remote.test/u/eve"));
+    EXPECT_FALSE(denied);
+}
+
 // ─── Emoji registry / substitution (§13.4) ─────────────────────────────
 
 TEST(Emoji, ShortcodeValidation)

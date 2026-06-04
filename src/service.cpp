@@ -162,6 +162,42 @@ mw::E<bool> Service::canViewPost(const Post& post,
     return false;
 }
 
+mw::E<bool> Service::canActorViewPost(const Post& post,
+                                      std::string_view actor_uri) const
+{
+    if(post.visibility == Visibility::PUBLIC
+       || post.visibility == Visibility::UNLISTED)
+    {
+        return true;
+    }
+
+    if(post.local_author_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto author, data.getUserById(*post.local_author_id));
+        if(author.has_value() && actor_uri == actorUri(author->username))
+        {
+            return true;
+        }
+    }
+
+    if(post.visibility == Visibility::FOLLOWERS)
+    {
+        if(!post.local_author_id.has_value()) return false;
+        ASSIGN_OR_RETURN(auto author, data.getUserById(*post.local_author_id));
+        if(!author.has_value()) return false;
+        ASSIGN_OR_RETURN(auto f, data.getFollow(actor_uri,
+                                                actorUri(author->username)));
+        return f.has_value() && f->state == FollowState::ACCEPTED;
+    }
+
+    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
+    for(const auto& r : recipients)
+    {
+        if(r.recipient_uri == actor_uri) return true;
+    }
+    return false;
+}
+
 // ─── Timelines ─────────────────────────────────────────────────────────
 
 mw::E<std::vector<Post>>

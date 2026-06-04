@@ -59,6 +59,8 @@ public:
     // (design §16.6). The viewer is the logged-in user, or nullopt.
     mw::E<bool> canViewPost(const Post& post,
                             const std::optional<User>& viewer) const;
+    mw::E<bool> canActorViewPost(const Post& post,
+                                 std::string_view actor_uri) const;
 
     // ── Timelines ───────────────────────────────────────────────────
     // Home timeline: the viewer's own posts plus posts from local

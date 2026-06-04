@@ -133,6 +133,17 @@ void setJson(mw::HTTPServer::Response& res, const nlohmann::json& json,
     res.set_content(json.dump(), content_type);
 }
 
+unspoken::IncomingHttpRequest incomingRequest(
+    const mw::HTTPServer::Request& req)
+{
+    unspoken::IncomingHttpRequest out;
+    out.method = req.method;
+    out.target = req.target.empty() ? req.path : req.target;
+    out.body = req.body;
+    for(const auto& [k, v] : req.headers) out.headers[k] = v;
+    return out;
+}
+
 // Map a failed E<void> onto the response and report whether it failed.
 // (libmw provides ASSIGN_OR_RESPOND_ERROR only for value-returning E<T>.)
 bool respondIfError(const mw::E<void>& r, mw::HTTPServer::Response& res)
@@ -611,21 +622,45 @@ void App::handlePostView(const Request& req, Response& res) const
     catch(...) { id = 0; }
 
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
-    bool visible = post.has_value();
-    if(post.has_value())
+    if(!post.has_value())
     {
-        ASSIGN_OR_RESPOND_ERROR(visible, svc.canViewPost(*post, viewer), res);
-    }
-    if(!visible)
-    {
-        // 404 (not 403) so private-post existence is not revealed (§16.6).
         auto ctx = baseContext(req, viewer);
         ctx["error"] = "Not found.";
         render(res, 404, "error.html", ctx);
         return;
     }
 
-    if(unspoken::wantsActivityJson(headerValue(req, "Accept")))
+    bool ap_json = unspoken::wantsActivityJson(headerValue(req, "Accept"));
+    bool visible = false;
+    ASSIGN_OR_RESPOND_ERROR(visible, svc.canViewPost(*post, viewer), res);
+    if(!visible && ap_json)
+    {
+        auto verified = unspoken::verifyHttpSignature(
+            config, *ds, crypto, incomingRequest(req),
+            mw::timeToSeconds(mw::Clock::now()));
+        if(verified.has_value())
+        {
+            ASSIGN_OR_RESPOND_ERROR(
+                visible, svc.canActorViewPost(*post, verified->actor_uri),
+                res);
+        }
+    }
+    if(!visible)
+    {
+        // 404 (not 403) so private-post existence is not revealed (§16.6).
+        if(ap_json)
+        {
+            res.status = 404;
+            res.set_content("Not found", "text/plain");
+            return;
+        }
+        auto ctx = baseContext(req, viewer);
+        ctx["error"] = "Not found.";
+        render(res, 404, "error.html", ctx);
+        return;
+    }
+
+    if(ap_json)
     {
         if(!post->local_author_id.has_value())
         {
