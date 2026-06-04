@@ -1,0 +1,16 @@
+{% include "_header.html" %}
+<section class="narrow">
+  <h1>Edit profile</h1>
+  <p class="handle">{{ profile.handle }}</p>
+  <form method="post" action="{{ site.root }}profile">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Display name
+      <input name="display_name" value="{{ profile.display_name }}">
+    </label>
+    <label>Bio (Markdown)
+      <textarea name="bio" rows="5">{{ profile.bio_source }}</textarea>
+    </label>
+    <button type="submit">Save</button>
+  </form>
+</section>
+{% include "_footer.html" %}

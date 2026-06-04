@@ -1,0 +1,32 @@
+<section class="composer">
+  <form method="post" action="{{ site.root }}post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <textarea name="content" rows="4" placeholder="Write a post (Markdown)…"></textarea>
+    <div class="composer-row">
+      <label>CW <input type="text" name="summary" placeholder="content warning"></label>
+      <label class="cb"><input type="checkbox" name="sensitive" value="1"> sensitive</label>
+      <label>visibility
+        <select name="visibility">
+          <option value="public">public</option>
+          <option value="unlisted">unlisted</option>
+          <option value="followers">followers-only</option>
+          <option value="direct">direct</option>
+        </select>
+      </label>
+    </div>
+    <div class="composer-row">
+      <label>attach <input type="file" name="attachments" multiple></label>
+      <button type="submit">Post</button>
+    </div>
+{% if length(emoji) > 0 %}
+    <details class="emoji-pick">
+      <summary>custom emoji ({{ length(emoji) }})</summary>
+      <div class="emoji-grid">
+{% for e in emoji %}
+        <span class="emoji-item" title=":{{ e.shortcode }}:"><img class="emoji" src="{{ e.image_url }}" alt=":{{ e.shortcode }}:"> :{{ e.shortcode }}:</span>
+{% endfor %}
+      </div>
+    </details>
+{% endif %}
+  </form>
+</section>

@@ -1,0 +1,87 @@
+<article class="post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
+  <div class="post-head">
+    <a class="author" href="{{ post.author.profile_url }}">
+      <span class="dname">{{ post.author.display_name }}</span>
+      <span class="handle">{{ post.author.handle }}</span>
+    </a>
+    <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
+    <span class="vis vis-{{ post.visibility }}">{{ post.visibility }}</span>
+  </div>
+
+{% if post.has_summary %}
+  <details class="cw">
+    <summary>{{ post.summary }}</summary>
+    <div class="content">{{ post.content_html }}</div>
+  </details>
+{% else %}
+  <div class="content">{{ post.content_html }}</div>
+{% endif %}
+
+{% if length(post.attachments) > 0 %}
+  <div class="attachments">
+{% for att in post.attachments %}
+{% if att.is_image %}
+{% if att.sensitive %}
+    <details class="sensitive"><summary>sensitive image</summary>
+      <a href="{{ att.url }}"><img src="{{ att.url }}" alt="{{ att.original_name }}"></a>
+    </details>
+{% else %}
+    <a href="{{ att.url }}"><img src="{{ att.url }}" alt="{{ att.original_name }}"></a>
+{% endif %}
+{% else %}
+    <a class="filelink" href="{{ att.url }}" download>{{ att.original_name }} ({{ att.media_type }})</a>
+{% endif %}
+{% endfor %}
+  </div>
+{% endif %}
+
+{% if length(post.reactions) > 0 %}
+  <div class="reactions">
+{% for r in post.reactions %}
+    <span class="react {% if r.reacted %}mine{% endif %}">{{ r.emoji_html }} {{ r.count }}</span>
+{% endfor %}
+  </div>
+{% endif %}
+
+{% if logged_in %}
+  <div class="actions">
+    <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/like">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if post.liked %}
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on">★ {{ post.like_count }}</button>
+{% else %}
+      <button type="submit" class="linkbtn">☆ {{ post.like_count }}</button>
+{% endif %}
+    </form>
+{% if post.can_boost %}
+    <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/boost">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="linkbtn">↻ boost</button>
+    </form>
+{% endif %}
+    <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/bookmark">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if post.bookmarked %}
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on">▮ saved</button>
+{% else %}
+      <button type="submit" class="linkbtn">▯ save</button>
+{% endif %}
+    </form>
+    <form class="inline react-form" method="post" action="{{ site.root }}post/{{ post.id }}/react">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="text" name="emoji" maxlength="40" placeholder="emoji" class="react-input">
+      <button type="submit" class="linkbtn">react</button>
+    </form>
+    <a class="linkbtn" href="{{ site.root }}p/{{ post.id }}">reply</a>
+{% if post.can_delete %}
+    <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/delete"
+          onsubmit="return confirm('Delete this post?');">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="linkbtn danger">delete</button>
+    </form>
+{% endif %}
+  </div>
+{% endif %}
+</article>

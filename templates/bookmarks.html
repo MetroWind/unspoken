@@ -1,0 +1,11 @@
+{% include "_header.html" %}
+<h1 class="page-title">bookmarks</h1>
+<div class="timeline">
+{% if length(posts) == 0 %}
+<p class="empty">No bookmarks yet.</p>
+{% endif %}
+{% for post in posts %}
+{% include "_post.html" %}
+{% endfor %}
+</div>
+{% include "_footer.html" %}

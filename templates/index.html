@@ -1,0 +1,23 @@
+{% include "_header.html" %}
+<h1 class="page-title">
+{% if timeline == "home" %}home timeline{% else %}public timeline{% endif %}
+</h1>
+{% if logged_in %}
+{% include "_composer.html" %}
+{% else %}
+<p class="hint">Showing all public posts on this server. <a href="{{ site.root }}login">Log in</a> to post and see your home timeline.</p>
+{% endif %}
+
+<div class="timeline">
+{% if length(posts) == 0 %}
+<p class="empty">No posts yet.</p>
+{% endif %}
+{% for post in posts %}
+{% include "_post.html" %}
+{% endfor %}
+</div>
+
+{% if has_more %}
+<p class="pager"><a href="{{ site.root }}?max_id={{ next_max_id }}">older →</a></p>
+{% endif %}
+{% include "_footer.html" %}

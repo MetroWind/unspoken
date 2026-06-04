@@ -1,0 +1,32 @@
+{% include "_header.html" %}
+<section class="profile-head">
+  <h1>{{ profile.display_name }}</h1>
+  <p class="handle">{{ profile.handle }}</p>
+  <div class="bio">{{ profile.bio_html }}</div>
+{% if logged_in %}
+{% if is_self %}
+  <p><a class="linkbtn" href="{{ site.root }}profile">edit profile</a></p>
+{% else %}
+  <form class="inline" method="post" action="{{ site.root }}follow">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="username" value="{{ profile.username }}">
+{% if following %}
+    <input type="hidden" name="undo" value="1">
+    <button type="submit" class="linkbtn on">following — unfollow</button>
+{% else %}
+    <button type="submit" class="linkbtn">follow</button>
+{% endif %}
+  </form>
+{% endif %}
+{% endif %}
+</section>
+
+<div class="timeline">
+{% if length(posts) == 0 %}
+<p class="empty">No posts.</p>
+{% endif %}
+{% for post in posts %}
+{% include "_post.html" %}
+{% endfor %}
+</div>
+{% include "_footer.html" %}

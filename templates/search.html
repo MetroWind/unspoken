@@ -1,0 +1,25 @@
+{% include "_header.html" %}
+<section class="narrow">
+  <h1>Search</h1>
+  <form method="get" action="{{ site.root }}search" class="searchform">
+    <input type="text" name="q" value="{{ query }}" placeholder="username or @user@domain" autofocus>
+    <button type="submit">Search</button>
+  </form>
+  <p class="hint">Local users are searched now; remote (WebFinger) lookup arrives in a later phase.</p>
+</section>
+
+<div class="results">
+{% if length(query) > 0 and length(results) == 0 %}
+<p class="empty">No users found.</p>
+{% endif %}
+{% for u in results %}
+  <div class="result">
+    <a class="author" href="{{ u.profile_url }}">
+      <span class="dname">{{ u.display_name }}</span>
+      <span class="handle">{{ u.handle }}</span>
+    </a>
+    <div class="bio">{{ u.bio_html }}</div>
+  </div>
+{% endfor %}
+</div>
+{% include "_footer.html" %}

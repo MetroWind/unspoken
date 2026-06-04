@@ -1,0 +1,29 @@
+{% include "_header.html" %}
+<h1 class="page-title">thread</h1>
+<div class="timeline thread">
+{% for post in posts %}
+{% include "_post.html" %}
+{% endfor %}
+</div>
+
+{% if logged_in %}
+<section class="composer reply">
+  <h2>Reply</h2>
+  <form method="post" action="{{ site.root }}post/{{ reply_to_id }}/reply">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <textarea name="content" rows="3" placeholder="Write a reply (Markdown)…"></textarea>
+    <div class="composer-row">
+      <label>visibility
+        <select name="visibility">
+          <option value="public">public</option>
+          <option value="unlisted">unlisted</option>
+          <option value="followers">followers-only</option>
+          <option value="direct">direct</option>
+        </select>
+      </label>
+      <button type="submit">Reply</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% include "_footer.html" %}
