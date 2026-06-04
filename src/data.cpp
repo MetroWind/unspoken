@@ -132,6 +132,13 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         "ON users(oidc_iss, oidc_sub);"));
 
     DO_OR_RETURN(db.execute(
+        "CREATE TABLE IF NOT EXISTS system_actor ("
+        " id INTEGER PRIMARY KEY CHECK (id = 1),"
+        " private_key_pem TEXT NOT NULL,"
+        " public_key_pem TEXT NOT NULL,"
+        " created_at INTEGER NOT NULL);"));
+
+    DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS remote_actors ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " uri TEXT NOT NULL UNIQUE,"
@@ -441,6 +448,72 @@ DataSourceSQLite::updateUserProfile(int64_t id, std::string_view display_name,
             "UPDATE users SET display_name = ?, bio = ? WHERE id = ?;"));
         DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
             std::string(display_name), std::string(bio), id)));
+        return db->execute(std::move(st));
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<std::vector<User>>
+DataSourceSQLite::searchUsers(std::string_view query, int limit) const
+{
+    // Case-insensitive substring match on username or display_name. The
+    // LIKE wildcards are escaped so a query containing %/_ is literal.
+    std::string escaped;
+    for(char c : query)
+    {
+        if(c == '%' || c == '_' || c == '\\') escaped.push_back('\\');
+        escaped.push_back(c);
+    }
+    std::string pattern = "%" + escaped + "%";
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(std::format(
+        "SELECT {} FROM users WHERE username LIKE ? ESCAPE '\\' "
+        "OR display_name LIKE ? ESCAPE '\\' ORDER BY username ASC LIMIT ?;",
+        USER_COLS)));
+    DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
+        pattern, pattern, static_cast<int64_t>(limit))));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
+        std::string, std::string, std::string, std::string, std::string,
+        int64_t>(std::move(st))));
+    std::vector<User> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows) out.push_back(rowToUser(r));
+    return out;
+}
+
+// ─── System actor ────────────────────────────────────────────────────
+
+mw::E<std::optional<SystemActor>> DataSourceSQLite::getSystemActor() const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT private_key_pem, public_key_pem, created_at "
+        "FROM system_actor WHERE id = 1;"));
+    ASSIGN_OR_RETURN(auto rows,
+                     (db->eval<std::string, std::string, int64_t>(
+                         std::move(st))));
+    if(rows.empty()) return std::optional<SystemActor>{};
+    SystemActor actor;
+    actor.private_key_pem = std::get<0>(rows[0]);
+    actor.public_key_pem = std::get<1>(rows[0]);
+    actor.created_at = std::get<2>(rows[0]);
+    return actor;
+}
+
+mw::E<void>
+DataSourceSQLite::setSystemActor(std::string_view private_key_pem,
+                                 std::string_view public_key_pem) const
+{
+    int64_t created = now();
+    auto txn = [&]() -> mw::E<void> {
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "INSERT INTO system_actor "
+            "(id, private_key_pem, public_key_pem, created_at) "
+            "VALUES (1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "private_key_pem = excluded.private_key_pem, "
+            "public_key_pem = excluded.public_key_pem;"));
+        DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
+            std::string(private_key_pem), std::string(public_key_pem),
+            created)));
         return db->execute(std::move(st));
     };
     return withWriteRetry(txn);
@@ -798,6 +871,45 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
 }
 
 mw::E<std::vector<Post>>
+DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
+                                  const Cursor& c, int limit) const
+{
+    if(author_ids.empty()) return std::vector<Post>{};
+
+    // Build "local_author_id IN (?,?,...)" then the cursor predicates.
+    std::string in_list;
+    for(size_t i = 0; i < author_ids.size(); ++i)
+        in_list += (i == 0) ? "?" : ",?";
+    std::string where = std::format("local_author_id IN ({})", in_list);
+    std::string sql = buildTimelineSql(c, where);
+
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
+    int idx = 1;
+    for(int64_t id : author_ids)
+        DO_OR_RETURN(internalBindAt(st, idx++, id));
+    if(c.max_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
+    if(c.min_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
+
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string,
+        std::optional<int64_t>, std::optional<int64_t>, std::string,
+        std::optional<std::string>, std::optional<std::string>, int64_t,
+        std::string, std::optional<std::string>, int64_t,
+        std::optional<std::string>>(std::move(st))));
+    std::vector<Post> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        ASSIGN_OR_RETURN(Post p, rowToPost(r));
+        out.push_back(std::move(p));
+    }
+    if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
+    return out;
+}
+
+mw::E<std::vector<Post>>
 DataSourceSQLite::threadFor(std::string_view root_uri) const
 {
     // Posts whose uri == root, or that reply (directly) to it. Recursive
@@ -1093,6 +1205,16 @@ mw::E<void> DataSourceSQLite::removeBookmark(int64_t user_id,
         return db->execute(std::move(st));
     };
     return withWriteRetry(txn);
+}
+
+mw::E<bool> DataSourceSQLite::isBookmarked(int64_t user_id,
+                                           int64_t post_id) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ? LIMIT 1;"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t>(user_id, post_id)));
+    ASSIGN_OR_RETURN(auto rows, db->eval<int64_t>(std::move(st)));
+    return !rows.empty();
 }
 
 mw::E<std::vector<Post>>

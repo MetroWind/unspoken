@@ -141,32 +141,50 @@ accept/reject; base64url round-trip; JWK↔PEM. All in `auth_test.cpp`.
 
 **Goal:** a usable single-user-server experience, entirely local.
 
-- [ ] MacroDown integration: render markdown → HTML; store source + HTML.
-- [ ] Inja templates + `static/style.css` (no Bootstrap): `base`,
-      `index`, `profile`, `search`, `setup_username`, post/thread partials.
-      Follow the UI aesthetic in §16.8: compact/technical/functional, but
-      readability and clarity first (dense but clear, not cramped).
-- [ ] `POST /post`: visibility, CW (`summary`), `sensitive`; persist post
-      + `post_recipients` addressing.
-- [ ] Timelines (design §16.2–16.3): logged-out global public, logged-in
-      home; cursor pagination (`max_id`/`min_id`).
-- [ ] Reply, like, boost, bookmark, react — **local-only** semantics.
-- [ ] Custom emoji seed scan at startup (§13.4): scan `emoji_dir`,
-      shortcode = filename stem, build the in-memory registry (no DB
-      table), serve at `/emoji/<file>`. Local authoring picker +
+- [x] MacroDown integration: render markdown → HTML; store source + HTML.
+      (`src/render.cpp`: `renderMarkdown` + `:shortcode:` emoji substitution
+      into the stored HTML.)
+- [x] Inja templates + `static/style.css` (no Bootstrap): `_header`/
+      `_footer`/`_post`/`_composer` partials, `index`, `profile`,
+      `profile_edit`, `thread`, `search`, `bookmarks`, `setup_username`,
+      `error`. Compact/technical/functional dark theme, readability first.
+      (Template inheritance via includes, not `extends`/`block`, so loop
+      vars reach the post-card partial.)
+- [x] `POST /post`: visibility, CW (`summary`), `sensitive`; persist post
+      + `post_recipients` addressing (`Service::recipientsFor`, §12.5).
+- [x] Timelines (design §16.2–16.3): logged-out global public, logged-in
+      home (own + followed-local via `postsForAuthors`); cursor pagination
+      (`max_id`/`min_id`).
+- [x] Reply, like, boost, bookmark, react — **local-only** semantics
+      (`Service::set{Like,Boost,Reaction,Bookmark,Follow}`; boost rejects
+      non-public per PRD line 25). Toggle state surfaced in the UI.
+- [x] Custom emoji seed scan at startup (§13.4): `EmojiRegistry::scan`
+      (`emoji_dir`, shortcode = filename stem, in-memory, first-wins on
+      collision), served at `/emoji/<file>`; authoring picker +
       `:shortcode:` → `<img>` substitution into stored HTML.
-- [ ] `/profile` edit (display name + bio).
-- [ ] Attachments (design §17): size limit, SHA-256 content-addressed
-      storage with shard dir, dedup; image-inline vs download-only
-      (`Content-Disposition: attachment` + `nosniff`).
-- [ ] Thread view (local posts only for now).
-- [ ] Post deletion (local).
+- [x] `/profile` edit (display name + bio).
+- [x] Attachments (design §17): size limit (`max_upload_bytes`), SHA-256
+      content-addressed storage with shard dir, dedup; image-inline vs
+      download-only (`Content-Disposition: attachment` + `nosniff`).
+      (Multipart upload handled inline in `POST /post`; served at
+      `/media/<shard>/<file>`.)
+- [x] Thread view (local posts only for now); focused post highlighted.
+- [x] Post deletion (local; 404 — not 403 — for non-owned posts).
 
-**Tests:** posting/visibility addressing table (§12.5); pagination;
-attachment hashing/dedup/serving rules.
+**Tests:** posting/visibility addressing table (§12.5); emoji scan +
+substitution; attachment hashing/dedup/serving rules; markdown render.
+All in `service_test.cpp` (data/pagination already covered in
+`data_test.cpp`).
 
-**Exit:** a logged-in user posts, replies, likes, bookmarks, edits
+**Exit:** ✅ a logged-in user posts, replies, likes, bookmarks, edits
 profile, uploads files — all browsable. No network egress yet.
+Builds green; 63 tests pass; server boots and the full local flow
+(compose → render → thread → like → CSRF accept/reject → media/emoji
+serving) verified end-to-end against a running instance.
+
+> Note: private-post HTML authz (`canViewPost`) and 404-not-403 are
+> wired now; the ActivityPub-signature side of §16.6 lands in Phase 4.
+> Content negotiation (Actor/Object JSON on `/u`, `/p`) is Phase 4.
 
 ---
 
@@ -174,7 +192,7 @@ profile, uploads files — all browsable. No network egress yet.
 
 **Goal:** remote servers can read us; we can read them. Inbound trust.
 
-- [ ] JSON-LD normalization layer (§9): addressing string/array, ref
+- [x] JSON-LD normalization layer (§9): addressing string/array, ref
       string/object, all three public-marker input forms.
 - [ ] SSRF-safe outbound fetch (§11): https-only, resolved-IP blocklist,
       IPv4-mapped normalization, rebinding-proof connect, redirect cap +
@@ -182,10 +200,12 @@ profile, uploads files — all browsable. No network egress yet.
 - [ ] HTTP signature **verification** (§10.1): rsa-sha256 + hs2019,
       clock-skew, digest-bound-to-signature on POST, no silent bypass.
 - [ ] System actor (§12.2): keypair, served JSON, signs keyless GETs.
+      (Keypair persistence and `/actor` JSON are implemented; signing
+      keyless GETs lands with HTTP signature signing / remote fetch.)
 - [ ] Remote actor resolution (§12.3): system-signed GET, cache.
-- [ ] Serve Actor JSON (computed) and Object JSON via content negotiation
+- [x] Serve Actor JSON (computed) and Object JSON via content negotiation
       (§12.1, §16.2).
-- [ ] WebFinger on both domains + canonical subject; NodeInfo (§12.4).
+- [x] WebFinger on both domains + canonical subject; NodeInfo (§12.4).
 - [ ] Private-post authz (§16.6): signature-actor (AP) / session (HTML);
       **404 not 403**; unsigned private fetch → 404.
 

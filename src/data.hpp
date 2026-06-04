@@ -50,6 +50,17 @@ public:
     virtual mw::E<void>
     updateUserProfile(int64_t id, std::string_view display_name,
                       std::string_view bio) const = 0;
+    // Local user search by username / display-name substring (case-
+    // insensitive), for the search page (§16.9). Remote (WebFinger)
+    // search is Phase 6.
+    virtual mw::E<std::vector<User>>
+    searchUsers(std::string_view query, int limit) const = 0;
+
+    // ── System actor ─────────────────────────────────────────────
+    virtual mw::E<std::optional<SystemActor>> getSystemActor() const = 0;
+    virtual mw::E<void>
+    setSystemActor(std::string_view private_key_pem,
+                   std::string_view public_key_pem) const = 0;
 
     // ── Remote actors ───────────────────────────────────────────
     virtual mw::E<RemoteActor>
@@ -79,6 +90,12 @@ public:
     // Home timeline: posts by the user and by accounts they follow.
     virtual mw::E<std::vector<Post>>
     timelineHome(int64_t user_id, const Cursor& c, int limit) const = 0;
+    // Posts authored by any of the given local users, newest first, one
+    // cursor page. The service layer passes the viewer plus the local
+    // accounts they follow to assemble the home timeline (§16.3).
+    virtual mw::E<std::vector<Post>>
+    postsForAuthors(const std::vector<int64_t>& local_author_ids,
+                    const Cursor& c, int limit) const = 0;
     // All posts that share a reply chain root (by in_reply_to_uri /
     // uri), for the thread view.
     virtual mw::E<std::vector<Post>>
@@ -123,6 +140,8 @@ public:
     virtual mw::E<void> addBookmark(int64_t user_id, int64_t post_id) const = 0;
     virtual mw::E<void>
     removeBookmark(int64_t user_id, int64_t post_id) const = 0;
+    virtual mw::E<bool>
+    isBookmarked(int64_t user_id, int64_t post_id) const = 0;
     virtual mw::E<std::vector<Post>>
     bookmarksFor(int64_t user_id, const Cursor& c, int limit) const = 0;
 
@@ -201,6 +220,11 @@ public:
     getUserByOidcSub(std::string_view iss, std::string_view sub) const override;
     mw::E<void> updateUserProfile(int64_t id, std::string_view display_name,
                                   std::string_view bio) const override;
+    mw::E<std::vector<User>>
+    searchUsers(std::string_view query, int limit) const override;
+    mw::E<std::optional<SystemActor>> getSystemActor() const override;
+    mw::E<void> setSystemActor(std::string_view private_key_pem,
+                               std::string_view public_key_pem) const override;
 
     mw::E<RemoteActor> upsertRemoteActor(const RemoteActor& a) const override;
     mw::E<std::optional<RemoteActor>>
@@ -219,6 +243,9 @@ public:
     timelinePublic(const Cursor& c, int limit) const override;
     mw::E<std::vector<Post>>
     timelineHome(int64_t user_id, const Cursor& c, int limit) const override;
+    mw::E<std::vector<Post>>
+    postsForAuthors(const std::vector<int64_t>& local_author_ids,
+                    const Cursor& c, int limit) const override;
     mw::E<std::vector<Post>> threadFor(std::string_view root_uri) const override;
 
     mw::E<void> addFollow(const Follow& f) const override;
@@ -254,6 +281,7 @@ public:
 
     mw::E<void> addBookmark(int64_t user_id, int64_t post_id) const override;
     mw::E<void> removeBookmark(int64_t user_id, int64_t post_id) const override;
+    mw::E<bool> isBookmarked(int64_t user_id, int64_t post_id) const override;
     mw::E<std::vector<Post>>
     bookmarksFor(int64_t user_id, const Cursor& c, int limit) const override;
 

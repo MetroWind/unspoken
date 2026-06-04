@@ -93,6 +93,16 @@ set(SOURCE_FILES
   src/data.hpp
   src/auth.cpp
   src/auth.hpp
+  src/emoji.cpp
+  src/emoji.hpp
+  src/render.cpp
+  src/render.hpp
+  src/attachments.cpp
+  src/attachments.hpp
+  src/federation.cpp
+  src/federation.hpp
+  src/service.cpp
+  src/service.hpp
   src/app.cpp
   src/app.hpp
 )
@@ -132,6 +142,8 @@ if(UNSPOKEN_BUILD_TESTS)
     src/config_test.cpp
     src/data_test.cpp
     src/auth_test.cpp
+    src/service_test.cpp
+    src/federation_test.cpp
   )
 
   # ctest --test-dir build

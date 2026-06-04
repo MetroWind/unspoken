@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+#include <inja.hpp>
 #include <mw/crypto.hpp>
 #include <mw/error.hpp>
 #include <mw/http_server.hpp>
@@ -11,12 +13,14 @@
 
 #include "config.hpp"
 #include "data.hpp"
+#include "emoji.hpp"
 #include "structs.hpp"
 
 // The app module: the HTTP server, routing, and request handlers.
 // Handlers are kept thin (design §1.2); business logic belongs in the
-// service/federation/data layers. Phase 2 adds the OIDC login flow,
-// sessions, and CSRF on top of the Phase 0 skeleton.
+// service/federation/data layers. Phase 3 adds the local-only UI:
+// composing/viewing posts, timelines, interactions, profile editing,
+// attachments, custom emoji, and threads — all without network egress.
 class App : public mw::HTTPServer
 {
 public:
@@ -48,6 +52,20 @@ private:
     // user behind the session cookie. The future C2S API extends this.
     mw::E<std::optional<unspoken::User>> currentUser(const Request& req) const;
 
+    // ── Rendering / context helpers ─────────────────────────────────
+    // Common template context: site fields, login state, csrf token.
+    nlohmann::json baseContext(const Request& req,
+                               const std::optional<unspoken::User>& viewer)
+        const;
+    void render(Response& res, int status, const std::string& tmpl,
+                const nlohmann::json& data) const;
+    // The session token from the cookie (empty if none).
+    std::string sessionToken(const Request& req) const;
+    // Verify the per-session CSRF token on a state-changing POST.
+    bool csrfOk(const Request& req) const;
+    // Redirect target after a POST: the Referer if present, else home.
+    std::string redirectTarget(const Request& req) const;
+
     // ── Handlers ────────────────────────────────────────────────────
     void handleHealth(const Request& req, Response& res) const;
     void handleIndex(const Request& req, Response& res) const;
@@ -57,6 +75,29 @@ private:
     void handleSetupPost(const Request& req, Response& res) const;
     void handleLogout(const Request& req, Response& res) const;
 
+    void handleUserProfile(const Request& req, Response& res) const;
+    void handlePostView(const Request& req, Response& res) const;
+    void handlePostCreate(const Request& req, Response& res) const;
+    void handlePostDelete(const Request& req, Response& res) const;
+    void handleReply(const Request& req, Response& res) const;
+    void handleLike(const Request& req, Response& res) const;
+    void handleBoost(const Request& req, Response& res) const;
+    void handleReact(const Request& req, Response& res) const;
+    void handleBookmark(const Request& req, Response& res) const;
+    void handleBookmarks(const Request& req, Response& res) const;
+    void handleFollow(const Request& req, Response& res) const;
+    void handleProfileGet(const Request& req, Response& res) const;
+    void handleProfilePost(const Request& req, Response& res) const;
+    void handleSearch(const Request& req, Response& res) const;
+    void handleMedia(const Request& req, Response& res) const;
+    void handleEmoji(const Request& req, Response& res) const;
+    void handleSystemActor(const Request& req, Response& res) const;
+    void handleWebFinger(const Request& req, Response& res) const;
+    void handleNodeInfoDiscovery(const Request& req, Response& res) const;
+    void handleNodeInfo(const Request& req, Response& res) const;
+
+    mw::E<unspoken::SystemActor> systemActor() const;
+
     Config config;
     mw::URL base_url;
     // A 32-byte server key (raw bytes) generated at startup. Used for the
@@ -64,4 +105,9 @@ private:
     std::string server_key;
     // Crypto is stateless; mutable so const handlers can use it.
     mutable mw::Crypto crypto;
+    // Server-wide custom emoji, scanned once at startup (design §13.4).
+    unspoken::EmojiRegistry emoji;
+    // Inja template environment (render_file reads templates/*.html).
+    // mutable: inja::Environment::render_file is non-const.
+    mutable inja::Environment templates;
 };

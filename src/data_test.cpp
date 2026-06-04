@@ -175,6 +175,25 @@ TEST(Data, RemoteActorUpsert)
     EXPECT_EQ(got->username, "bob");
 }
 
+TEST(Data, SystemActorRoundTrip)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto empty, db->getSystemActor());
+    EXPECT_FALSE(empty.has_value());
+
+    EXPECT_TRUE(mw::isExpected(db->setSystemActor("PRIV", "PUB")));
+    ASSIGN_OR_FAIL(auto stored, db->getSystemActor());
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->private_key_pem, "PRIV");
+    EXPECT_EQ(stored->public_key_pem, "PUB");
+
+    EXPECT_TRUE(mw::isExpected(db->setSystemActor("PRIV2", "PUB2")));
+    ASSIGN_OR_FAIL(auto updated, db->getSystemActor());
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->private_key_pem, "PRIV2");
+    EXPECT_EQ(updated->public_key_pem, "PUB2");
+}
+
 TEST(Data, FollowLifecycle)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

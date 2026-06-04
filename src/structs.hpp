@@ -104,6 +104,15 @@ struct NewUser
     std::string public_key_pem;
 };
 
+// Server-wide ActivityPub actor for keyless server operations. Its
+// keypair is persisted once and reused across restarts.
+struct SystemActor
+{
+    std::string private_key_pem;
+    std::string public_key_pem;
+    int64_t created_at = 0;
+};
+
 // A remote actor we have encountered, cached on first contact.
 struct RemoteActor
 {

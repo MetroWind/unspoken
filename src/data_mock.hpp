@@ -34,6 +34,13 @@ public:
     MOCK_METHOD(mw::E<void>, updateUserProfile,
                 (int64_t, std::string_view, std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<std::vector<User>>, searchUsers,
+                (std::string_view, int), (const, override));
+
+    MOCK_METHOD(mw::E<std::optional<SystemActor>>, getSystemActor, (),
+                (const, override));
+    MOCK_METHOD(mw::E<void>, setSystemActor,
+                (std::string_view, std::string_view), (const, override));
 
     MOCK_METHOD(mw::E<RemoteActor>, upsertRemoteActor, (const RemoteActor&),
                 (const, override));
@@ -55,6 +62,9 @@ public:
                 (const Cursor&, int), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, timelineHome,
                 (int64_t, const Cursor&, int), (const, override));
+    MOCK_METHOD(mw::E<std::vector<Post>>, postsForAuthors,
+                ((const std::vector<int64_t>&), const Cursor&, int),
+                (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, threadFor, (std::string_view),
                 (const, override));
 
@@ -91,6 +101,8 @@ public:
     MOCK_METHOD(mw::E<void>, addBookmark, (int64_t, int64_t),
                 (const, override));
     MOCK_METHOD(mw::E<void>, removeBookmark, (int64_t, int64_t),
+                (const, override));
+    MOCK_METHOD(mw::E<bool>, isBookmarked, (int64_t, int64_t),
                 (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, bookmarksFor,
                 (int64_t, const Cursor&, int), (const, override));
