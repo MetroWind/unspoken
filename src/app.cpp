@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <charconv>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -185,6 +186,41 @@ bool respondIfCannotView(const Service& svc, const unspoken::Post& post,
     return false;
 }
 
+nlohmann::json collectionRootJson(const std::string& collection_uri)
+{
+    return {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", collection_uri},
+        {"type", "OrderedCollection"},
+        {"first", collection_uri + "?page=true"},
+    };
+}
+
+std::string pageUrl(const std::string& collection_uri, std::string_view key,
+                    int64_t value)
+{
+    return std::format("{}?page=true&{}={}", collection_uri, key, value);
+}
+
+nlohmann::json collectionPageJson(
+    const std::string& collection_uri, const std::string& self_uri,
+    const nlohmann::json& ordered_items, std::optional<int64_t> next_max_id,
+    std::optional<int64_t> prev_min_id)
+{
+    nlohmann::json page = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", self_uri},
+        {"type", "OrderedCollectionPage"},
+        {"partOf", collection_uri},
+        {"orderedItems", ordered_items},
+    };
+    if(next_max_id.has_value())
+        page["next"] = pageUrl(collection_uri, "max_id", *next_max_id);
+    if(prev_min_id.has_value())
+        page["prev"] = pageUrl(collection_uri, "min_id", *prev_min_id);
+    return page;
+}
+
 } // namespace
 
 App::App(const Config& conf)
@@ -196,10 +232,69 @@ App::App(const Config& conf)
           templates(makeEnv(conf))
 {}
 
+App::~App()
+{
+    stopJobWorkers();
+}
+
 std::string App::urlFor(const std::string& path) const
 {
     if(path.empty()) return base_url.str();
     return mw::URL(base_url).appendPath(path).str();
+}
+
+void App::startJobWorkers()
+{
+    if(config.job_workers <= 0 || !job_worker_threads.empty()) return;
+    job_workers_stop = false;
+    for(int i = 0; i < config.job_workers; ++i)
+    {
+        job_worker_threads.emplace_back([this, i] { jobWorkerLoop(i); });
+    }
+    spdlog::info("Started {} federation job worker(s)",
+                 config.job_workers);
+}
+
+void App::stopJobWorkers()
+{
+    job_workers_stop = true;
+    for(auto& t : job_worker_threads)
+    {
+        if(t.joinable()) t.join();
+    }
+    job_worker_threads.clear();
+}
+
+void App::jobWorkerLoop(int worker_id) const
+{
+    auto db = unspoken::DataSourceSQLite::fromFile(
+        config.database_path, config.sqlite_busy_timeout_ms);
+    if(!db.has_value())
+    {
+        spdlog::error("Federation worker {} failed to open DB: {}",
+                      worker_id, mw::errorMsg(db.error()));
+        return;
+    }
+
+    mw::Crypto local_crypto;
+    mw::HTTPSession http;
+    while(!job_workers_stop)
+    {
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        auto ran = unspoken::runFederationJobOnce(
+            config, **db, local_crypto, http, now);
+        if(!ran.has_value())
+        {
+            spdlog::warn("Federation worker {} failed: {}",
+                         worker_id, mw::errorMsg(ran.error()));
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
+        if(!*ran)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
 }
 
 mw::E<unspoken::DataSourceSQLite*> App::dataSource() const
@@ -635,9 +730,15 @@ void App::handlePostView(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(visible, svc.canViewPost(*post, viewer), res);
     if(!visible && ap_json)
     {
-        auto verified = unspoken::verifyHttpSignature(
-            config, *ds, crypto, incomingRequest(req),
-            mw::timeToSeconds(mw::Clock::now()));
+        auto system = systemActor();
+        mw::HTTPSession http;
+        auto verified = system.has_value()
+            ? unspoken::verifyHttpSignatureWithKeyRefresh(
+                  config, *ds, crypto, http, *system, incomingRequest(req),
+                  mw::timeToSeconds(mw::Clock::now()))
+            : unspoken::verifyHttpSignature(
+                  config, *ds, crypto, incomingRequest(req),
+                  mw::timeToSeconds(mw::Clock::now()));
         if(verified.has_value())
         {
             ASSIGN_OR_RESPOND_ERROR(
@@ -841,6 +942,16 @@ void App::handlePostDelete(const Request& req, Response& res) const
         res.set_content("Not found", "text/plain");
         return;
     }
+    Service svc(config, *ds, emoji);
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, ds->getPostRecipients(id), res);
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    const std::string actor_uri = svc.actorUri(viewer->username);
+    nlohmann::json activity = unspoken::deleteActivityJson(
+        std::format("{}activities/delete/{}/{}", config.url_root, id, now),
+        actor_uri, post->uri, recipients);
+    ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
+        config, *ds, actor_uri, activity, recipients, now), res);
+    (void)jobs;
     if(respondIfError(ds->deletePost(id), res)) return;
     res.set_redirect(urlFor());
 }
@@ -1017,6 +1128,24 @@ void App::handleProfilePost(const Request& req, Response& res) const
     std::string display_name = param(req, "display_name");
     std::string bio = param(req, "bio");
     if(respondIfError(ds->updateUserProfile(viewer->id, display_name, bio), res)) return;
+    ASSIGN_OR_RESPOND_ERROR(auto updated, ds->getUserById(viewer->id), res);
+    if(updated.has_value())
+    {
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        std::string actor_uri = config.url_root + "u/" + updated->username;
+        std::vector<unspoken::PostRecipient> recipients = {
+            {0, actor_uri + "/followers", "to"},
+        };
+        nlohmann::json activity = unspoken::actorUpdateActivityJson(
+            config,
+            std::format("{}activities/update/profile/{}/{}",
+                        config.url_root, updated->id, now),
+            *updated, unspoken::renderPostContent(updated->bio, emoji),
+            recipients);
+        ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
+            config, *ds, actor_uri, activity, recipients, now), res);
+        (void)jobs;
+    }
     res.set_redirect(urlFor("u/" + viewer->username));
 }
 
@@ -1205,6 +1334,163 @@ void App::handleNodeInfo([[maybe_unused]] const Request& req,
     setJson(res, unspoken::nodeInfoJson(config), "application/json");
 }
 
+void App::handleInbox(const Request& req, Response& res) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    ASSIGN_OR_RESPOND_ERROR(auto system, systemActor(), res);
+    mw::HTTPSession http;
+    ASSIGN_OR_RESPOND_ERROR(auto verified,
+                            unspoken::verifyHttpSignatureWithKeyRefresh(
+        config, *ds, crypto, http, system, incomingRequest(req), now), res);
+
+    nlohmann::json raw = nlohmann::json::parse(req.body, nullptr, false);
+    if(!raw.is_object())
+    {
+        res.status = 400;
+        res.set_content("Activity must be JSON object", "text/plain");
+        return;
+    }
+    ASSIGN_OR_RESPOND_ERROR(auto activity, unspoken::parseActivity(raw), res);
+    ASSIGN_OR_RESPOND_ERROR(auto result, unspoken::dispatchIncomingActivity(
+        config, *ds, verified.actor_uri, activity, now), res);
+    res.status = result.duplicate ? 200 : 202;
+    res.set_content("", "text/plain");
+}
+
+void App::handleOutbox(const Request& req, Response& res) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    std::string username = req.path_params.at("username");
+    ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
+    if(!user.has_value())
+    {
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+        return;
+    }
+
+    const std::string actor_uri = config.url_root + "u/" + user->username;
+    const std::string collection_uri = actor_uri + "/outbox";
+    if(!req.has_param("page"))
+    {
+        setJson(res, collectionRootJson(collection_uri));
+        return;
+    }
+
+    auto cursor = cursorFromRequest(req, res, true);
+    if(!cursor.has_value()) return;
+    ASSIGN_OR_RESPOND_ERROR(auto posts, ds->postsForAuthors(
+        std::vector<int64_t>{user->id}, *cursor, config.posts_per_page), res);
+
+    nlohmann::json items = nlohmann::json::array();
+    for(const auto& post : posts)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto recipients,
+                                ds->getPostRecipients(post.id), res);
+        ASSIGN_OR_RESPOND_ERROR(auto attachments,
+                                ds->attachmentsForPost(post.id), res);
+        auto note = unspoken::noteJson(config, post, *user, recipients,
+                                       attachments);
+        items.push_back({
+            {"@context", "https://www.w3.org/ns/activitystreams"},
+            {"id", post.uri + "/activity"},
+            {"type", "Create"},
+            {"actor", actor_uri},
+            {"object", note},
+            {"to", note["to"]},
+            {"cc", note["cc"]},
+        });
+    }
+
+    std::optional<int64_t> next;
+    std::optional<int64_t> prev;
+    if(!posts.empty())
+    {
+        if(static_cast<int>(posts.size()) == config.posts_per_page)
+            next = posts.back().id;
+        prev = posts.front().id;
+    }
+    setJson(res, collectionPageJson(collection_uri, req.target, items,
+                                    next, prev));
+}
+
+void App::handleFollowersCollection(const Request& req, Response& res) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    std::string username = req.path_params.at("username");
+    ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
+    if(!user.has_value())
+    {
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+        return;
+    }
+
+    const std::string actor_uri = config.url_root + "u/" + user->username;
+    const std::string collection_uri = actor_uri + "/followers";
+    if(!req.has_param("page"))
+    {
+        setJson(res, collectionRootJson(collection_uri));
+        return;
+    }
+    auto cursor = cursorFromRequest(req, res, true);
+    if(!cursor.has_value()) return;
+    ASSIGN_OR_RESPOND_ERROR(auto followers, ds->followerPage(
+        actor_uri, *cursor, config.posts_per_page), res);
+    nlohmann::json items = nlohmann::json::array();
+    for(const auto& item : followers) items.push_back(item.actor_uri);
+
+    std::optional<int64_t> next;
+    std::optional<int64_t> prev;
+    if(!followers.empty())
+    {
+        if(static_cast<int>(followers.size()) == config.posts_per_page)
+            next = followers.back().id;
+        prev = followers.front().id;
+    }
+    setJson(res, collectionPageJson(collection_uri, req.target, items,
+                                    next, prev));
+}
+
+void App::handleFollowingCollection(const Request& req, Response& res) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    std::string username = req.path_params.at("username");
+    ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
+    if(!user.has_value())
+    {
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+        return;
+    }
+
+    const std::string actor_uri = config.url_root + "u/" + user->username;
+    const std::string collection_uri = actor_uri + "/following";
+    if(!req.has_param("page"))
+    {
+        setJson(res, collectionRootJson(collection_uri));
+        return;
+    }
+    auto cursor = cursorFromRequest(req, res, true);
+    if(!cursor.has_value()) return;
+    ASSIGN_OR_RESPOND_ERROR(auto following, ds->followingPage(
+        actor_uri, *cursor, config.posts_per_page), res);
+    nlohmann::json items = nlohmann::json::array();
+    for(const auto& item : following) items.push_back(item.actor_uri);
+
+    std::optional<int64_t> next;
+    std::optional<int64_t> prev;
+    if(!following.empty())
+    {
+        if(static_cast<int>(following.size()) == config.posts_per_page)
+            next = following.back().id;
+        prev = following.front().id;
+    }
+    setJson(res, collectionPageJson(collection_uri, req.target, items,
+                                    next, prev));
+}
+
 // ─── Routing ───────────────────────────────────────────────────────────
 
 void App::setup()
@@ -1224,6 +1510,8 @@ void App::setup()
                      config.static_dir);
     }
 
+    startJobWorkers();
+
     server.Get("/health", [&](const Request& req, Response& res)
     { handleHealth(req, res); });
     server.Get("/", [&](const Request& req, Response& res)
@@ -1236,6 +1524,8 @@ void App::setup()
     { handleNodeInfoDiscovery(req, res); });
     server.Get("/nodeinfo/2.1", [&](const Request& req, Response& res)
     { handleNodeInfo(req, res); });
+    server.Post("/inbox", [&](const Request& req, Response& res)
+    { handleInbox(req, res); });
 
     // Auth (Phase 2).
     server.Get("/login", [&](const Request& req, Response& res)
@@ -1278,8 +1568,16 @@ void App::setup()
     { handleFollow(req, res); });
 
     // Views with path params.
+    server.Get("/u/:username/outbox", [&](const Request& req, Response& res)
+    { handleOutbox(req, res); });
+    server.Get("/u/:username/followers", [&](const Request& req, Response& res)
+    { handleFollowersCollection(req, res); });
+    server.Get("/u/:username/following", [&](const Request& req, Response& res)
+    { handleFollowingCollection(req, res); });
     server.Get("/u/:username", [&](const Request& req, Response& res)
     { handleUserProfile(req, res); });
+    server.Post("/u/:username/inbox", [&](const Request& req, Response& res)
+    { handleInbox(req, res); });
     server.Get("/p/:id", [&](const Request& req, Response& res)
     { handlePostView(req, res); });
 

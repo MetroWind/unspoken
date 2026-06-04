@@ -19,6 +19,12 @@ and the requirements in [`prd.md`](prd.md) / [`prd_gaps.md`](prd_gaps.md).
   write a feature-request doc in the project root (per the design doc
   §4.2.1 workflow); don't work around it in the app.
 
+## Side TODOs
+
+- [ ] Public interface documentation: every public interface item
+      (public functions, types, variables, constants, etc.) should have a
+      comment denoting the intention of the item.
+
 ## Phase overview
 
 | Phase | Scope | Exit criteria |
@@ -224,17 +230,17 @@ and display a remote actor's profile.
 
 - [x] HTTP signature **signing** (§10.2): rsa-sha256 cavage; digest on
       POST; user key vs system key.
-- [ ] Job queue + workers (§14): claim-once transaction, backoff/retry,
+- [x] Job queue + workers (§14): claim-once transaction, backoff/retry,
       give-up at `job_max_retries`.
-- [ ] Outbound delivery (§12.8): recipient expansion, **sharedInbox
+- [x] Outbound delivery (§12.8): recipient expansion, **sharedInbox
       preferred**, one job per inbox.
-- [ ] Inbox dispatch (§12.6): `Create`, `Follow` (auto-accept + send
+- [x] Inbox dispatch (§12.6): `Create`, `Follow` (auto-accept + send
       `Accept`), `Accept`, `Like`, `Announce` (ignore non-public),
       `EmojiReact`, `Delete`/`Update`/`Undo` (silent 200 for unknown).
-- [ ] Dedup by activity `id` (`seen_activities`); 200 on redelivery.
-- [ ] Key-rotation retry (§10.1 step 7): re-fetch once, update, retry.
-- [ ] Federate local `Delete`/`Update` outbound.
-- [ ] Outbox/followers/following as paginated `OrderedCollectionPage`.
+- [x] Dedup by activity `id` (`seen_activities`); 200 on redelivery.
+- [x] Key-rotation retry (§10.1 step 7): re-fetch once, update, retry.
+- [x] Federate local `Delete`/`Update` outbound.
+- [x] Outbox/followers/following as paginated `OrderedCollectionPage`.
 
 **Tests:** sign round-trips; job claim-once under concurrency; backoff
 schedule; inbox dispatch matrix; dedup; Announce-of-private ignored.

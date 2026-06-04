@@ -38,6 +38,32 @@ User testUser()
     return u;
 }
 
+NewUser testNewUser(const std::string& username)
+{
+    NewUser nu;
+    nu.username = username;
+    nu.display_name = username;
+    nu.oidc_iss = "https://issuer.test";
+    nu.oidc_sub = username + "-sub";
+    nu.private_key_pem = "PRIV";
+    nu.public_key_pem = "PUB";
+    return nu;
+}
+
+RemoteActor testRemoteActor(const std::string& uri)
+{
+    RemoteActor actor;
+    actor.uri = uri;
+    actor.username = "remote";
+    actor.domain = "remote.test";
+    actor.inbox = "https://remote.test/inbox";
+    actor.shared_inbox = "https://remote.test/inbox";
+    actor.public_key_pem = "PUB";
+    actor.public_key_id = uri + "#main-key";
+    actor.actor_json = "{}";
+    return actor;
+}
+
 std::string httpDateFor(int64_t unix_seconds)
 {
     std::time_t t = static_cast<std::time_t>(unix_seconds);
@@ -123,6 +149,7 @@ class FakeSession : public mw::HTTPSessionInterface
 public:
     mw::HTTPRequest last_request;
     mw::HTTPResponse response{200, "{}"};
+    bool post_called = false;
     bool follow = true;
     long redirections = 0;
     std::string protocols;
@@ -134,9 +161,11 @@ public:
         last_request = req;
         return &response;
     }
-    mw::E<const mw::HTTPResponse*> post(const mw::HTTPRequest&) override
+    mw::E<const mw::HTTPResponse*> post(const mw::HTTPRequest& req) override
     {
-        return std::unexpected(mw::runtimeError("unexpected post"));
+        post_called = true;
+        last_request = req;
+        return &response;
     }
     mw::E<mw::HTTPResponse> getStream(const mw::HTTPRequest&,
                                       mw::ChunkCallback) override
@@ -286,6 +315,38 @@ TEST(ActivityStreams, NoteJsonUsesFullPublicIriOnOutput)
     EXPECT_EQ(j["to"][0], std::string(AS_PUBLIC));
     EXPECT_EQ(j["cc"][0], "https://f.test/u/alice/followers");
     EXPECT_EQ(j["published"], "1970-01-01T00:01:40Z");
+}
+
+TEST(ActivityStreams, DeleteActivityCarriesOriginalAudience)
+{
+    std::vector<PostRecipient> recipients = {
+        {7, std::string(AS_PUBLIC), "to"},
+        {7, "https://f.test/u/alice/followers", "cc"},
+    };
+    auto j = deleteActivityJson(
+        "https://f.test/a/delete/1", "https://f.test/u/alice",
+        "https://f.test/p/7", recipients);
+    EXPECT_EQ(j["type"], "Delete");
+    EXPECT_EQ(j["actor"], "https://f.test/u/alice");
+    EXPECT_EQ(j["object"], "https://f.test/p/7");
+    EXPECT_EQ(j["to"][0], std::string(AS_PUBLIC));
+    EXPECT_EQ(j["cc"][0], "https://f.test/u/alice/followers");
+}
+
+TEST(ActivityStreams, ActorUpdateWrapsActorDocument)
+{
+    User user = testUser();
+    std::vector<PostRecipient> recipients = {
+        {0, "https://f.test/u/alice/followers", "to"},
+    };
+    auto j = actorUpdateActivityJson(
+        testConfig(), "https://f.test/a/update/1", user, "<p>bio</p>",
+        recipients);
+    EXPECT_EQ(j["type"], "Update");
+    EXPECT_EQ(j["actor"], "https://f.test/u/alice");
+    EXPECT_EQ(j["object"]["type"], "Person");
+    EXPECT_EQ(j["object"]["summary"], "<p>bio</p>");
+    EXPECT_EQ(j["to"][0], "https://f.test/u/alice/followers");
 }
 
 TEST(Discovery, WebFingerCanonicalSubject)
@@ -607,4 +668,425 @@ TEST(HttpSigning, UserAndSystemSignersUseDistinctKeyIds)
     EXPECT_EQ(user_actor.key_id, "https://f.test/u/alice#main-key");
     EXPECT_EQ(system_actor.key_id, "https://f.test/actor#main-key");
     EXPECT_NE(user_actor.key_id, system_actor.key_id);
+}
+
+TEST(HttpSignature, RefetchesActorAndRetriesAfterKeyRotation)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto old_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto new_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor actor;
+    actor.uri = "https://remote.test/u/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.inbox = "https://remote.test/u/bob/inbox";
+    actor.public_key_id = actor.uri + "#main-key";
+    actor.public_key_pem = old_keys.public_key;
+    actor.actor_json = "{}";
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+
+    SystemActor system;
+    system.private_key_pem = system_keys.private_key;
+    system.public_key_pem = system_keys.public_key;
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, nlohmann::json({
+        {"id", actor.uri},
+        {"type", "Person"},
+        {"preferredUsername", "bob"},
+        {"inbox", actor.inbox},
+        {"publicKey", {
+            {"id", actor.public_key_id},
+            {"owner", actor.uri},
+            {"publicKeyPem", new_keys.public_key},
+        }},
+    }).dump());
+
+    int64_t now = 100000;
+    auto req = signedIncomingRequest(
+        crypto, new_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", now, false, false);
+
+    EXPECT_FALSE(verifyHttpSignature(c, *db, crypto, req, now).has_value());
+    ASSIGN_OR_FAIL(auto verified, verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, req, now));
+    EXPECT_EQ(verified.actor_uri, actor.uri);
+    EXPECT_EQ(http.last_request.url, actor.uri);
+
+    ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(cached.has_value());
+    EXPECT_EQ(cached->public_key_pem, new_keys.public_key);
+}
+
+TEST(FederationJobs, DeliveryJobSignsPostsAndCompletes)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    NewUser nu;
+    nu.username = "alice";
+    nu.display_name = "Alice";
+    nu.oidc_iss = "https://issuer.test";
+    nu.oidc_sub = "alice-sub";
+    nu.private_key_pem = keys.private_key;
+    nu.public_key_pem = keys.public_key;
+    ASSIGN_OR_FAIL(auto user, db->createUser(nu));
+
+    nlohmann::json activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", "https://f.test/a/1"},
+        {"type", "Like"},
+        {"actor", "https://f.test/u/alice"},
+        {"object", "https://remote.test/p/1"},
+    };
+    ASSIGN_OR_FAIL(auto jid, enqueueDeliveryJob(
+        *db, "https://remote.test/inbox", "https://f.test/u/alice",
+        activity, 100));
+    EXPECT_GT(jid, 0);
+
+    FakeSession http;
+    ASSERT_TRUE(runFederationJobOnce(c, *db, crypto, http, 100).value());
+    EXPECT_TRUE(http.post_called);
+    EXPECT_EQ(http.last_request.url, "https://remote.test/inbox");
+    EXPECT_EQ(http.last_request.header["Host"], "remote.test");
+    EXPECT_EQ(http.last_request.header["Content-Type"],
+              "application/activity+json");
+    EXPECT_NE(http.last_request.header["Signature"].find(
+                  R"(keyId="https://f.test/u/alice#main-key")"),
+              std::string::npos);
+    EXPECT_NE(http.last_request.header["Signature"].find("digest"),
+              std::string::npos);
+
+    ASSIGN_OR_FAIL(auto none, db->claimJob(100));
+    EXPECT_FALSE(none.has_value());
+    (void)user;
+}
+
+TEST(FederationJobs, FailedDeliveryIsRescheduledWithBackoff)
+{
+    Config c = testConfig();
+    c.job_retry_base_delay_seconds = 10;
+    c.job_max_retries = 2;
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    NewUser nu;
+    nu.username = "alice";
+    nu.display_name = "Alice";
+    nu.oidc_iss = "https://issuer.test";
+    nu.oidc_sub = "alice-sub";
+    nu.private_key_pem = keys.private_key;
+    nu.public_key_pem = keys.public_key;
+    ASSIGN_OR_FAIL(auto user, db->createUser(nu));
+
+    nlohmann::json activity = {
+        {"id", "https://f.test/a/2"},
+        {"type", "Follow"},
+        {"actor", "https://f.test/u/alice"},
+        {"object", "https://remote.test/u/bob"},
+    };
+    ASSIGN_OR_FAIL(auto jid, enqueueDeliveryJob(
+        *db, "https://remote.test/inbox", "https://f.test/u/alice",
+        activity, 100));
+    EXPECT_GT(jid, 0);
+
+    FakeSession http;
+    http.response = mw::HTTPResponse(503, "try later");
+    ASSERT_TRUE(runFederationJobOnce(c, *db, crypto, http, 100).value());
+
+    ASSIGN_OR_FAIL(auto early, db->claimJob(119));
+    EXPECT_FALSE(early.has_value());
+    ASSIGN_OR_FAIL(auto retry, db->claimJob(120));
+    ASSERT_TRUE(retry.has_value());
+    EXPECT_EQ(retry->id, jid);
+    EXPECT_EQ(retry->attempts, 1);
+    (void)user;
+}
+
+TEST(OutboundDelivery, ExpandsFollowersAndPrefersSharedInbox)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor bob;
+    bob.uri = "https://remote.test/u/bob";
+    bob.username = "bob";
+    bob.domain = "remote.test";
+    bob.inbox = "https://remote.test/u/bob/inbox";
+    bob.shared_inbox = "https://remote.test/inbox";
+    bob.public_key_pem = "PUB";
+    bob.public_key_id = bob.uri + "#main-key";
+    bob.actor_json = "{}";
+    ASSIGN_OR_FAIL(bob, db->upsertRemoteActor(bob));
+
+    RemoteActor carol;
+    carol.uri = "https://remote.test/u/carol";
+    carol.username = "carol";
+    carol.domain = "remote.test";
+    carol.inbox = "https://remote.test/u/carol/inbox";
+    carol.shared_inbox = "https://remote.test/inbox";
+    carol.public_key_pem = "PUB";
+    carol.public_key_id = carol.uri + "#main-key";
+    carol.actor_json = "{}";
+    ASSIGN_OR_FAIL(carol, db->upsertRemoteActor(carol));
+
+    RemoteActor dave;
+    dave.uri = "https://other.test/u/dave";
+    dave.username = "dave";
+    dave.domain = "other.test";
+    dave.inbox = "https://other.test/u/dave/inbox";
+    dave.public_key_pem = "PUB";
+    dave.public_key_id = dave.uri + "#main-key";
+    dave.actor_json = "{}";
+    ASSIGN_OR_FAIL(dave, db->upsertRemoteActor(dave));
+
+    Follow f1;
+    f1.follower_uri = bob.uri;
+    f1.followee_uri = "https://f.test/u/alice";
+    f1.state = FollowState::ACCEPTED;
+    ASSERT_TRUE(db->addFollow(f1).has_value());
+    Follow f2;
+    f2.follower_uri = carol.uri;
+    f2.followee_uri = "https://f.test/u/alice";
+    f2.state = FollowState::ACCEPTED;
+    ASSERT_TRUE(db->addFollow(f2).has_value());
+    Follow f3;
+    f3.follower_uri = dave.uri;
+    f3.followee_uri = "https://f.test/u/alice";
+    f3.state = FollowState::ACCEPTED;
+    ASSERT_TRUE(db->addFollow(f3).has_value());
+
+    std::vector<PostRecipient> recipients = {
+        {1, std::string(AS_PUBLIC), "to"},
+        {1, "https://f.test/u/alice/followers", "cc"},
+        {1, "https://f.test/u/local", "to"},
+        {1, "https://remote.test/u/bob", "to"},
+    };
+    ASSIGN_OR_FAIL(auto inboxes, deliveryInboxesForRecipients(
+        c, *db, recipients));
+    EXPECT_EQ(inboxes, std::vector<std::string>({
+        "https://other.test/u/dave/inbox",
+        "https://remote.test/inbox",
+    }));
+}
+
+TEST(OutboundDelivery, EnqueuesOneJobPerExpandedInbox)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor bob;
+    bob.uri = "https://remote.test/u/bob";
+    bob.username = "bob";
+    bob.domain = "remote.test";
+    bob.inbox = "https://remote.test/u/bob/inbox";
+    bob.public_key_pem = "PUB";
+    bob.public_key_id = bob.uri + "#main-key";
+    bob.actor_json = "{}";
+    ASSIGN_OR_FAIL(bob, db->upsertRemoteActor(bob));
+
+    std::vector<PostRecipient> recipients = {
+        {1, "https://remote.test/u/bob", "to"},
+    };
+    nlohmann::json activity = {
+        {"id", "https://f.test/a/3"},
+        {"type", "Create"},
+    };
+    ASSIGN_OR_FAIL(auto jobs, enqueueOutboundDelivery(
+        c, *db, "https://f.test/u/alice", activity, recipients, 100));
+    ASSERT_EQ(jobs.size(), 1);
+
+    ASSIGN_OR_FAIL(auto job, db->claimJob(100));
+    ASSERT_TRUE(job.has_value());
+    EXPECT_EQ(job->id, jobs[0]);
+    auto payload = nlohmann::json::parse(job->payload_json);
+    EXPECT_EQ(payload["target_inbox"], "https://remote.test/u/bob/inbox");
+    EXPECT_EQ(payload["signer_actor"], "https://f.test/u/alice");
+}
+
+TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/create/1"},
+        {"type", "Create"},
+        {"actor", remote.uri},
+        {"object", {
+            {"id", "https://remote.test/o/1"},
+            {"type", "Note"},
+            {"attributedTo", remote.uri},
+            {"content", "<p>hello</p>"},
+            {"to", std::string(AS_PUBLIC)},
+            {"cc", nlohmann::json::array({"https://f.test/u/alice"})},
+            {"attachment", {
+                {"type", "Image"},
+                {"mediaType", "image/png"},
+                {"url", "https://remote.test/media/1.png"},
+                {"name", "one.png"},
+            }},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto first, dispatchIncomingActivity(
+        c, *db, remote.uri, activity, 100));
+    EXPECT_FALSE(first.duplicate);
+
+    ASSIGN_OR_FAIL(auto post, db->getPostByUri("https://remote.test/o/1"));
+    ASSERT_TRUE(post.has_value());
+    EXPECT_EQ(post->visibility, Visibility::PUBLIC);
+    EXPECT_EQ(post->content_html, "&lt;p&gt;hello&lt;/p&gt;");
+    ASSIGN_OR_FAIL(auto atts, db->attachmentsForPost(post->id));
+    ASSERT_EQ(atts.size(), 1);
+    ASSERT_TRUE(atts[0].remote_url.has_value());
+    EXPECT_EQ(*atts[0].remote_url, "https://remote.test/media/1.png");
+
+    ASSIGN_OR_FAIL(auto second, dispatchIncomingActivity(
+        c, *db, remote.uri, activity, 101));
+    EXPECT_TRUE(second.duplicate);
+}
+
+TEST(InboxDispatch, FollowAutoAcceptsAndQueuesAccept)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    NewUser nu = testNewUser("alice");
+    nu.private_key_pem = keys.private_key;
+    nu.public_key_pem = keys.public_key;
+    ASSIGN_OR_FAIL(auto local, db->createUser(nu));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/follow/1"},
+        {"type", "Follow"},
+        {"actor", remote.uri},
+        {"object", "https://f.test/u/alice"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, remote.uri, activity, 200));
+    EXPECT_FALSE(result.duplicate);
+
+    ASSIGN_OR_FAIL(auto follow, db->getFollow(
+        remote.uri, "https://f.test/u/alice"));
+    ASSERT_TRUE(follow.has_value());
+    EXPECT_EQ(follow->state, FollowState::ACCEPTED);
+    ASSERT_TRUE(follow->follow_activity_uri.has_value());
+    EXPECT_EQ(*follow->follow_activity_uri,
+              raw["id"].get<std::string>());
+
+    ASSIGN_OR_FAIL(auto job, db->claimJob(200));
+    ASSERT_TRUE(job.has_value());
+    auto payload = nlohmann::json::parse(job->payload_json);
+    EXPECT_EQ(payload["target_inbox"], "https://remote.test/inbox");
+    EXPECT_EQ(payload["signer_actor"], "https://f.test/u/alice");
+    EXPECT_EQ(payload["activity"]["type"], "Accept");
+    (void)local;
+}
+
+TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto local, db->createUser(testNewUser("alice")));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+
+    NewPost np;
+    np.local_author_id = local.id;
+    np.content_html = "private";
+    np.visibility = Visibility::FOLLOWERS;
+    ASSIGN_OR_FAIL(auto post, db->insertPost(
+        np, {{0, "https://f.test/u/alice/followers", "to"}},
+        "https://f.test/p/"));
+
+    nlohmann::json announce_raw = {
+        {"id", "https://remote.test/a/announce/1"},
+        {"type", "Announce"},
+        {"actor", remote.uri},
+        {"object", post.uri},
+    };
+    ASSIGN_OR_FAIL(auto announce, parseActivity(announce_raw));
+    EXPECT_TRUE(dispatchIncomingActivity(
+        c, *db, remote.uri, announce, 100).has_value());
+
+    nlohmann::json like_raw = {
+        {"id", "https://remote.test/a/like/1"},
+        {"type", "Like"},
+        {"actor", remote.uri},
+        {"object", post.uri},
+    };
+    ASSIGN_OR_FAIL(auto like, parseActivity(like_raw));
+    EXPECT_TRUE(dispatchIncomingActivity(
+        c, *db, remote.uri, like, 101).has_value());
+    ASSIGN_OR_FAIL(auto likes, db->likesForPost(post.uri));
+    ASSERT_EQ(likes.size(), 1);
+
+    nlohmann::json undo_raw = {
+        {"id", "https://remote.test/a/undo/1"},
+        {"type", "Undo"},
+        {"actor", remote.uri},
+        {"object", like_raw},
+    };
+    ASSIGN_OR_FAIL(auto undo, parseActivity(undo_raw));
+    EXPECT_TRUE(dispatchIncomingActivity(
+        c, *db, remote.uri, undo, 102).has_value());
+    ASSIGN_OR_FAIL(auto likes_after, db->likesForPost(post.uri));
+    EXPECT_TRUE(likes_after.empty());
+}
+
+TEST(InboxDispatch, UpdateReplacesKnownRemoteNote)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+
+    NewPost np;
+    np.uri = "https://remote.test/o/updated";
+    np.remote_author_id = remote.id;
+    np.content_html = "old";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto original, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/update/1"},
+        {"type", "Update"},
+        {"actor", remote.uri},
+        {"object", {
+            {"id", "https://remote.test/o/updated"},
+            {"type", "Note"},
+            {"attributedTo", remote.uri},
+            {"content", "<b>new</b>"},
+            {"cc", std::string(AS_PUBLIC)},
+            {"summary", "changed"},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, remote.uri, activity, 100));
+    EXPECT_FALSE(result.duplicate);
+
+    ASSIGN_OR_FAIL(auto gone, db->getPostById(original.id));
+    EXPECT_FALSE(gone.has_value());
+    ASSIGN_OR_FAIL(auto updated, db->getPostByUri(*np.uri));
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->content_html, "&lt;b&gt;new&lt;/b&gt;");
+    EXPECT_EQ(updated->visibility, Visibility::UNLISTED);
+    ASSERT_TRUE(updated->summary.has_value());
+    EXPECT_EQ(*updated->summary, "changed");
 }

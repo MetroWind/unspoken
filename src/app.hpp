@@ -1,8 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <inja.hpp>
@@ -29,6 +32,7 @@ public:
 
     App() = delete;
     explicit App(const Config& conf);
+    ~App();
 
     // Build a URL under the configured url_root.
     std::string urlFor(const std::string& path = "") const;
@@ -95,8 +99,15 @@ private:
     void handleWebFinger(const Request& req, Response& res) const;
     void handleNodeInfoDiscovery(const Request& req, Response& res) const;
     void handleNodeInfo(const Request& req, Response& res) const;
+    void handleInbox(const Request& req, Response& res) const;
+    void handleOutbox(const Request& req, Response& res) const;
+    void handleFollowersCollection(const Request& req, Response& res) const;
+    void handleFollowingCollection(const Request& req, Response& res) const;
 
     mw::E<unspoken::SystemActor> systemActor() const;
+    void startJobWorkers();
+    void stopJobWorkers();
+    void jobWorkerLoop(int worker_id) const;
 
     Config config;
     mw::URL base_url;
@@ -110,4 +121,7 @@ private:
     // Inja template environment (render_file reads templates/*.html).
     // mutable: inja::Environment::render_file is non-const.
     mutable inja::Environment templates;
+
+    std::atomic<bool> job_workers_stop = false;
+    std::vector<std::thread> job_worker_threads;
 };

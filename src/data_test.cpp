@@ -220,6 +220,40 @@ TEST(Data, FollowLifecycle)
     EXPECT_FALSE(gone.has_value());
 }
 
+TEST(Data, FollowCollectionsAreCursorPaginated)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    const std::string alice = "https://f.test/u/alice";
+    const std::string bob = "https://remote.test/u/bob";
+    const std::string carol = "https://remote.test/u/carol";
+    const std::string dave = "https://remote.test/u/dave";
+
+    ASSERT_TRUE(db->addFollow(Follow{0, bob, alice,
+                                     FollowState::ACCEPTED, {}, 0})
+                    .has_value());
+    ASSERT_TRUE(db->addFollow(Follow{0, carol, alice,
+                                     FollowState::ACCEPTED, {}, 0})
+                    .has_value());
+    ASSERT_TRUE(db->addFollow(Follow{0, dave, alice,
+                                     FollowState::ACCEPTED, {}, 0})
+                    .has_value());
+
+    ASSIGN_OR_FAIL(auto first, db->followerPage(alice, Cursor{}, 2));
+    ASSERT_EQ(first.size(), 2);
+    EXPECT_EQ(first[0].actor_uri, dave);
+    EXPECT_EQ(first[1].actor_uri, carol);
+
+    Cursor older;
+    older.max_id = first.back().id;
+    ASSIGN_OR_FAIL(auto second, db->followerPage(alice, older, 2));
+    ASSERT_EQ(second.size(), 1);
+    EXPECT_EQ(second[0].actor_uri, bob);
+
+    ASSIGN_OR_FAIL(auto following, db->followingPage(bob, Cursor{}, 10));
+    ASSERT_EQ(following.size(), 1);
+    EXPECT_EQ(following[0].actor_uri, alice);
+}
+
 TEST(Data, LikesBoostsReactions)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

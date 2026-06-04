@@ -80,6 +80,10 @@ public:
                 (std::string_view), (const, override));
     MOCK_METHOD(mw::E<std::vector<std::string>>, followingUris,
                 (std::string_view), (const, override));
+    MOCK_METHOD(mw::E<std::vector<ActorCollectionItem>>, followerPage,
+                (std::string_view, const Cursor&, int), (const, override));
+    MOCK_METHOD(mw::E<std::vector<ActorCollectionItem>>, followingPage,
+                (std::string_view, const Cursor&, int), (const, override));
 
     MOCK_METHOD(mw::E<void>, addLike, (const Like&), (const, override));
     MOCK_METHOD(mw::E<void>, removeLike,

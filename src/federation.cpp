@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <ctime>
 #include <format>
 #include <iomanip>
 #include <locale>
 #include <sstream>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -258,6 +260,384 @@ void appendAll(std::vector<std::string>& out,
     out.insert(out.end(), in.begin(), in.end());
 }
 
+mw::E<SigningActor> signingActorForUri(const Config& config,
+                                       const DataSourceInterface& data,
+                                       std::string_view actor_uri)
+{
+    const std::string system_uri = config.url_root + "actor";
+    if(actor_uri == system_uri)
+    {
+        ASSIGN_OR_RETURN(auto system, data.getSystemActor());
+        if(!system.has_value())
+        {
+            return std::unexpected(mw::runtimeError(
+                "Delivery signer is missing system actor"));
+        }
+        return signingActorForSystem(config, *system);
+    }
+
+    const std::string local_prefix = config.url_root + "u/";
+    if(!actor_uri.starts_with(local_prefix))
+    {
+        return std::unexpected(mw::runtimeError(
+            "Delivery signer must be a local actor"));
+    }
+    std::string_view username = actor_uri.substr(local_prefix.size());
+    if(username.empty() || username.find('/') != std::string_view::npos)
+    {
+        return std::unexpected(mw::runtimeError(
+            "Delivery signer actor URI is invalid"));
+    }
+    ASSIGN_OR_RETURN(auto user, data.getUserByUsername(username));
+    if(!user.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Delivery signer local user not found"));
+    }
+    return signingActorFor(config, *user);
+}
+
+mw::E<void> performDeliveryJob(const Config& config,
+                               const DataSourceInterface& data,
+                               mw::CryptoInterface& crypto,
+                               mw::HTTPSessionInterface& http,
+                               const nlohmann::json& payload)
+{
+    if(!payload.is_object() || !payload.contains("target_inbox")
+       || !payload["target_inbox"].is_string()
+       || !payload.contains("signer_actor")
+       || !payload["signer_actor"].is_string()
+       || !payload.contains("activity"))
+    {
+        return std::unexpected(mw::runtimeError(
+            "Delivery job payload is malformed"));
+    }
+
+    std::string inbox = payload["target_inbox"].get<std::string>();
+    std::string signer_uri = payload["signer_actor"].get<std::string>();
+    ASSIGN_OR_RETURN(auto signer, signingActorForUri(config, data,
+                                                     signer_uri));
+    std::string body = payload["activity"].dump();
+
+    DO_OR_RETURN(hardenOutboundSession(http));
+    ASSIGN_OR_RETURN(auto req, signedHttpRequest(
+        crypto, signer, "POST", inbox, body, "application/activity+json"));
+    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.post(req));
+    if(res->status < 200 || res->status >= 300)
+    {
+        return std::unexpected(mw::httpError(
+            res->status, "Activity delivery failed"));
+    }
+    return {};
+}
+
+bool isLocalActorUri(const Config& config, std::string_view uri)
+{
+    return uri.starts_with(config.url_root + "u/")
+        || uri == config.url_root + "actor";
+}
+
+std::optional<std::string> localUsernameForActor(const Config& config,
+                                                 std::string_view uri)
+{
+    const std::string prefix = config.url_root + "u/";
+    if(!uri.starts_with(prefix)) return std::nullopt;
+    std::string_view username = uri.substr(prefix.size());
+    if(username.empty() || username.find('/') != std::string_view::npos)
+        return std::nullopt;
+    return std::string(username);
+}
+
+std::optional<std::string> followersCollectionOwner(const Config& config,
+                                                    std::string_view uri)
+{
+    constexpr std::string_view SUFFIX = "/followers";
+    if(!uri.starts_with(config.url_root + "u/")
+       || !uri.ends_with(SUFFIX))
+    {
+        return std::nullopt;
+    }
+    return std::string(uri.substr(0, uri.size() - SUFFIX.size()));
+}
+
+bool addressesContainPublic(const std::vector<std::string>& addresses)
+{
+    for(const auto& uri : addresses)
+        if(isPublicAddress(uri)) return true;
+    return false;
+}
+
+Visibility visibilityForActivityObject(const nlohmann::json& object)
+{
+    std::vector<std::string> to = normalizeAddressing(
+        object.value("to", nlohmann::json()));
+    std::vector<std::string> cc = normalizeAddressing(
+        object.value("cc", nlohmann::json()));
+    if(addressesContainPublic(to)) return Visibility::PUBLIC;
+    if(addressesContainPublic(cc)) return Visibility::UNLISTED;
+    return Visibility::FOLLOWERS;
+}
+
+std::vector<PostRecipient> recipientsForObject(const nlohmann::json& object)
+{
+    std::vector<PostRecipient> out;
+    for(const auto& uri : normalizeAddressing(
+            object.value("to", nlohmann::json())))
+    {
+        out.push_back(PostRecipient{0, uri, "to"});
+    }
+    for(const auto& uri : normalizeAddressing(
+            object.value("cc", nlohmann::json())))
+    {
+        out.push_back(PostRecipient{0, uri, "cc"});
+    }
+    return out;
+}
+
+mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
+                                   const nlohmann::json& object,
+                                   int64_t post_id)
+{
+    nlohmann::json attachments = object.value("attachment",
+                                              nlohmann::json::array());
+    if(attachments.is_object()) attachments = nlohmann::json::array(
+        {attachments});
+    if(!attachments.is_array()) return {};
+
+    for(const auto& item : attachments)
+    {
+        if(!item.is_object()) continue;
+        auto url = normalizeRef(item.contains("url") ? item["url"]
+                                                     : nlohmann::json());
+        if(!url.has_value()) continue;
+        Attachment a;
+        a.post_id = post_id;
+        a.sha256 = "";
+        a.media_type = item.value("mediaType", std::string());
+        a.original_name = item.value("name", *url);
+        a.sensitive = item.value("sensitive", false);
+        a.remote_url = *url;
+        std::string type = item.value("type", std::string());
+        a.is_image = type == "Image" || a.media_type.starts_with("image/");
+        DO_OR_RETURN(data.insertAttachment(a));
+    }
+    return {};
+}
+
+mw::E<void> handleCreateActivity(const Config& config,
+                                 const DataSourceInterface& data,
+                                 const Activity& activity)
+{
+    if(!activity.object.is_object()
+       || activity.object.value("type", std::string()) != "Note")
+    {
+        return {};
+    }
+    auto uri = normalizeRef(activity.object);
+    if(!uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*uri));
+    if(existing.has_value()) return {};
+
+    auto attributed_to = normalizeRef(
+        activity.object.contains("attributedTo")
+            ? activity.object["attributedTo"] : nlohmann::json());
+    std::string author_uri = attributed_to.value_or(activity.actor);
+    std::optional<int64_t> remote_author_id;
+    ASSIGN_OR_RETURN(auto remote_author, data.getRemoteActorByUri(author_uri));
+    if(remote_author.has_value()) remote_author_id = remote_author->id;
+
+    NewPost np;
+    np.uri = *uri;
+    np.remote_author_id = remote_author_id;
+    // Temporary conservative sanitizer until the planned HTML sanitizer
+    // layer lands: render remote HTML as text, not executable markup.
+    np.content_html = mw::escapeHTML(
+        activity.object.value("content", std::string()));
+    np.summary = activity.object.contains("summary")
+        && activity.object["summary"].is_string()
+        ? std::optional<std::string>(mw::escapeHTML(
+              activity.object["summary"].get<std::string>()))
+        : std::nullopt;
+    np.sensitive = activity.object.value("sensitive", false);
+    np.visibility = visibilityForActivityObject(activity.object);
+    np.in_reply_to_uri = normalizeRef(
+        activity.object.contains("inReplyTo")
+            ? activity.object["inReplyTo"] : nlohmann::json());
+    if(activity.object.contains("published")
+       && activity.object["published"].is_string())
+    {
+        np.published = activity.object["published"].get<std::string>();
+    }
+    ASSIGN_OR_RETURN(auto post, data.insertPost(
+        np, recipientsForObject(activity.object), config.url_root + "p/"));
+    return storeRemoteAttachments(data, activity.object, post.id);
+}
+
+mw::E<void> handleFollowActivity(const Config& config,
+                                 const DataSourceInterface& data,
+                                 const Activity& activity,
+                                 int64_t now_seconds)
+{
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    auto username = localUsernameForActor(config, *object_uri);
+    if(!username.has_value()) return {};
+    ASSIGN_OR_RETURN(auto local_user, data.getUserByUsername(*username));
+    if(!local_user.has_value()) return {};
+
+    Follow follow;
+    follow.follower_uri = activity.actor;
+    follow.followee_uri = *object_uri;
+    follow.state = FollowState::ACCEPTED;
+    follow.follow_activity_uri = activity.id;
+    follow.created_at = now_seconds;
+    DO_OR_RETURN(data.addFollow(follow));
+
+    nlohmann::json accept = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::format("{}activities/accept/{}", config.url_root,
+                           now_seconds)},
+        {"type", "Accept"},
+        {"actor", *object_uri},
+        {"object", activity.raw},
+        {"to", nlohmann::json::array({activity.actor})},
+    };
+    std::vector<PostRecipient> recipients = {
+        {0, activity.actor, "to"},
+    };
+    ASSIGN_OR_RETURN(auto jobs, enqueueOutboundDelivery(
+        config, data, *object_uri, accept, recipients, now_seconds));
+    (void)jobs;
+    return {};
+}
+
+mw::E<void> handleAcceptActivity(const DataSourceInterface& data,
+                                 const Activity& activity)
+{
+    if(!activity.object.is_object()) return {};
+    auto follower = normalizeRef(
+        activity.object.contains("actor") ? activity.object["actor"]
+                                          : nlohmann::json());
+    auto followee = normalizeRef(
+        activity.object.contains("object") ? activity.object["object"]
+                                           : nlohmann::json());
+    if(!follower.has_value() || !followee.has_value()) return {};
+    return data.setFollowState(*follower, *followee, FollowState::ACCEPTED);
+}
+
+mw::E<void> handleLikeActivity(const DataSourceInterface& data,
+                               const Activity& activity,
+                               int64_t now_seconds)
+{
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
+    if(!post.has_value()) return {};
+    Like like;
+    like.actor_uri = activity.actor;
+    like.post_uri = *object_uri;
+    like.activity_uri = activity.id;
+    like.created_at = now_seconds;
+    return data.addLike(like);
+}
+
+mw::E<void> handleAnnounceActivity(const DataSourceInterface& data,
+                                   const Activity& activity,
+                                   int64_t now_seconds)
+{
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
+    if(!post.has_value()) return {};
+    if(post->visibility != Visibility::PUBLIC
+       && post->visibility != Visibility::UNLISTED)
+    {
+        return {};
+    }
+    Boost boost;
+    boost.actor_uri = activity.actor;
+    boost.post_uri = *object_uri;
+    boost.activity_uri = activity.id;
+    boost.created_at = now_seconds;
+    return data.addBoost(boost);
+}
+
+mw::E<void> handleEmojiReactActivity(const DataSourceInterface& data,
+                                     const Activity& activity,
+                                     int64_t now_seconds)
+{
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
+    if(!post.has_value()) return {};
+    std::string emoji = activity.raw.value("content", std::string());
+    if(emoji.empty()) emoji = activity.raw.value("name", std::string());
+    if(emoji.empty()) return {};
+    Reaction reaction;
+    reaction.actor_uri = activity.actor;
+    reaction.post_uri = *object_uri;
+    reaction.emoji = emoji;
+    reaction.activity_uri = activity.id;
+    reaction.created_at = now_seconds;
+    return data.addReaction(reaction);
+}
+
+mw::E<void> handleDeleteActivity(const DataSourceInterface& data,
+                                 const Activity& activity)
+{
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
+    if(!post.has_value()) return {};
+    return data.deletePost(post->id);
+}
+
+mw::E<void> handleUpdateActivity(const Config& config,
+                                 const DataSourceInterface& data,
+                                 const Activity& activity)
+{
+    if(!activity.object.is_object()
+       || activity.object.value("type", std::string()) != "Note")
+    {
+        return {};
+    }
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return {};
+    ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*object_uri));
+    if(!existing.has_value()) return {};
+    DO_OR_RETURN(data.deletePost(existing->id));
+    return handleCreateActivity(config, data, activity);
+}
+
+mw::E<void> handleUndoActivity(const DataSourceInterface& data,
+                               const Activity& activity)
+{
+    if(!activity.object.is_object()) return {};
+    Activity wrapped;
+    ASSIGN_OR_RETURN(wrapped, parseActivity(activity.object));
+    auto object_uri = normalizeRef(wrapped.object);
+    if(wrapped.type == "Follow" && object_uri.has_value())
+    {
+        return data.removeFollow(wrapped.actor, *object_uri);
+    }
+    if(wrapped.type == "Like" && object_uri.has_value())
+    {
+        return data.removeLike(wrapped.actor, *object_uri);
+    }
+    if(wrapped.type == "Announce" && object_uri.has_value())
+    {
+        return data.removeBoost(wrapped.actor, *object_uri);
+    }
+    if(wrapped.type == "EmojiReact" && object_uri.has_value())
+    {
+        std::string emoji = wrapped.raw.value("content", std::string());
+        if(emoji.empty()) emoji = wrapped.raw.value("name", std::string());
+        if(!emoji.empty())
+            return data.removeReaction(wrapped.actor, *object_uri, emoji);
+    }
+    return {};
+}
+
 } // namespace
 
 std::vector<std::string> normalizeAddressing(const nlohmann::json& field)
@@ -429,6 +809,52 @@ nlohmann::json noteJson(const Config& config, const Post& post,
     if(post.in_reply_to_uri.has_value()) j["inReplyTo"] = *post.in_reply_to_uri;
     if(!attachment_arr.empty()) j["attachment"] = attachment_arr;
     return j;
+}
+
+nlohmann::json deleteActivityJson(
+    std::string_view activity_id, std::string_view actor_uri,
+    std::string_view object_uri, const std::vector<PostRecipient>& recipients)
+{
+    nlohmann::json to = nlohmann::json::array();
+    nlohmann::json cc = nlohmann::json::array();
+    for(const auto& r : recipients)
+    {
+        if(r.field == "to") to.push_back(r.recipient_uri);
+        if(r.field == "cc") cc.push_back(r.recipient_uri);
+    }
+    return {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "Delete"},
+        {"actor", std::string(actor_uri)},
+        {"object", std::string(object_uri)},
+        {"to", to},
+        {"cc", cc},
+    };
+}
+
+nlohmann::json actorUpdateActivityJson(
+    const Config& config, std::string_view activity_id, const User& user,
+    std::string_view summary_html,
+    const std::vector<PostRecipient>& recipients)
+{
+    nlohmann::json to = nlohmann::json::array();
+    nlohmann::json cc = nlohmann::json::array();
+    for(const auto& r : recipients)
+    {
+        if(r.field == "to") to.push_back(r.recipient_uri);
+        if(r.field == "cc") cc.push_back(r.recipient_uri);
+    }
+    std::string actor_uri = config.url_root + "u/" + user.username;
+    return {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "Update"},
+        {"actor", actor_uri},
+        {"object", actorJson(config, user, summary_html)},
+        {"to", to},
+        {"cc", cc},
+    };
 }
 
 nlohmann::json webFingerJson(const Config& config, const User& user)
@@ -616,10 +1042,11 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
                                       mw::CryptoInterface& crypto,
                                       mw::HTTPSessionInterface& http,
                                       const SystemActor& system_actor,
-                                      std::string_view actor_uri)
+                                      std::string_view actor_uri,
+                                      bool force_refresh)
 {
     ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
-    if(cached.has_value()) return *cached;
+    if(cached.has_value() && !force_refresh) return *cached;
 
     DO_OR_RETURN(hardenOutboundSession(http));
     ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
@@ -771,6 +1198,202 @@ mw::E<VerifiedSignature> verifyHttpSignature(
         return std::unexpected(mw::httpError(401, "Bad signature"));
     }
     return VerifiedSignature{actor_uri, key_id};
+}
+
+mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, const IncomingHttpRequest& req,
+    int64_t now_seconds)
+{
+    auto first = verifyHttpSignature(config, data, crypto, req, now_seconds);
+    if(first.has_value()) return *first;
+
+    auto headers = lowerHeaders(req.headers);
+    auto sig_header = header(headers, "signature");
+    if(!sig_header.has_value()) return std::unexpected(first.error());
+    auto params = parseSignatureParams(*sig_header);
+    if(!params.contains("keyid")) return std::unexpected(first.error());
+
+    std::string actor_uri = params["keyid"];
+    if(size_t hash = actor_uri.find('#'); hash != std::string::npos)
+        actor_uri = actor_uri.substr(0, hash);
+    auto refreshed = resolveRemoteActor(config, data, crypto, http,
+                                        system_actor, actor_uri, true);
+    if(!refreshed.has_value()) return std::unexpected(first.error());
+
+    return verifyHttpSignature(config, data, crypto, req, now_seconds);
+}
+
+mw::E<int64_t> enqueueDeliveryJob(const DataSourceInterface& data,
+                                  std::string_view target_inbox,
+                                  std::string_view signer_actor_uri,
+                                  const nlohmann::json& activity,
+                                  int64_t now_seconds)
+{
+    if(target_inbox.empty() || signer_actor_uri.empty()
+       || !activity.is_object())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Delivery job requires inbox, signer, and activity object"));
+    }
+    nlohmann::json payload = {
+        {"target_inbox", std::string(target_inbox)},
+        {"signer_actor", std::string(signer_actor_uri)},
+        {"activity", activity},
+    };
+    return data.enqueueJob("deliver", payload.dump(), now_seconds,
+                           now_seconds);
+}
+
+mw::E<std::vector<std::string>> deliveryInboxesForRecipients(
+    const Config& config, const DataSourceInterface& data,
+    const std::vector<PostRecipient>& recipients)
+{
+    std::set<std::string> inboxes;
+
+    auto add_actor = [&](std::string_view actor_uri) -> mw::E<void> {
+        if(actor_uri.empty() || isPublicAddress(actor_uri)
+           || isLocalActorUri(config, actor_uri))
+        {
+            return {};
+        }
+        ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(actor_uri));
+        if(!actor.has_value())
+        {
+            return std::unexpected(mw::runtimeError(std::format(
+                "Remote delivery actor is not cached: {}", actor_uri)));
+        }
+        inboxes.insert(actor->shared_inbox.value_or(actor->inbox));
+        return {};
+    };
+
+    for(const auto& r : recipients)
+    {
+        if(isPublicAddress(r.recipient_uri)) continue;
+        if(auto owner = followersCollectionOwner(config, r.recipient_uri);
+           owner.has_value())
+        {
+            ASSIGN_OR_RETURN(auto followers, data.followerUris(*owner));
+            for(const auto& follower : followers)
+            {
+                DO_OR_RETURN(add_actor(follower));
+            }
+            continue;
+        }
+        DO_OR_RETURN(add_actor(r.recipient_uri));
+    }
+
+    return std::vector<std::string>(inboxes.begin(), inboxes.end());
+}
+
+mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
+    const Config& config, const DataSourceInterface& data,
+    std::string_view signer_actor_uri, const nlohmann::json& activity,
+    const std::vector<PostRecipient>& recipients, int64_t now_seconds)
+{
+    ASSIGN_OR_RETURN(auto inboxes, deliveryInboxesForRecipients(
+        config, data, recipients));
+    std::vector<int64_t> job_ids;
+    job_ids.reserve(inboxes.size());
+    for(const auto& inbox : inboxes)
+    {
+        ASSIGN_OR_RETURN(auto id, enqueueDeliveryJob(
+            data, inbox, signer_actor_uri, activity, now_seconds));
+        job_ids.push_back(id);
+    }
+    return job_ids;
+}
+
+mw::E<InboxDispatchResult> dispatchIncomingActivity(
+    const Config& config, const DataSourceInterface& data,
+    std::string_view verified_actor_uri, const Activity& activity,
+    int64_t now_seconds)
+{
+    if(activity.actor != verified_actor_uri)
+    {
+        return std::unexpected(mw::httpError(
+            401, "Activity actor does not match signature actor"));
+    }
+
+    ASSIGN_OR_RETURN(bool first_seen, data.markActivitySeen(
+        activity.id, now_seconds));
+    if(!first_seen) return InboxDispatchResult{true};
+
+    if(activity.type == "Create")
+    {
+        DO_OR_RETURN(handleCreateActivity(config, data, activity));
+    }
+    else if(activity.type == "Follow")
+    {
+        DO_OR_RETURN(handleFollowActivity(config, data, activity,
+                                          now_seconds));
+    }
+    else if(activity.type == "Accept")
+    {
+        DO_OR_RETURN(handleAcceptActivity(data, activity));
+    }
+    else if(activity.type == "Like")
+    {
+        DO_OR_RETURN(handleLikeActivity(data, activity, now_seconds));
+    }
+    else if(activity.type == "Announce")
+    {
+        DO_OR_RETURN(handleAnnounceActivity(data, activity, now_seconds));
+    }
+    else if(activity.type == "EmojiReact")
+    {
+        DO_OR_RETURN(handleEmojiReactActivity(data, activity, now_seconds));
+    }
+    else if(activity.type == "Delete")
+    {
+        DO_OR_RETURN(handleDeleteActivity(data, activity));
+    }
+    else if(activity.type == "Undo")
+    {
+        DO_OR_RETURN(handleUndoActivity(data, activity));
+    }
+    else if(activity.type == "Update")
+    {
+        DO_OR_RETURN(handleUpdateActivity(config, data, activity));
+    }
+
+    return InboxDispatchResult{false};
+}
+
+mw::E<bool> runFederationJobOnce(const Config& config,
+                                 const DataSourceInterface& data,
+                                 mw::CryptoInterface& crypto,
+                                 mw::HTTPSessionInterface& http,
+                                 int64_t now_seconds)
+{
+    ASSIGN_OR_RETURN(auto claimed, data.claimJob(now_seconds));
+    if(!claimed.has_value()) return false;
+
+    mw::E<void> result;
+    if(claimed->kind == "deliver")
+    {
+        nlohmann::json payload = nlohmann::json::parse(
+            claimed->payload_json, nullptr, false);
+        result = performDeliveryJob(config, data, crypto, http, payload);
+    }
+    else
+    {
+        result = std::unexpected(mw::runtimeError(
+            std::format("Unknown job kind: {}", claimed->kind)));
+    }
+
+    if(result.has_value())
+    {
+        DO_OR_RETURN(data.completeJob(claimed->id));
+    }
+    else
+    {
+        DO_OR_RETURN(data.failJob(
+            claimed->id, mw::errorMsg(result.error()), now_seconds,
+            config.job_retry_base_delay_seconds, config.job_max_retries));
+    }
+    return true;
 }
 
 } // namespace unspoken

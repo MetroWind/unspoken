@@ -1040,6 +1040,74 @@ DataSourceSQLite::followingUris(std::string_view follower_uri) const
     return out;
 }
 
+namespace
+{
+
+std::string buildFollowPageSql(const Cursor& c, std::string_view uri_column,
+                               std::string_view select_column)
+{
+    std::string where = std::format("{} = ? AND state = 'accepted'",
+                                    uri_column);
+    if(c.max_id.has_value()) where += " AND id < ?";
+    if(c.min_id.has_value()) where += " AND id > ?";
+    const char* order = c.min_id.has_value() ? "ASC" : "DESC";
+    return std::format(
+        "SELECT id, {} FROM follows WHERE {} ORDER BY id {} LIMIT ?;",
+        select_column, where, order);
+}
+
+mw::E<std::vector<ActorCollectionItem>> rowsToActorCollection(
+    const std::vector<std::tuple<int64_t, std::string>>& rows,
+    bool reverse_order)
+{
+    std::vector<ActorCollectionItem> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        out.push_back(ActorCollectionItem{std::get<0>(r), std::get<1>(r)});
+    }
+    if(reverse_order) std::reverse(out.begin(), out.end());
+    return out;
+}
+
+} // namespace
+
+mw::E<std::vector<ActorCollectionItem>>
+DataSourceSQLite::followerPage(std::string_view followee_uri,
+                               const Cursor& c, int limit) const
+{
+    std::string sql = buildFollowPageSql(c, "followee_uri", "follower_uri");
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
+    int idx = 1;
+    DO_OR_RETURN(mw::internal::bindOne(st, idx++, std::string(followee_uri)));
+    if(c.max_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
+    if(c.min_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string>(
+        std::move(st))));
+    return rowsToActorCollection(rows, c.min_id.has_value());
+}
+
+mw::E<std::vector<ActorCollectionItem>>
+DataSourceSQLite::followingPage(std::string_view follower_uri,
+                                const Cursor& c, int limit) const
+{
+    std::string sql = buildFollowPageSql(c, "follower_uri", "followee_uri");
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
+    int idx = 1;
+    DO_OR_RETURN(mw::internal::bindOne(st, idx++, std::string(follower_uri)));
+    if(c.max_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
+    if(c.min_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string>(
+        std::move(st))));
+    return rowsToActorCollection(rows, c.min_id.has_value());
+}
+
 // ─── Likes / boosts / reactions / bookmarks ────────────────────────
 
 mw::E<void> DataSourceSQLite::addLike(const Like& l) const

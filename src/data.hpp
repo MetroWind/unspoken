@@ -117,6 +117,12 @@ public:
     followerUris(std::string_view followee_uri) const = 0;
     virtual mw::E<std::vector<std::string>>
     followingUris(std::string_view follower_uri) const = 0;
+    virtual mw::E<std::vector<ActorCollectionItem>>
+    followerPage(std::string_view followee_uri, const Cursor& c,
+                 int limit) const = 0;
+    virtual mw::E<std::vector<ActorCollectionItem>>
+    followingPage(std::string_view follower_uri, const Cursor& c,
+                  int limit) const = 0;
 
     // ── Likes / boosts / reactions / bookmarks ──────────────────
     virtual mw::E<void> addLike(const Like& l) const = 0;
@@ -261,6 +267,12 @@ public:
     followerUris(std::string_view followee_uri) const override;
     mw::E<std::vector<std::string>>
     followingUris(std::string_view follower_uri) const override;
+    mw::E<std::vector<ActorCollectionItem>>
+    followerPage(std::string_view followee_uri, const Cursor& c,
+                 int limit) const override;
+    mw::E<std::vector<ActorCollectionItem>>
+    followingPage(std::string_view follower_uri, const Cursor& c,
+                  int limit) const override;
 
     mw::E<void> addLike(const Like& l) const override;
     mw::E<void> removeLike(std::string_view actor_uri,

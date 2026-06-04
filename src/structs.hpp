@@ -195,6 +195,12 @@ struct Follow
     int64_t created_at = 0;
 };
 
+struct ActorCollectionItem
+{
+    int64_t id = 0;
+    std::string actor_uri;
+};
+
 struct Like
 {
     int64_t id = 0;
