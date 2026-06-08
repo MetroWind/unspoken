@@ -225,6 +225,8 @@ struct Reaction
     std::string actor_uri;
     std::string post_uri;
     std::string emoji;          // unicode emoji or :shortcode:
+    std::optional<std::string> remote_emoji_url;
+    std::optional<std::string> remote_emoji_media_type;
     std::optional<std::string> activity_uri;
     int64_t created_at = 0;
 };

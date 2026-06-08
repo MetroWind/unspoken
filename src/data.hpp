@@ -66,6 +66,8 @@ public:
     virtual mw::E<RemoteActor>
     upsertRemoteActor(const RemoteActor& a) const = 0;
     virtual mw::E<std::optional<RemoteActor>>
+    getRemoteActorById(int64_t id) const = 0;
+    virtual mw::E<std::optional<RemoteActor>>
     getRemoteActorByUri(std::string_view uri) const = 0;
 
     // ── Posts ───────────────────────────────────────────────────
@@ -233,6 +235,8 @@ public:
                                std::string_view public_key_pem) const override;
 
     mw::E<RemoteActor> upsertRemoteActor(const RemoteActor& a) const override;
+    mw::E<std::optional<RemoteActor>>
+    getRemoteActorById(int64_t id) const override;
     mw::E<std::optional<RemoteActor>>
     getRemoteActorByUri(std::string_view uri) const override;
 

@@ -241,6 +241,8 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         " actor_uri TEXT NOT NULL,"
         " post_uri TEXT NOT NULL,"
         " emoji TEXT NOT NULL,"
+        " remote_emoji_url TEXT,"
+        " remote_emoji_media_type TEXT,"
         " activity_uri TEXT,"
         " created_at INTEGER NOT NULL);"));
     DO_OR_RETURN(db.execute(
@@ -553,6 +555,34 @@ DataSourceSQLite::upsertRemoteActor(const RemoteActor& a) const
             "Remote actor vanished immediately after upsert"));
     }
     return *stored;
+}
+
+mw::E<std::optional<RemoteActor>>
+DataSourceSQLite::getRemoteActorById(int64_t id) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT id, uri, username, domain, display_name, inbox, shared_inbox, "
+        "public_key_pem, public_key_id, actor_json, fetched_at "
+        "FROM remote_actors WHERE id = ?;"));
+    DO_OR_RETURN(st.bind<int64_t>(id));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
+        std::string, std::string, std::string, std::optional<std::string>,
+        std::string, std::string, std::string, int64_t>(std::move(st))));
+    if(rows.empty()) return std::optional<RemoteActor>{};
+    const auto& r = rows[0];
+    RemoteActor a;
+    a.id = std::get<0>(r);
+    a.uri = std::get<1>(r);
+    a.username = std::get<2>(r);
+    a.domain = std::get<3>(r);
+    a.display_name = std::get<4>(r);
+    a.inbox = std::get<5>(r);
+    a.shared_inbox = std::get<6>(r);
+    a.public_key_pem = std::get<7>(r);
+    a.public_key_id = std::get<8>(r);
+    a.actor_json = std::get<9>(r);
+    a.fetched_at = std::get<10>(r);
+    return std::optional<RemoteActor>{std::move(a)};
 }
 
 mw::E<std::optional<RemoteActor>>
@@ -1196,12 +1226,15 @@ mw::E<void> DataSourceSQLite::addReaction(const Reaction& r) const
     int64_t created = r.created_at != 0 ? r.created_at : now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO reactions (actor_uri, post_uri, emoji, activity_uri, "
-            "created_at) VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO reactions (actor_uri, post_uri, emoji, "
+            "remote_emoji_url, remote_emoji_media_type, activity_uri, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(actor_uri, post_uri, emoji) DO NOTHING;"));
         DO_OR_RETURN((st.bind<std::string, std::string, std::string,
+            std::optional<std::string>, std::optional<std::string>,
             std::optional<std::string>, int64_t>(
-            r.actor_uri, r.post_uri, r.emoji, r.activity_uri, created)));
+            r.actor_uri, r.post_uri, r.emoji, r.remote_emoji_url,
+            r.remote_emoji_media_type, r.activity_uri, created)));
         return db->execute(std::move(st));
     };
     return withWriteRetry(txn);
@@ -1227,11 +1260,14 @@ mw::E<std::vector<Reaction>>
 DataSourceSQLite::reactionsForPost(std::string_view post_uri) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, actor_uri, post_uri, emoji, activity_uri, created_at "
+        "SELECT id, actor_uri, post_uri, emoji, remote_emoji_url, "
+        "remote_emoji_media_type, activity_uri, created_at "
         "FROM reactions WHERE post_uri = ? ORDER BY created_at ASC;"));
     DO_OR_RETURN(st.bind<std::string>(std::string(post_uri)));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::optional<std::string>, int64_t>(std::move(st))));
+        std::string, std::optional<std::string>,
+        std::optional<std::string>, std::optional<std::string>,
+        int64_t>(std::move(st))));
     std::vector<Reaction> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1241,8 +1277,10 @@ DataSourceSQLite::reactionsForPost(std::string_view post_uri) const
         re.actor_uri = std::get<1>(r);
         re.post_uri = std::get<2>(r);
         re.emoji = std::get<3>(r);
-        re.activity_uri = std::get<4>(r);
-        re.created_at = std::get<5>(r);
+        re.remote_emoji_url = std::get<4>(r);
+        re.remote_emoji_media_type = std::get<5>(r);
+        re.activity_uri = std::get<6>(r);
+        re.created_at = std::get<7>(r);
         out.push_back(std::move(re));
     }
     return out;

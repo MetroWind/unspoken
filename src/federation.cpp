@@ -8,6 +8,7 @@
 #include <format>
 #include <iomanip>
 #include <locale>
+#include <map>
 #include <sstream>
 #include <optional>
 #include <set>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -26,6 +28,8 @@
 
 #include "attachments.hpp"
 #include "data.hpp"
+#include "emoji.hpp"
+#include "render.hpp"
 #include "structs.hpp"
 
 namespace unspoken
@@ -119,6 +123,49 @@ std::string lower(std::string_view s)
             static_cast<unsigned char>(c))));
     }
     return out;
+}
+
+std::string percentEncode(std::string_view s)
+{
+    constexpr char HEX[] = "0123456789ABCDEF";
+    std::string out;
+    for(unsigned char c : s)
+    {
+        bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '-' || c == '_'
+            || c == '.' || c == '~';
+        if(keep)
+        {
+            out.push_back(static_cast<char>(c));
+        }
+        else
+        {
+            out.push_back('%');
+            out.push_back(HEX[c >> 4]);
+            out.push_back(HEX[c & 0x0f]);
+        }
+    }
+    return out;
+}
+
+std::optional<std::pair<std::string, std::string>>
+parseHandle(std::string_view handle)
+{
+    handle = mw::strip(handle);
+    if(handle.starts_with('@')) handle.remove_prefix(1);
+    size_t at = handle.find('@');
+    if(at == std::string_view::npos || at == 0 || at + 1 >= handle.size())
+        return std::nullopt;
+    if(handle.find('@', at + 1) != std::string_view::npos)
+        return std::nullopt;
+    std::string username(handle.substr(0, at));
+    std::string domain(handle.substr(at + 1));
+    if(domain.find('/') != std::string::npos
+       || domain.find(':') != std::string::npos)
+    {
+        return std::nullopt;
+    }
+    return std::make_pair(username, domain);
 }
 
 std::unordered_map<std::string, std::string>
@@ -260,6 +307,10 @@ void appendAll(std::vector<std::string>& out,
     out.insert(out.end(), in.begin(), in.end());
 }
 
+mw::E<void> handleCreateActivity(const Config& config,
+                                 const DataSourceInterface& data,
+                                 const Activity& activity);
+
 mw::E<SigningActor> signingActorForUri(const Config& config,
                                        const DataSourceInterface& data,
                                        std::string_view actor_uri)
@@ -331,6 +382,182 @@ mw::E<void> performDeliveryJob(const Config& config,
     return {};
 }
 
+std::vector<std::string> objectRefsFromCollection(const nlohmann::json& doc)
+{
+    std::vector<std::string> out;
+    auto add_refs = [&](const nlohmann::json& items)
+    {
+        if(items.is_array())
+        {
+            for(const auto& item : items)
+                if(auto ref = normalizeRef(item); ref.has_value())
+                    out.push_back(*ref);
+        }
+        else if(auto ref = normalizeRef(items); ref.has_value())
+        {
+            out.push_back(*ref);
+        }
+    };
+
+    if(doc.is_array())
+    {
+        add_refs(doc);
+        return out;
+    }
+    if(!doc.is_object()) return out;
+    if(doc.contains("orderedItems")) add_refs(doc["orderedItems"]);
+    if(doc.contains("items")) add_refs(doc["items"]);
+    return out;
+}
+
+mw::E<nlohmann::json> signedGetJson(
+    const Config& config, mw::CryptoInterface& crypto,
+    mw::HTTPSessionInterface& http, const SystemActor& system_actor,
+    std::string_view uri)
+{
+    DO_OR_RETURN(hardenOutboundSession(http));
+    ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
+                                                uri));
+    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
+    if(res->status < 200 || res->status >= 300)
+    {
+        return std::unexpected(mw::httpError(res->status,
+                                             "Remote object fetch failed"));
+    }
+    nlohmann::json doc = nlohmann::json::parse(res->payloadAsStr(),
+                                               nullptr, false);
+    if(!doc.is_object() && !doc.is_array())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote object response is not JSON"));
+    }
+    return doc;
+}
+
+mw::E<void> fetchThreadObject(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view uri, int depth_left,
+    std::set<std::string>& seen)
+{
+    if(depth_left <= 0 || uri.empty()) return {};
+    std::string key(uri);
+    if(!seen.insert(key).second) return {};
+
+    ASSIGN_OR_RETURN(auto doc, signedGetJson(config, crypto, http,
+                                             system_actor, uri));
+    if(doc.is_array())
+    {
+        for(const auto& ref : objectRefsFromCollection(doc))
+        {
+            DO_OR_RETURN(fetchThreadObject(config, data, crypto, http,
+                                           system_actor, ref, depth_left - 1,
+                                           seen));
+        }
+        return {};
+    }
+
+    if(doc.value("type", std::string()) == "Note")
+    {
+        auto object_uri = normalizeRef(doc);
+        if(!object_uri.has_value()) return {};
+        auto actor = normalizeRef(doc.contains("attributedTo")
+            ? doc["attributedTo"] : nlohmann::json());
+        Activity synthetic;
+        synthetic.id = *object_uri + "#fetch";
+        synthetic.type = "Create";
+        synthetic.actor = actor.value_or(std::string());
+        synthetic.object = doc;
+        synthetic.raw = {
+            {"id", synthetic.id},
+            {"type", "Create"},
+            {"actor", synthetic.actor},
+            {"object", doc},
+        };
+        if(!synthetic.actor.empty())
+            DO_OR_RETURN(handleCreateActivity(config, data, synthetic));
+
+        auto parent = normalizeRef(doc.contains("inReplyTo")
+            ? doc["inReplyTo"] : nlohmann::json());
+        if(parent.has_value())
+        {
+            ASSIGN_OR_RETURN(auto existing_parent,
+                             data.getPostByUri(*parent));
+            if(!existing_parent.has_value())
+            {
+                DO_OR_RETURN(fetchThreadObject(config, data, crypto, http,
+                                               system_actor, *parent,
+                                               depth_left - 1, seen));
+            }
+        }
+
+        if(doc.contains("replies"))
+        {
+            std::vector<std::string> replies =
+                objectRefsFromCollection(doc["replies"]);
+            if(replies.empty())
+            {
+                auto first = normalizeRef(
+                    doc["replies"].contains("first")
+                        ? doc["replies"]["first"] : nlohmann::json());
+                if(first.has_value())
+                {
+                    ASSIGN_OR_RETURN(auto page, signedGetJson(
+                        config, crypto, http, system_actor, *first));
+                    replies = objectRefsFromCollection(page);
+                }
+            }
+            for(const auto& reply : replies)
+            {
+                ASSIGN_OR_RETURN(auto existing_reply,
+                                 data.getPostByUri(reply));
+                if(!existing_reply.has_value())
+                {
+                    DO_OR_RETURN(fetchThreadObject(config, data, crypto, http,
+                                                   system_actor, reply,
+                                                   depth_left - 1, seen));
+                }
+            }
+        }
+    }
+    else
+    {
+        for(const auto& ref : objectRefsFromCollection(doc))
+        {
+            DO_OR_RETURN(fetchThreadObject(config, data, crypto, http,
+                                           system_actor, ref, depth_left - 1,
+                                           seen));
+        }
+    }
+    return {};
+}
+
+mw::E<void> performFetchThreadJob(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const nlohmann::json& payload)
+{
+    if(!payload.is_object() || !payload.contains("root_uri")
+       || !payload["root_uri"].is_string())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Fetch-thread job payload is malformed"));
+    }
+    ASSIGN_OR_RETURN(auto system_actor, data.getSystemActor());
+    if(!system_actor.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Fetch-thread job requires a system actor"));
+    }
+    int depth = payload.value("depth", config.thread_fetch_max_depth);
+    if(depth > config.thread_fetch_max_depth)
+        depth = config.thread_fetch_max_depth;
+    std::set<std::string> seen;
+    return fetchThreadObject(config, data, crypto, http, *system_actor,
+                             payload["root_uri"].get<std::string>(),
+                             depth, seen);
+}
+
 bool isLocalActorUri(const Config& config, std::string_view uri)
 {
     return uri.starts_with(config.url_root + "u/")
@@ -358,6 +585,141 @@ std::optional<std::string> followersCollectionOwner(const Config& config,
         return std::nullopt;
     }
     return std::string(uri.substr(0, uri.size() - SUFFIX.size()));
+}
+
+bool isLocalPostUri(const Config& config, std::string_view uri)
+{
+    return uri.starts_with(config.url_root + "p/");
+}
+
+mw::E<bool> referencesKnownOwnedObject(
+    const Config& config, const DataSourceInterface& data,
+    std::string_view uri, int depth_left)
+{
+    if(depth_left <= 0 || uri.empty()) return false;
+    if(isLocalPostUri(config, uri)) return true;
+
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(uri));
+    if(!post.has_value()) return false;
+    if(post->local_author_id.has_value()) return true;
+    if(post->in_reply_to_uri.has_value())
+    {
+        return referencesKnownOwnedObject(config, data,
+                                          *post->in_reply_to_uri,
+                                          depth_left - 1);
+    }
+    return false;
+}
+
+std::vector<std::string> forwardingReferenceUris(const Activity& activity)
+{
+    std::vector<std::string> out;
+    if(auto ref = normalizeRef(activity.object); ref.has_value())
+        out.push_back(*ref);
+    if(activity.object.is_object())
+    {
+        if(auto ref = normalizeRef(activity.object.contains("inReplyTo")
+                ? activity.object["inReplyTo"] : nlohmann::json());
+           ref.has_value())
+        {
+            out.push_back(*ref);
+        }
+    }
+    if(activity.raw.is_object())
+    {
+        if(auto ref = normalizeRef(activity.raw.contains("target")
+                ? activity.raw["target"] : nlohmann::json());
+           ref.has_value())
+        {
+            out.push_back(*ref);
+        }
+        nlohmann::json tags = activity.raw.value("tag",
+                                                 nlohmann::json::array());
+        if(tags.is_object()) tags = nlohmann::json::array({tags});
+        if(tags.is_array())
+        {
+            for(const auto& tag : tags)
+                if(auto ref = normalizeRef(tag); ref.has_value())
+                    out.push_back(*ref);
+        }
+    }
+    return out;
+}
+
+mw::E<bool> refetchedObjectReferencesOwnedObject(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view object_uri)
+{
+    if(isLocalPostUri(config, object_uri)) return true;
+    ASSIGN_OR_RETURN(auto doc, signedGetJson(config, crypto, http,
+                                             system_actor, object_uri));
+    if(!doc.is_object()) return false;
+    auto fetched_id = normalizeRef(doc);
+    if(!fetched_id.has_value() || *fetched_id != object_uri) return false;
+    if(auto parent = normalizeRef(doc.contains("inReplyTo")
+            ? doc["inReplyTo"] : nlohmann::json());
+       parent.has_value())
+    {
+        return referencesKnownOwnedObject(config, data, *parent,
+                                          config.thread_fetch_max_depth);
+    }
+    return false;
+}
+
+mw::E<void> maybeForwardIncomingActivity(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface* crypto, mw::HTTPSessionInterface* http,
+    const SystemActor* system_actor, const Activity& activity,
+    int64_t now_seconds)
+{
+    if(crypto == nullptr || http == nullptr || system_actor == nullptr)
+        return {};
+
+    std::vector<std::string> addressed;
+    appendAll(addressed, activity.to);
+    appendAll(addressed, activity.cc);
+    std::set<std::string> forwarded_collections;
+    for(const auto& address : addressed)
+    {
+        auto owner = followersCollectionOwner(config, address);
+        if(!owner.has_value() || !isLocalActorUri(config, *owner)) continue;
+
+        bool references_owned = false;
+        for(const auto& ref : forwardingReferenceUris(activity))
+        {
+            ASSIGN_OR_RETURN(bool ok, referencesKnownOwnedObject(
+                config, data, ref, config.thread_fetch_max_depth));
+            if(ok)
+            {
+                references_owned = true;
+                break;
+            }
+        }
+        if(!references_owned) continue;
+
+        bool verified_by_refetch = false;
+        for(const auto& ref : forwardingReferenceUris(activity))
+        {
+            ASSIGN_OR_RETURN(bool ok, refetchedObjectReferencesOwnedObject(
+                config, data, *crypto, *http, *system_actor, ref));
+            if(ok)
+            {
+                verified_by_refetch = true;
+                break;
+            }
+        }
+        if(!verified_by_refetch) continue;
+        if(!forwarded_collections.insert(address).second) continue;
+
+        std::vector<PostRecipient> recipients = {
+            {0, address, "to"},
+        };
+        ASSIGN_OR_RETURN(auto jobs, enqueueOutboundDelivery(
+            config, data, *owner, activity.raw, recipients, now_seconds));
+        (void)jobs;
+    }
+    return {};
 }
 
 bool addressesContainPublic(const std::vector<std::string>& addresses)
@@ -394,6 +756,156 @@ std::vector<PostRecipient> recipientsForObject(const nlohmann::json& object)
     return out;
 }
 
+std::map<std::string, EmojiInfo> emojiTagsForObject(
+    const nlohmann::json& object)
+{
+    std::map<std::string, EmojiInfo> out;
+    nlohmann::json tags = object.value("tag", nlohmann::json::array());
+    if(tags.is_object()) tags = nlohmann::json::array({tags});
+    if(!tags.is_array()) return out;
+
+    for(const auto& tag : tags)
+    {
+        if(!tag.is_object() || tag.value("type", std::string()) != "Emoji")
+            continue;
+        std::string name = tag.value("name", std::string());
+        if(name.size() < 3 || name.front() != ':' || name.back() != ':')
+            continue;
+        std::string shortcode = name.substr(1, name.size() - 2);
+        if(!isValidShortcode(shortcode)) continue;
+        if(!tag.contains("icon") || !tag["icon"].is_object()) continue;
+        const auto& icon = tag["icon"];
+        if(!icon.contains("url") || !icon["url"].is_string()) continue;
+        std::string url = icon["url"].get<std::string>();
+        if(!url.starts_with("https://")) continue;
+
+        EmojiInfo info;
+        info.shortcode = shortcode;
+        info.image_url = url;
+        info.media_type = icon.value("mediaType", std::string("image/png"));
+        out.emplace(shortcode, std::move(info));
+    }
+    return out;
+}
+
+std::string substituteRemoteEmoji(std::string_view html,
+                                  const std::map<std::string, EmojiInfo>& emoji)
+{
+    std::string out;
+    out.reserve(html.size());
+    size_t pos = 0;
+    while(pos < html.size())
+    {
+        size_t start = html.find(':', pos);
+        if(start == std::string_view::npos)
+        {
+            out += html.substr(pos);
+            break;
+        }
+        out += html.substr(pos, start - pos);
+        size_t end = html.find(':', start + 1);
+        if(end == std::string_view::npos)
+        {
+            out += html.substr(start);
+            break;
+        }
+        std::string shortcode(html.substr(start + 1, end - start - 1));
+        auto it = emoji.find(shortcode);
+        if(isValidShortcode(shortcode) && it != emoji.end())
+        {
+            out += std::format(
+                "<img class=\"emoji\" src=\"{}\" alt=\":{}:\" "
+                "title=\":{}:\">",
+                mw::escapeHTML(it->second.image_url), shortcode, shortcode);
+        }
+        else
+        {
+            out += html.substr(start, end - start + 1);
+        }
+        pos = end + 1;
+    }
+    return out;
+}
+
+std::string tagPageUrl(const Config& config, std::string_view tag)
+{
+    std::string out;
+    out.reserve(tag.size());
+    for(char c : tag)
+    {
+        out.push_back(static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c))));
+    }
+    return config.url_root + "tags/" + out;
+}
+
+nlohmann::json tagsForPostSource(const Config& config,
+                                 const std::vector<PostRecipient>& recipients,
+                                 std::string_view source,
+                                 const EmojiRegistry* emoji)
+{
+    if(source.empty()) return nlohmann::json::array();
+
+    std::set<std::string> addressed;
+    for(const auto& recipient : recipients)
+        addressed.insert(recipient.recipient_uri);
+
+    EmojiRegistry empty_emoji;
+    RenderedPostContent parsed = parsePostContent(std::string(source),
+                                                  empty_emoji);
+    nlohmann::json tags = nlohmann::json::array();
+    for(const auto& mention : parsed.mentions)
+    {
+        if(!mention.domain.empty() && mention.domain != config.public_domain)
+            continue;
+        std::string href = config.url_root + "u/" + mention.username;
+        if(!addressed.contains(href)) continue;
+        tags.push_back({
+            {"type", "Mention"},
+            {"href", href},
+            {"name", mention.name},
+        });
+    }
+    for(const auto& hashtag : parsed.hashtags)
+    {
+        tags.push_back({
+            {"type", "Hashtag"},
+            {"href", tagPageUrl(config, hashtag.tag)},
+            {"name", hashtag.name},
+        });
+    }
+    if(emoji != nullptr)
+    {
+        size_t pos = 0;
+        std::set<std::string> seen_emoji;
+        while(pos < source.size())
+        {
+            size_t start = source.find(':', pos);
+            if(start == std::string_view::npos) break;
+            size_t end = source.find(':', start + 1);
+            if(end == std::string_view::npos) break;
+            std::string shortcode(source.substr(start + 1,
+                                                end - start - 1));
+            pos = end + 1;
+            if(!isValidShortcode(shortcode)) continue;
+            auto info = emoji->lookup(shortcode);
+            if(!info.has_value()) continue;
+            if(!seen_emoji.insert(shortcode).second) continue;
+            tags.push_back({
+                {"type", "Emoji"},
+                {"id", config.url_root + "emoji/" + shortcode},
+                {"name", ":" + shortcode + ":"},
+                {"icon", {
+                    {"type", "Image"},
+                    {"mediaType", info->media_type},
+                    {"url", info->image_url},
+                }},
+            });
+        }
+    }
+    return tags;
+}
+
 mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
                                    const nlohmann::json& object,
                                    int64_t post_id)
@@ -415,7 +927,8 @@ mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
         a.sha256 = "";
         a.media_type = item.value("mediaType", std::string());
         a.original_name = item.value("name", *url);
-        a.sensitive = item.value("sensitive", false);
+        a.sensitive = object.value("sensitive", false)
+            || item.value("sensitive", false);
         a.remote_url = *url;
         std::string type = item.value("type", std::string());
         a.is_image = type == "Image" || a.media_type.starts_with("image/");
@@ -449,13 +962,13 @@ mw::E<void> handleCreateActivity(const Config& config,
     NewPost np;
     np.uri = *uri;
     np.remote_author_id = remote_author_id;
-    // Temporary conservative sanitizer until the planned HTML sanitizer
-    // layer lands: render remote HTML as text, not executable markup.
-    np.content_html = mw::escapeHTML(
-        activity.object.value("content", std::string()));
+    auto remote_emoji = emojiTagsForObject(activity.object);
+    np.content_html = substituteRemoteEmoji(
+        sanitizeRemoteHtml(activity.object.value("content", std::string())),
+        remote_emoji);
     np.summary = activity.object.contains("summary")
         && activity.object["summary"].is_string()
-        ? std::optional<std::string>(mw::escapeHTML(
+        ? std::optional<std::string>(sanitizeRemoteHtml(
               activity.object["summary"].get<std::string>()))
         : std::nullopt;
     np.sensitive = activity.object.value("sensitive", false);
@@ -577,6 +1090,17 @@ mw::E<void> handleEmojiReactActivity(const DataSourceInterface& data,
     reaction.actor_uri = activity.actor;
     reaction.post_uri = *object_uri;
     reaction.emoji = emoji;
+    if(emoji.size() >= 3 && emoji.front() == ':' && emoji.back() == ':')
+    {
+        std::string shortcode = emoji.substr(1, emoji.size() - 2);
+        auto remote_emoji = emojiTagsForObject(activity.raw);
+        auto it = remote_emoji.find(shortcode);
+        if(it != remote_emoji.end())
+        {
+            reaction.remote_emoji_url = it->second.image_url;
+            reaction.remote_emoji_media_type = it->second.media_type;
+        }
+    }
     reaction.activity_uri = activity.id;
     reaction.created_at = now_seconds;
     return data.addReaction(reaction);
@@ -760,7 +1284,8 @@ nlohmann::json systemActorJson(const Config& config,
 nlohmann::json noteJson(const Config& config, const Post& post,
                         const User& author,
                         const std::vector<PostRecipient>& recipients,
-                        const std::vector<Attachment>& attachments)
+                        const std::vector<Attachment>& attachments,
+                        const EmojiRegistry* emoji)
 {
     nlohmann::json to = nlohmann::json::array();
     nlohmann::json cc = nlohmann::json::array();
@@ -808,6 +1333,12 @@ nlohmann::json noteJson(const Config& config, const Post& post,
     if(post.summary.has_value()) j["summary"] = *post.summary;
     if(post.in_reply_to_uri.has_value()) j["inReplyTo"] = *post.in_reply_to_uri;
     if(!attachment_arr.empty()) j["attachment"] = attachment_arr;
+    if(post.content_source.has_value())
+    {
+        nlohmann::json tags = tagsForPostSource(config, recipients,
+                                                *post.content_source, emoji);
+        if(!tags.empty()) j["tag"] = tags;
+    }
     return j;
 }
 
@@ -855,6 +1386,54 @@ nlohmann::json actorUpdateActivityJson(
         {"to", to},
         {"cc", cc},
     };
+}
+
+nlohmann::json emojiReactActivityJson(
+    const Config& config, std::string_view activity_id,
+    std::string_view actor_uri, std::string_view object_uri,
+    std::string_view emoji_str, const std::vector<PostRecipient>& recipients,
+    const EmojiRegistry& emoji_registry)
+{
+    nlohmann::json to = nlohmann::json::array();
+    nlohmann::json cc = nlohmann::json::array();
+    for(const auto& r : recipients)
+    {
+        if(r.field == "to") to.push_back(r.recipient_uri);
+        if(r.field == "cc") cc.push_back(r.recipient_uri);
+    }
+
+    nlohmann::json j = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "EmojiReact"},
+        {"actor", std::string(actor_uri)},
+        {"object", std::string(object_uri)},
+        {"content", std::string(emoji_str)},
+        {"to", to},
+        {"cc", cc},
+    };
+
+    if(emoji_str.size() >= 3 && emoji_str.front() == ':'
+       && emoji_str.back() == ':')
+    {
+        std::string shortcode(emoji_str.substr(1, emoji_str.size() - 2));
+        if(auto info = emoji_registry.lookup(shortcode); info.has_value())
+        {
+            j["tag"] = nlohmann::json::array({
+                {
+                    {"type", "Emoji"},
+                    {"id", config.url_root + "emoji/" + shortcode},
+                    {"name", std::string(emoji_str)},
+                    {"icon", {
+                        {"type", "Image"},
+                        {"mediaType", info->media_type},
+                        {"url", info->image_url},
+                    }},
+                },
+            });
+        }
+    }
+    return j;
 }
 
 nlohmann::json webFingerJson(const Config& config, const User& user)
@@ -1107,6 +1686,84 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
     return data.upsertRemoteActor(actor);
 }
 
+mw::E<RemoteActor> resolveWebFingerActor(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view handle)
+{
+    auto parsed = parseHandle(handle);
+    if(!parsed.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "WebFinger query must be a user@domain handle"));
+    }
+    const auto& [username, domain] = *parsed;
+    if(domain == config.public_domain)
+    {
+        return std::unexpected(mw::runtimeError(
+            "Local handles do not need WebFinger resolution"));
+    }
+
+    std::string acct = username + "@" + domain;
+    std::string uri = "https://" + domain
+        + "/.well-known/webfinger?resource="
+        + percentEncode("acct:" + acct);
+
+    DO_OR_RETURN(hardenOutboundSession(http));
+    ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
+                                                uri));
+    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
+    if(res->status < 200 || res->status >= 300)
+    {
+        return std::unexpected(mw::httpError(res->status,
+                                             "WebFinger lookup failed"));
+    }
+
+    nlohmann::json doc = nlohmann::json::parse(res->payloadAsStr(),
+                                               nullptr, false);
+    if(!doc.is_object())
+    {
+        return std::unexpected(mw::runtimeError(
+            "WebFinger response is not JSON"));
+    }
+    std::string subject = doc.value("subject", std::string());
+    if(lower(subject) != lower("acct:" + acct))
+    {
+        return std::unexpected(mw::runtimeError(
+            "WebFinger response subject does not match query"));
+    }
+
+    if(!doc.contains("links") || !doc["links"].is_array())
+    {
+        return std::unexpected(mw::runtimeError(
+            "WebFinger response has no links"));
+    }
+    std::optional<std::string> actor_uri;
+    for(const auto& link : doc["links"])
+    {
+        if(!link.is_object()) continue;
+        if(link.value("rel", std::string()) != "self") continue;
+        std::string type = link.value("type", std::string());
+        if(type != "application/activity+json"
+           && type != "application/ld+json")
+        {
+            continue;
+        }
+        if(link.contains("href") && link["href"].is_string())
+        {
+            actor_uri = link["href"].get<std::string>();
+            break;
+        }
+    }
+    if(!actor_uri.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "WebFinger response has no ActivityPub self link"));
+    }
+    return resolveRemoteActor(config, data, crypto, http, system_actor,
+                              *actor_uri);
+}
+
 mw::E<VerifiedSignature> verifyHttpSignature(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
@@ -1305,10 +1962,27 @@ mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
     return job_ids;
 }
 
+mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
+                                     std::string_view root_uri,
+                                     int64_t now_seconds)
+{
+    if(root_uri.empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Fetch-thread job requires a root URI"));
+    }
+    nlohmann::json payload = {
+        {"root_uri", std::string(root_uri)},
+    };
+    return data.enqueueJob("fetch_thread", payload.dump(), now_seconds,
+                           now_seconds);
+}
+
 mw::E<InboxDispatchResult> dispatchIncomingActivity(
     const Config& config, const DataSourceInterface& data,
     std::string_view verified_actor_uri, const Activity& activity,
-    int64_t now_seconds)
+    int64_t now_seconds, mw::CryptoInterface* crypto,
+    mw::HTTPSessionInterface* http, const SystemActor* system_actor)
 {
     if(activity.actor != verified_actor_uri)
     {
@@ -1319,6 +1993,10 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
     ASSIGN_OR_RETURN(bool first_seen, data.markActivitySeen(
         activity.id, now_seconds));
     if(!first_seen) return InboxDispatchResult{true};
+
+    DO_OR_RETURN(maybeForwardIncomingActivity(config, data, crypto, http,
+                                              system_actor, activity,
+                                              now_seconds));
 
     if(activity.type == "Create")
     {
@@ -1376,6 +2054,12 @@ mw::E<bool> runFederationJobOnce(const Config& config,
         nlohmann::json payload = nlohmann::json::parse(
             claimed->payload_json, nullptr, false);
         result = performDeliveryJob(config, data, crypto, http, payload);
+    }
+    else if(claimed->kind == "fetch_thread")
+    {
+        nlohmann::json payload = nlohmann::json::parse(
+            claimed->payload_json, nullptr, false);
+        result = performFetchThreadJob(config, data, crypto, http, payload);
     }
     else
     {

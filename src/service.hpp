@@ -30,6 +30,7 @@ struct ComposeParams
     std::optional<std::string> summary;       // content warning
     bool sensitive = false;
     std::optional<std::string> in_reply_to_uri;
+    std::vector<std::string> mentioned_actor_uris;
     std::vector<int64_t> attachment_ids;      // draft attachments to attach
 };
 

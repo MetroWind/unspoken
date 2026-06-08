@@ -14,6 +14,7 @@
 
 #include "config.hpp"
 #include "data.hpp"
+#include "emoji.hpp"
 #include "structs.hpp"
 
 namespace unspoken
@@ -59,7 +60,8 @@ nlohmann::json systemActorJson(const Config& config,
 nlohmann::json noteJson(const Config& config, const Post& post,
                         const User& author,
                         const std::vector<PostRecipient>& recipients,
-                        const std::vector<Attachment>& attachments);
+                        const std::vector<Attachment>& attachments,
+                        const EmojiRegistry* emoji = nullptr);
 nlohmann::json deleteActivityJson(std::string_view activity_id,
                                   std::string_view actor_uri,
                                   std::string_view object_uri,
@@ -68,6 +70,11 @@ nlohmann::json actorUpdateActivityJson(
     const Config& config, std::string_view activity_id, const User& user,
     std::string_view summary_html,
     const std::vector<PostRecipient>& recipients);
+nlohmann::json emojiReactActivityJson(
+    const Config& config, std::string_view activity_id,
+    std::string_view actor_uri, std::string_view object_uri,
+    std::string_view emoji, const std::vector<PostRecipient>& recipients,
+    const EmojiRegistry& emoji_registry);
 nlohmann::json webFingerJson(const Config& config, const User& user);
 nlohmann::json nodeInfoDiscoveryJson(const Config& config);
 nlohmann::json nodeInfoJson(const Config& config);
@@ -92,6 +99,12 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
                                       const SystemActor& system_actor,
                                       std::string_view actor_uri,
                                       bool force_refresh = false);
+mw::E<RemoteActor> resolveWebFingerActor(const Config& config,
+                                         const DataSourceInterface& data,
+                                         mw::CryptoInterface& crypto,
+                                         mw::HTTPSessionInterface& http,
+                                         const SystemActor& system_actor,
+                                         std::string_view handle);
 mw::E<VerifiedSignature> verifyHttpSignature(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
@@ -114,10 +127,15 @@ mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
     const Config& config, const DataSourceInterface& data,
     std::string_view signer_actor_uri, const nlohmann::json& activity,
     const std::vector<PostRecipient>& recipients, int64_t now_seconds);
+mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
+                                     std::string_view root_uri,
+                                     int64_t now_seconds);
 mw::E<InboxDispatchResult> dispatchIncomingActivity(
     const Config& config, const DataSourceInterface& data,
     std::string_view verified_actor_uri, const Activity& activity,
-    int64_t now_seconds);
+    int64_t now_seconds, mw::CryptoInterface* crypto = nullptr,
+    mw::HTTPSessionInterface* http = nullptr,
+    const SystemActor* system_actor = nullptr);
 
 // Claims and processes at most one runnable federation job. Returns true
 // when a job was claimed, false when the queue was empty.

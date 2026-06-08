@@ -5,6 +5,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -782,7 +783,7 @@ void App::handlePostView(const Request& req, Response& res) const
         ASSIGN_OR_RESPOND_ERROR(auto atts,
                                 ds->attachmentsForPost(post->id), res);
         setJson(res, unspoken::noteJson(config, *post, *author, recipients,
-                                        atts));
+                                        atts, &emoji));
         return;
     }
 
@@ -793,6 +794,13 @@ void App::handlePostView(const Request& req, Response& res) const
         ASSIGN_OR_RESPOND_ERROR(auto parent,
                                 ds->getPostByUri(*post->in_reply_to_uri), res);
         if(parent.has_value()) root_uri = parent->uri;
+    }
+    if(!post->local_author_id.has_value() || post->in_reply_to_uri.has_value())
+    {
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        ASSIGN_OR_RESPOND_ERROR(auto job, unspoken::enqueueFetchThreadJob(
+            *ds, root_uri, now), res);
+        (void)job;
     }
     ASSIGN_OR_RESPOND_ERROR(auto thread, ds->threadFor(root_uri), res);
     // Filter to viewable posts.
@@ -823,6 +831,61 @@ unspoken::Visibility visibilityParam(const std::string& v)
 {
     auto parsed = unspoken::visibilityFromStr(v);
     return parsed.value_or(unspoken::Visibility::PUBLIC);
+}
+
+nlohmann::json remoteActorView(const unspoken::RemoteActor& actor)
+{
+    nlohmann::json j;
+    j["id"] = actor.id;
+    j["username"] = mw::escapeHTML(actor.username);
+    j["display_name"] = mw::escapeHTML(
+        actor.display_name.empty() ? actor.username : actor.display_name);
+    j["handle"] = mw::escapeHTML(std::format("@{}@{}", actor.username,
+                                             actor.domain));
+    j["profile_url"] = mw::escapeHTML(actor.uri);
+    j["bio_html"] = "";
+    nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
+                                               false);
+    if(doc.is_object() && doc.contains("summary")
+       && doc["summary"].is_string())
+    {
+        j["bio_html"] = unspoken::sanitizeRemoteHtml(
+            doc["summary"].get<std::string>());
+    }
+    return j;
+}
+
+bool looksRemoteHandle(std::string_view query,
+                       std::string_view public_domain)
+{
+    query = mw::strip(query);
+    if(query.starts_with('@')) query.remove_prefix(1);
+    size_t at = query.find('@');
+    if(at == std::string_view::npos || at == 0 || at + 1 >= query.size())
+        return false;
+    if(query.find('@', at + 1) != std::string_view::npos) return false;
+    return query.substr(at + 1) != public_domain;
+}
+
+mw::E<std::vector<std::string>> remoteMentionActorUris(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    mw::CryptoInterface& crypto, const unspoken::SystemActor& system_actor,
+    std::string_view source, const unspoken::EmojiRegistry& emoji)
+{
+    unspoken::RenderedPostContent parsed =
+        unspoken::parsePostContent(std::string(source), emoji);
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    mw::HTTPSession http;
+    for(const auto& mention : parsed.mentions)
+    {
+        if(mention.domain.empty() || mention.domain == config.public_domain)
+            continue;
+        ASSIGN_OR_RETURN(auto actor, unspoken::resolveWebFingerActor(
+            config, data, crypto, http, system_actor, mention.name));
+        if(seen.insert(actor.uri).second) out.push_back(actor.uri);
+    }
+    return out;
 }
 
 } // namespace
@@ -884,6 +947,11 @@ void App::handlePostCreate(const Request& req, Response& res) const
         return;
     }
 
+    ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+    ASSIGN_OR_RESPOND_ERROR(cp.mentioned_actor_uris,
+                            remoteMentionActorUris(
+                                config, *ds, crypto, system_actor,
+                                cp.source, emoji), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
@@ -916,6 +984,11 @@ void App::handleReply(const Request& req, Response& res) const
     if(cp.source.empty()) { res.status = 400;
                             res.set_content("Empty reply", "text/plain");
                             return; }
+    ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+    ASSIGN_OR_RESPOND_ERROR(cp.mentioned_actor_uris,
+                            remoteMentionActorUris(
+                                config, *ds, crypto, system_actor,
+                                cp.source, emoji), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
@@ -1033,8 +1106,33 @@ void App::handleReact(const Request& req, Response& res) const
     if(e.empty()) { res.status = 400; res.set_content("No emoji",
                                                       "text/plain");
                     return; }
-    if(respondIfError(svc.setReaction(*viewer, *post, e,
-                                                 !isUndo(req)), res)) return;
+    bool undo = isUndo(req);
+    if(respondIfError(svc.setReaction(*viewer, *post, e, !undo), res))
+        return;
+    if(!undo && post->remote_author_id.has_value())
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto remote_author,
+                                ds->getRemoteActorById(
+                                    *post->remote_author_id), res);
+        if(remote_author.has_value())
+        {
+            int64_t now = mw::timeToSeconds(mw::Clock::now());
+            std::string actor_uri = svc.actorUri(viewer->username);
+            std::vector<unspoken::PostRecipient> recipients = {
+                {0, remote_author->uri, "to"},
+            };
+            nlohmann::json activity = unspoken::emojiReactActivityJson(
+                config,
+                std::format("{}activities/react/{}/{}/{}",
+                            config.url_root, viewer->id, post->id, now),
+                actor_uri, post->uri, e, recipients, emoji);
+            ASSIGN_OR_RESPOND_ERROR(auto jobs,
+                                    unspoken::enqueueOutboundDelivery(
+                                        config, *ds, actor_uri, activity,
+                                        recipients, now), res);
+            (void)jobs;
+        }
+    }
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1162,11 +1260,21 @@ void App::handleSearch(const Request& req, Response& res) const
     nlohmann::json results = nlohmann::json::array();
     if(!query.empty())
     {
-        // Local user search; remote (WebFinger) lookup is Phase 6.
-        std::string q = query;
-        if(!q.empty() && q.front() == '@') q.erase(q.begin());
-        ASSIGN_OR_RESPOND_ERROR(auto users, ds->searchUsers(q, 50), res);
-        for(const auto& u : users) results.push_back(svc.userView(u));
+        if(looksRemoteHandle(query, config.public_domain))
+        {
+            ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+            mw::HTTPSession http;
+            auto remote = unspoken::resolveWebFingerActor(
+                config, *ds, crypto, http, system_actor, query);
+            if(remote.has_value()) results.push_back(remoteActorView(*remote));
+        }
+        else
+        {
+            std::string q = query;
+            if(!q.empty() && q.front() == '@') q.erase(q.begin());
+            ASSIGN_OR_RESPOND_ERROR(auto users, ds->searchUsers(q, 50), res);
+            for(const auto& u : users) results.push_back(svc.userView(u));
+        }
     }
     ctx["results"] = results;
     render(res, 200, "search.html", ctx);
@@ -1353,7 +1461,8 @@ void App::handleInbox(const Request& req, Response& res) const
     }
     ASSIGN_OR_RESPOND_ERROR(auto activity, unspoken::parseActivity(raw), res);
     ASSIGN_OR_RESPOND_ERROR(auto result, unspoken::dispatchIncomingActivity(
-        config, *ds, verified.actor_uri, activity, now), res);
+        config, *ds, verified.actor_uri, activity, now, &crypto, &http,
+        &system), res);
     res.status = result.duplicate ? 200 : 202;
     res.set_content("", "text/plain");
 }
@@ -1391,7 +1500,7 @@ void App::handleOutbox(const Request& req, Response& res) const
         ASSIGN_OR_RESPOND_ERROR(auto attachments,
                                 ds->attachmentsForPost(post.id), res);
         auto note = unspoken::noteJson(config, post, *user, recipients,
-                                       attachments);
+                                       attachments, &emoji);
         items.push_back({
             {"@context", "https://www.w3.org/ns/activitystreams"},
             {"id", post.uri + "/activity"},

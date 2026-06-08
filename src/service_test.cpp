@@ -269,3 +269,135 @@ TEST(Render, MarkdownProducesHtml)
     std::string html = renderMarkdown("hello world");
     EXPECT_FALSE(html.empty());
 }
+
+TEST(Render, ExtractsMentionsAndHashtagsFromMacrodownTree)
+{
+    EmojiRegistry emoji;
+    RenderedPostContent parsed = parsePostContent(
+        "hi @bob @bob@f.test @bob #Cpp #cpp", emoji);
+
+    ASSERT_EQ(parsed.mentions.size(), 2u);
+    EXPECT_EQ(parsed.mentions[0].name, "@bob");
+    EXPECT_EQ(parsed.mentions[0].username, "bob");
+    EXPECT_EQ(parsed.mentions[0].domain, "");
+    EXPECT_EQ(parsed.mentions[1].name, "@bob@f.test");
+    EXPECT_EQ(parsed.mentions[1].username, "bob");
+    EXPECT_EQ(parsed.mentions[1].domain, "f.test");
+    ASSERT_EQ(parsed.hashtags.size(), 1u);
+    EXPECT_EQ(parsed.hashtags[0].name, "#Cpp");
+    EXPECT_NE(parsed.html.find("class=\"mention\""), std::string::npos);
+    EXPECT_NE(parsed.html.find("class=\"hashtag\""), std::string::npos);
+}
+
+TEST(Render, SanitizesRemoteHtmlWithAllowlist)
+{
+    std::string dirty =
+        "<p onclick=\"bad()\">hi <strong>there</strong> "
+        "<a href=\"javascript:alert(1)\">bad</a>"
+        "<a href=\"https://remote.test/x\" onclick=\"bad()\">ok</a>"
+        "<span class=\"mention\" data-x=\"1\">@bob</span>"
+        "<span class=\"evil\">x</span>"
+        "<script>alert(1)</script><img src=x onerror=bad()></p>";
+
+    EXPECT_EQ(sanitizeRemoteHtml(dirty),
+              "<p>hi <strong>there</strong> bad"
+              "<a href=\"https://remote.test/x\" "
+              "rel=\"nofollow noopener noreferrer\">ok</a>"
+              "<span class=\"mention\">@bob</span><span>x</span></p>");
+}
+
+TEST(ServicePosting, LocalMentionsBecomeRecipients)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(User bob, db->createUser(NewUser{
+        "bob", "Bob", "", "iss", "sub-b", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    ComposeParams cp;
+    cp.source = "hello @bob and @carol";
+    cp.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, svc.createPost(alice, cp));
+    ASSIGN_OR_FAIL(auto recipients, db->getPostRecipients(post.id));
+
+    EXPECT_EQ(recipient(recipients, "https://f.test/u/bob"), "to");
+    EXPECT_EQ(recipient(recipients, "https://f.test/u/carol"), "");
+    (void)bob;
+}
+
+TEST(ServicePosting, DirectPostUsesLocalMentionRecipients)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(User bob, db->createUser(NewUser{
+        "bob", "Bob", "", "iss", "sub-b", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    ComposeParams cp;
+    cp.source = "psst @bob@f.test";
+    cp.visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(Post post, svc.createPost(alice, cp));
+    ASSIGN_OR_FAIL(auto recipients, db->getPostRecipients(post.id));
+
+    EXPECT_EQ(recipients.size(), 1u);
+    EXPECT_EQ(recipient(recipients, "https://f.test/u/bob"), "to");
+    (void)bob;
+}
+
+TEST(ServicePosting, DirectPostUsesPreResolvedRemoteMentionRecipients)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    ComposeParams cp;
+    cp.source = "psst @bob@remote.test";
+    cp.visibility = Visibility::DIRECT;
+    cp.mentioned_actor_uris = {"https://remote.test/u/bob"};
+    ASSIGN_OR_FAIL(Post post, svc.createPost(alice, cp));
+    ASSIGN_OR_FAIL(auto recipients, db->getPostRecipients(post.id));
+
+    EXPECT_EQ(recipients.size(), 1u);
+    EXPECT_EQ(recipient(recipients, "https://remote.test/u/bob"), "to");
+}
+
+TEST(ServiceView, RemoteCustomEmojiReactionRendersImage)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    NewPost np;
+    np.local_author_id = alice.id;
+    np.content_html = "<p>post</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, svc.recipientsFor(Visibility::PUBLIC, "alice", {}),
+        "https://f.test/p/"));
+    Reaction reaction;
+    reaction.actor_uri = "https://remote.test/u/bob";
+    reaction.post_uri = post.uri;
+    reaction.emoji = ":blobcat:";
+    reaction.remote_emoji_url = "https://remote.test/e/blobcat.png";
+    reaction.remote_emoji_media_type = "image/png";
+    EXPECT_TRUE(db->addReaction(reaction).has_value());
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    ASSERT_EQ(view["reactions"].size(), 1u);
+    EXPECT_EQ(view["reactions"][0]["emoji"], ":blobcat:");
+    EXPECT_NE(view["reactions"][0]["emoji_html"].get<std::string>().find(
+                  "https://remote.test/e/blobcat.png"),
+              std::string::npos);
+}

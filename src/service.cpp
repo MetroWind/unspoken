@@ -3,6 +3,7 @@
 #include <ctime>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +27,42 @@ namespace
 int64_t nowSeconds()
 {
     return static_cast<int64_t>(std::time(nullptr));
+}
+
+struct ReactionGroup
+{
+    int count = 0;
+    bool viewer_reacted = false;
+    std::string html;
+};
+
+std::string remoteEmojiHtml(const Reaction& reaction)
+{
+    if(!reaction.remote_emoji_url.has_value()) return "";
+    return std::format(
+        "<img class=\"emoji\" src=\"{}\" alt=\"{}\" title=\"{}\">",
+        mw::escapeHTML(*reaction.remote_emoji_url),
+        mw::escapeHTML(reaction.emoji),
+        mw::escapeHTML(reaction.emoji));
+}
+
+mw::E<std::vector<std::string>> localMentionActorUris(
+    const Config& config, const DataSourceInterface& data,
+    const std::vector<ParsedMention>& mentions)
+{
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for(const auto& mention : mentions)
+    {
+        if(!mention.domain.empty() && mention.domain != config.public_domain)
+            continue;
+        ASSIGN_OR_RETURN(auto user,
+                         data.getUserByUsername(mention.username));
+        if(!user.has_value()) continue;
+        std::string uri = config.url_root + "u/" + user->username;
+        if(seen.insert(uri).second) out.push_back(std::move(uri));
+    }
+    return out;
 }
 } // namespace
 
@@ -106,9 +143,20 @@ Service::recipientsFor(Visibility vis, std::string_view author_username,
 mw::E<Post> Service::createPost(const User& author,
                                 const ComposeParams& p) const
 {
+    RenderedPostContent rendered = parsePostContent(p.source, emoji);
+    ASSIGN_OR_RETURN(auto mentioned_actors,
+                     localMentionActorUris(config, data, rendered.mentions));
+    std::set<std::string> seen_mentions(mentioned_actors.begin(),
+                                        mentioned_actors.end());
+    for(const auto& uri : p.mentioned_actor_uris)
+    {
+        if(seen_mentions.insert(uri).second)
+            mentioned_actors.push_back(uri);
+    }
+
     NewPost np;
     np.local_author_id = author.id;
-    np.content_html = renderPostContent(p.source, emoji);
+    np.content_html = rendered.html;
     np.content_source = p.source;
     np.summary = p.summary;
     np.sensitive = p.sensitive;
@@ -116,7 +164,7 @@ mw::E<Post> Service::createPost(const User& author,
     np.in_reply_to_uri = p.in_reply_to_uri;
 
     std::vector<PostRecipient> recipients =
-        recipientsFor(p.visibility, author.username, {});
+        recipientsFor(p.visibility, author.username, mentioned_actors);
     std::string prefix = config.url_root + "p/";
     ASSIGN_OR_RETURN(Post post, data.insertPost(np, recipients, prefix));
 
@@ -407,30 +455,35 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
     ASSIGN_OR_RETURN(auto reactions, data.reactionsForPost(p.uri));
     // Group reactions by emoji, count, and whether the viewer reacted.
     std::vector<std::string> order;
-    std::map<std::string, std::pair<int, bool>> grouped;
+    std::map<std::string, ReactionGroup> grouped;
     for(const auto& r : reactions)
     {
         auto it = grouped.find(r.emoji);
         if(it == grouped.end())
         {
             order.push_back(r.emoji);
-            grouped.emplace(r.emoji, std::make_pair(1, false));
+            ReactionGroup g;
+            g.count = 1;
+            g.html = remoteEmojiHtml(r);
+            if(g.html.empty())
+                g.html = substituteEmoji(mw::escapeHTML(r.emoji), emoji);
+            grouped.emplace(r.emoji, std::move(g));
             it = grouped.find(r.emoji);
         }
         else
         {
-            it->second.first += 1;
+            it->second.count += 1;
         }
-        if(r.actor_uri == viewer_actor) it->second.second = true;
+        if(r.actor_uri == viewer_actor) it->second.viewer_reacted = true;
     }
     nlohmann::json react_arr = nlohmann::json::array();
     for(const auto& e : order)
     {
         nlohmann::json rj;
         rj["emoji"] = e;
-        rj["emoji_html"] = substituteEmoji(mw::escapeHTML(e), emoji);
-        rj["count"] = grouped[e].first;
-        rj["reacted"] = grouped[e].second;
+        rj["emoji_html"] = grouped[e].html;
+        rj["count"] = grouped[e].count;
+        rj["reacted"] = grouped[e].viewer_reacted;
         react_arr.push_back(std::move(rj));
     }
     j["reactions"] = react_arr;

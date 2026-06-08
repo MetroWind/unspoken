@@ -254,19 +254,19 @@ instance.
 
 **Goal:** the interop niceties that make threads and mentions feel right.
 
-- [ ] Mentions/hashtags via MacroDown custom markup → syntax-tree
+- [x] Mentions/hashtags via MacroDown custom markup → syntax-tree
       iteration → `tag` array + addressing wiring (§13.2, decision D2).
-- [ ] Recursive thread fetch (§12.9), bounded by `thread_fetch_max_depth`;
+- [x] Recursive thread fetch (§12.9), bounded by `thread_fetch_max_depth`;
       save fetched posts; `fetch_thread` job.
-- [ ] Inbox forwarding §8.1.2 (§12.7): three-condition gate; verify by
+- [x] Inbox forwarding §8.1.2 (§12.7): three-condition gate; verify by
       re-fetching the referenced object from origin.
-- [ ] Emoji reactions end-to-end. Custom emoji **federation**: emit
+- [x] Emoji reactions end-to-end. Custom emoji **federation**: emit
       `Emoji` tags on outgoing posts; parse incoming `Emoji` tags and
       substitute remote `:shortcode:` from the per-post tag mapping at
       ingest (§13.4). (Local seed/authoring landed in Phase 3.)
-- [ ] Remote user search via WebFinger (§16.9).
-- [ ] CW/sensitive rendering for remote posts (collapsed/blurred).
-- [ ] HTML sanitization of remote content (§13.3).
+- [x] Remote user search via WebFinger (§16.9).
+- [x] CW/sensitive rendering for remote posts (collapsed/blurred).
+- [x] HTML sanitization of remote content (§13.3).
 
 **Tests:** mentions→addressing; forwarding three-condition gate +
 re-fetch verification; thread backfill depth cap; sanitizer allowlist.

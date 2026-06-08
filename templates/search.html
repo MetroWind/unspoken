@@ -2,10 +2,13 @@
 <section class="narrow">
   <h1>Search</h1>
   <form method="get" action="{{ site.root }}search" class="searchform">
-    <input type="text" name="q" value="{{ query }}" placeholder="username or @user@domain" autofocus>
+    <input type="text" name="q" value="{{ query }}"
+           placeholder="username or @user@domain" autofocus>
     <button type="submit">Search</button>
   </form>
-  <p class="hint">Local users are searched now; remote (WebFinger) lookup arrives in a later phase.</p>
+  <p class="hint">
+    Search local usernames, or enter @user@domain for remote lookup.
+  </p>
 </section>
 
 <div class="results">

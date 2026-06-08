@@ -173,6 +173,9 @@ TEST(Data, RemoteActorUpsert)
     ASSIGN_OR_FAIL(auto got, db->getRemoteActorByUri(a.uri));
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->username, "bob");
+    ASSIGN_OR_FAIL(auto by_id, db->getRemoteActorById(stored.id));
+    ASSERT_TRUE(by_id.has_value());
+    EXPECT_EQ(by_id->uri, a.uri);
 }
 
 TEST(Data, SystemActorRoundTrip)
@@ -273,11 +276,16 @@ TEST(Data, LikesBoostsReactions)
     EXPECT_TRUE(mw::isExpected(db->removeBoost(actor, post)));
 
     EXPECT_TRUE(mw::isExpected(
-        db->addReaction(Reaction{0, actor, post, ":blobcat:", {}, 0})));
+        db->addReaction(Reaction{0, actor, post, ":blobcat:",
+                                 "https://remote.test/e/blobcat.png",
+                                 "image/png", {}, 0})));
     EXPECT_TRUE(mw::isExpected(
-        db->addReaction(Reaction{0, actor, post, "👍", {}, 0})));
+        db->addReaction(Reaction{0, actor, post, "👍", {}, {}, {}, 0})));
     ASSIGN_OR_FAIL(auto reacts, db->reactionsForPost(post));
     EXPECT_THAT(reacts, SizeIs(2));
+    EXPECT_EQ(reacts[0].remote_emoji_url.value_or(""),
+              "https://remote.test/e/blobcat.png");
+    EXPECT_EQ(reacts[0].remote_emoji_media_type.value_or(""), "image/png");
 }
 
 TEST(Data, Bookmarks)
