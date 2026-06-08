@@ -1,0 +1,3 @@
+d /var/lib/unspoken 0750 unspoken unspoken -
+d /var/lib/unspoken/attachments 0750 unspoken unspoken -
+d /var/lib/unspoken/emoji 0750 unspoken unspoken -

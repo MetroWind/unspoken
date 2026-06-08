@@ -280,16 +280,16 @@ reactions/emoji/search functional.
 
 **Goal:** production-ready, interop-verified.
 
-- [ ] Security review: signatures, SSRF, private authz, OIDC, CSRF,
+- [x] Security review: signatures, SSRF, private authz, OIDC, CSRF,
       upload handling, session cookie flags.
 - [ ] Interop testing against **multiple** peer implementations
       (Mastodon, Pleroma/Akkoma, Misskey); fix quirks.
-- [ ] Edge cases: malformed activities, partial actor docs, redelivery
+- [x] Edge cases: malformed activities, partial actor docs, redelivery
       storms, peer downtime/backoff behavior.
-- [ ] Operator docs: the reverse-proxy caveat for `/.well-known/*` from
+- [x] Operator docs: the reverse-proxy caveat for `/.well-known/*` from
       the public domain (design §12.4), config reference, deployment
       (the `packages/arch/unspoken.*` units).
-- [ ] Error-status mapping audit (§18); no internal leakage on 500.
+- [x] Error-status mapping audit (§18); no internal leakage on 500.
 
 **Exit:** clean review; verified against several peers; documented.
 

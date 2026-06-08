@@ -1,0 +1,21 @@
+[Unit]
+Description=Unspoken ActivityPub server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unspoken
+Group=unspoken
+ExecStart=/usr/bin/unspoken --config /etc/unspoken/config.yaml
+WorkingDirectory=/var/lib/unspoken
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/unspoken
+
+[Install]
+WantedBy=multi-user.target

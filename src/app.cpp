@@ -35,6 +35,20 @@
 using unspoken::Authenticator;
 using unspoken::Service;
 
+#undef ASSIGN_OR_RESPOND_ERROR
+#define _UNSPOKEN_ASSIGN_OR_RESPOND_ERROR(tmp, var, val, res)          \
+    auto tmp = val;                                                     \
+    if(!tmp.has_value())                                                \
+    {                                                                   \
+        respondError(tmp.error(), res);                                 \
+        return;                                                         \
+    }                                                                   \
+    var = std::move(tmp).value()
+
+#define ASSIGN_OR_RESPOND_ERROR(var, val, res)                         \
+    _UNSPOKEN_ASSIGN_OR_RESPOND_ERROR(                                 \
+        _CONCAT_NAMES(assign_or_return_tmp, __COUNTER__), var, val, res)
+
 namespace
 {
 
@@ -146,24 +160,30 @@ unspoken::IncomingHttpRequest incomingRequest(
     return out;
 }
 
+void respondError(const mw::Error& error, mw::HTTPServer::Response& res)
+{
+    if(std::holds_alternative<mw::HTTPError>(error))
+    {
+        const auto& e = std::get<mw::HTTPError>(error);
+        res.status = e.code;
+        res.set_content(e.code >= 500 ? "Internal server error" : e.msg,
+                        "text/plain");
+        if(e.code >= 500) spdlog::error("HTTP {}: {}", e.code, e.msg);
+    }
+    else
+    {
+        spdlog::error("Internal error: {}", mw::errorMsg(error));
+        res.status = 500;
+        res.set_content("Internal server error", "text/plain");
+    }
+}
+
 // Map a failed E<void> onto the response and report whether it failed.
 // (libmw provides ASSIGN_OR_RESPOND_ERROR only for value-returning E<T>.)
 bool respondIfError(const mw::E<void>& r, mw::HTTPServer::Response& res)
 {
     if(r.has_value()) return false;
-    if(std::holds_alternative<mw::HTTPError>(r.error()))
-    {
-        const auto& e = std::get<mw::HTTPError>(r.error());
-        res.status = e.code;
-        res.set_content(e.msg, "text/plain");
-    }
-    else
-    {
-        res.status = 500;
-        res.set_content(
-            std::visit([](const auto& e) { return e.msg; }, r.error()),
-            "text/plain");
-    }
+    respondError(r.error(), res);
     return true;
 }
 
@@ -174,8 +194,7 @@ bool respondIfCannotView(const Service& svc, const unspoken::Post& post,
     auto visible = svc.canViewPost(post, viewer);
     if(!visible.has_value())
     {
-        res.status = 500;
-        res.set_content(mw::errorMsg(visible.error()), "text/plain");
+        respondError(visible.error(), res);
         return true;
     }
     if(!*visible)
@@ -593,8 +612,7 @@ void App::handleLogout(const Request& req, Response& res) const
     }
     if(auto lr = auth.logout(sessionToken(req)); !lr.has_value())
     {
-        res.status = 500;
-        res.set_content(mw::errorMsg(lr.error()), "text/plain");
+        respondError(lr.error(), res);
         return;
     }
     clearCookie(res, unspoken::SESSION_COOKIE);

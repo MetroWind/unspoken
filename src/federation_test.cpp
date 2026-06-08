@@ -6,6 +6,7 @@
 #include <fstream>
 #include <span>
 #include <vector>
+#include <variant>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -155,6 +156,7 @@ public:
     std::vector<std::string> get_urls;
     size_t get_count = 0;
     bool post_called = false;
+    size_t post_count = 0;
     bool follow = true;
     long redirections = 0;
     std::string protocols;
@@ -176,6 +178,7 @@ public:
     mw::E<const mw::HTTPResponse*> post(const mw::HTTPRequest& req) override
     {
         post_called = true;
+        ++post_count;
         last_request = req;
         return &response;
     }
@@ -293,7 +296,10 @@ TEST(JsonLd, ParseActivityRejectsImpossibleInput)
         {"type", "Create"},
         {"actor", "https://remote.test/u/bob"},
     };
-    EXPECT_FALSE(parseActivity(raw).has_value());
+    auto parsed = parseActivity(raw);
+    ASSERT_FALSE(parsed.has_value());
+    ASSERT_TRUE(std::holds_alternative<mw::HTTPError>(parsed.error()));
+    EXPECT_EQ(std::get<mw::HTTPError>(parsed.error()).code, 400);
 }
 
 TEST(ActivityStreams, ActorJsonShape)
@@ -572,6 +578,35 @@ TEST(RemoteActor, ResolveFetchesSignsAndCachesActor)
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(cached.has_value());
     EXPECT_EQ(cached->public_key_id, "https://remote.test/u/bob#main-key");
+}
+
+TEST(RemoteActor, RejectsPartialActorDocumentWithoutCaching)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, R"({
+        "id": "https://remote.test/u/bob",
+        "type": "Person",
+        "preferredUsername": "bob",
+        "publicKey": {
+          "id": "https://remote.test/u/bob#main-key",
+          "publicKeyPem": "PUB"
+        }
+    })");
+
+    EXPECT_FALSE(resolveRemoteActor(
+        c, *db, crypto, http, system, "https://remote.test/u/bob")
+                     .has_value());
+    ASSIGN_OR_FAIL(auto cached,
+                   db->getRemoteActorByUri("https://remote.test/u/bob"));
+    EXPECT_FALSE(cached.has_value());
 }
 
 TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
@@ -961,6 +996,44 @@ TEST(FederationJobs, FailedDeliveryIsRescheduledWithBackoff)
     (void)user;
 }
 
+TEST(FederationJobs, PeerDowntimeStopsAtRetryCap)
+{
+    Config c = testConfig();
+    c.job_retry_base_delay_seconds = 10;
+    c.job_max_retries = 2;
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    NewUser nu = testNewUser("alice");
+    nu.private_key_pem = keys.private_key;
+    nu.public_key_pem = keys.public_key;
+    ASSIGN_OR_FAIL(auto user, db->createUser(nu));
+
+    nlohmann::json activity = {
+        {"id", "https://f.test/a/peer-down"},
+        {"type", "Like"},
+        {"actor", "https://f.test/u/alice"},
+        {"object", "https://remote.test/p/1"},
+    };
+    ASSIGN_OR_FAIL(auto jid, enqueueDeliveryJob(
+        *db, "https://remote.test/inbox", "https://f.test/u/alice",
+        activity, 100));
+    EXPECT_GT(jid, 0);
+
+    FakeSession http;
+    http.response = mw::HTTPResponse(503, "try later");
+    ASSERT_TRUE(runFederationJobOnce(c, *db, crypto, http, 100).value());
+    ASSIGN_OR_FAIL(auto early, db->claimJob(119));
+    EXPECT_FALSE(early.has_value());
+
+    ASSERT_TRUE(runFederationJobOnce(c, *db, crypto, http, 120).value());
+    ASSIGN_OR_FAIL(auto no_more, db->claimJob(1000000));
+    EXPECT_FALSE(no_more.has_value());
+    EXPECT_EQ(http.post_count, 2u);
+    (void)user;
+}
+
 TEST(FederationJobs, FetchThreadBackfillsAncestorsWithDepthCap)
 {
     Config c = testConfig();
@@ -1231,6 +1304,18 @@ TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
     ASSIGN_OR_FAIL(auto second, dispatchIncomingActivity(
         c, *db, remote.uri, activity, 101));
     EXPECT_TRUE(second.duplicate);
+
+    for(int i = 0; i < 25; ++i)
+    {
+        ASSIGN_OR_FAIL(auto redelivery, dispatchIncomingActivity(
+            c, *db, remote.uri, activity, 102 + i));
+        EXPECT_TRUE(redelivery.duplicate);
+    }
+    ASSIGN_OR_FAIL(auto stable_post,
+                   db->getPostByUri("https://remote.test/o/1"));
+    ASSERT_TRUE(stable_post.has_value());
+    ASSIGN_OR_FAIL(auto stable_atts, db->attachmentsForPost(post->id));
+    EXPECT_EQ(stable_atts.size(), 1u);
 }
 
 TEST(InboxForwarding, ForwardsFirstSeenActivityAfterRefetchVerification)

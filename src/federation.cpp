@@ -1195,7 +1195,8 @@ mw::E<Activity> parseActivity(const nlohmann::json& raw)
 {
     if(!raw.is_object())
     {
-        return std::unexpected(mw::runtimeError("Activity must be an object"));
+        return std::unexpected(mw::httpError(
+            400, "Activity must be an object"));
     }
     auto id = normalizeRef(raw.contains("id") ? raw["id"] : nlohmann::json());
     auto actor = normalizeRef(raw.contains("actor") ? raw["actor"]
@@ -1203,7 +1204,8 @@ mw::E<Activity> parseActivity(const nlohmann::json& raw)
     if(!id.has_value() || !raw.contains("type") || !raw["type"].is_string()
        || !actor.has_value())
     {
-        return std::unexpected(mw::runtimeError(
+        return std::unexpected(mw::httpError(
+            400,
             "Activity is missing id, type, or actor"));
     }
 
