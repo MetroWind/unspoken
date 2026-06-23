@@ -39,7 +39,7 @@ void readInt(const ryml::ConstNodeRef& node, int& out)
 {
     if(node.readable() && node.has_val())
     {
-        node >> out;
+        node.load(&out);
     }
 }
 
@@ -47,7 +47,7 @@ void readInt64(const ryml::ConstNodeRef& node, int64_t& out)
 {
     if(node.readable() && node.has_val())
     {
-        node >> out;
+        node.load(&out);
     }
 }
 
@@ -55,7 +55,7 @@ void readStr(const ryml::ConstNodeRef& node, std::string& out)
 {
     if(node.readable() && node.has_val())
     {
-        node >> out;
+        node.load(&out);
     }
 }
 
@@ -63,7 +63,7 @@ void readBool(const ryml::ConstNodeRef& node, bool& out)
 {
     if(node.readable() && node.has_val())
     {
-        node >> out;
+        node.load(&out);
     }
 }
 

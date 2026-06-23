@@ -6,7 +6,6 @@
 #include <fstream>
 #include <span>
 #include <vector>
-#include <variant>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -298,8 +297,9 @@ TEST(JsonLd, ParseActivityRejectsImpossibleInput)
     };
     auto parsed = parseActivity(raw);
     ASSERT_FALSE(parsed.has_value());
-    ASSERT_TRUE(std::holds_alternative<mw::HTTPError>(parsed.error()));
-    EXPECT_EQ(std::get<mw::HTTPError>(parsed.error()).code, 400);
+    const auto* error = parsed.error().as<mw::HTTPError>();
+    ASSERT_NE(error, nullptr);
+    EXPECT_EQ(error->code, 400);
 }
 
 TEST(ActivityStreams, ActorJsonShape)

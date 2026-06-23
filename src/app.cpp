@@ -162,13 +162,12 @@ unspoken::IncomingHttpRequest incomingRequest(
 
 void respondError(const mw::Error& error, mw::HTTPServer::Response& res)
 {
-    if(std::holds_alternative<mw::HTTPError>(error))
+    if(const auto* e = error.as<mw::HTTPError>())
     {
-        const auto& e = std::get<mw::HTTPError>(error);
-        res.status = e.code;
-        res.set_content(e.code >= 500 ? "Internal server error" : e.msg,
+        res.status = e->code;
+        res.set_content(e->code >= 500 ? "Internal server error" : e->msg,
                         "text/plain");
-        if(e.code >= 500) spdlog::error("HTTP {}: {}", e.code, e.msg);
+        if(e->code >= 500) spdlog::error("HTTP {}: {}", e->code, e->msg);
     }
     else
     {
