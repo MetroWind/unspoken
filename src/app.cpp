@@ -90,7 +90,15 @@ inja::Environment makeEnv(const Config& config)
 // Read a POST form field, returning "" when absent.
 std::string param(const mw::HTTPServer::Request& req, const char* name)
 {
-    return req.has_param(name) ? req.get_param_value(name) : std::string();
+    if(req.has_param(name)) return req.get_param_value(name);
+    auto file = req.get_file_value(name);
+    if(file.filename.empty()) return file.content;
+    return "";
+}
+
+bool hasParam(const mw::HTTPServer::Request& req, const char* name)
+{
+    return !param(req, name).empty();
 }
 
 std::optional<int64_t> parseInt64(std::string_view value)
@@ -924,7 +932,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
     cp.visibility = visibilityParam(param(req, "visibility"));
     std::string summary = param(req, "summary");
     if(!summary.empty()) cp.summary = summary;
-    cp.sensitive = req.has_param("sensitive");
+    cp.sensitive = hasParam(req, "sensitive");
     std::string reply_to = param(req, "in_reply_to");
     if(!reply_to.empty()) cp.in_reply_to_uri = reply_to;
 
@@ -1053,7 +1061,7 @@ namespace
 // True if the form's "undo" flag is set (toggle off).
 bool isUndo(const mw::HTTPServer::Request& req)
 {
-    return req.has_param("undo") && req.get_param_value("undo") == "1";
+    return param(req, "undo") == "1";
 }
 } // namespace
 
