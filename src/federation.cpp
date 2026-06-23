@@ -856,9 +856,29 @@ nlohmann::json tagsForPostSource(const Config& config,
     nlohmann::json tags = nlohmann::json::array();
     for(const auto& mention : parsed.mentions)
     {
-        if(!mention.domain.empty() && mention.domain != config.public_domain)
-            continue;
-        std::string href = config.url_root + "u/" + mention.username;
+        std::string href;
+        if(mention.domain.empty() || mention.domain == config.public_domain)
+        {
+            href = config.url_root + "u/" + mention.username;
+        }
+        else
+        {
+            for(const auto& recipient : addressed)
+            {
+                auto url_e = mw::URL::fromStr(recipient);
+                if(!url_e.has_value()) continue;
+                const mw::URL& url = *url_e;
+                if(url.host() != mention.domain) continue;
+                std::string path = url.path();
+                if(path.ends_with("/" + mention.username)
+                   || path.ends_with("/@" + mention.username))
+                {
+                    href = recipient;
+                    break;
+                }
+            }
+        }
+        if(href.empty()) continue;
         if(!addressed.contains(href)) continue;
         tags.push_back({
             {"type", "Mention"},

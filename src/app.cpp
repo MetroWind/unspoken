@@ -913,6 +913,31 @@ mw::E<std::vector<std::string>> remoteMentionActorUris(
     return out;
 }
 
+mw::E<void> enqueueCreateActivity(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    const unspoken::EmojiRegistry& emoji, const unspoken::Post& post,
+    const unspoken::User& author, int64_t now)
+{
+    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
+    ASSIGN_OR_RETURN(auto attachments, data.attachmentsForPost(post.id));
+    const std::string actor_uri = config.url_root + "u/" + author.username;
+    auto note = unspoken::noteJson(config, post, author, recipients,
+                                   attachments, &emoji);
+    nlohmann::json activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", post.uri + "/activity"},
+        {"type", "Create"},
+        {"actor", actor_uri},
+        {"object", note},
+        {"to", note["to"]},
+        {"cc", note["cc"]},
+    };
+    ASSIGN_OR_RETURN(auto jobs, unspoken::enqueueOutboundDelivery(
+        config, data, actor_uri, activity, recipients, now));
+    (void)jobs;
+    return {};
+}
+
 } // namespace
 
 void App::handlePostCreate(const Request& req, Response& res) const
@@ -978,6 +1003,12 @@ void App::handlePostCreate(const Request& req, Response& res) const
                                 config, *ds, crypto, system_actor,
                                 cp.source, emoji), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    if(respondIfError(enqueueCreateActivity(config, *ds, emoji, post,
+                                            *viewer, now), res))
+    {
+        return;
+    }
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
@@ -1015,6 +1046,12 @@ void App::handleReply(const Request& req, Response& res) const
                                 config, *ds, crypto, system_actor,
                                 cp.source, emoji), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    if(respondIfError(enqueueCreateActivity(config, *ds, emoji, post,
+                                            *viewer, now), res))
+    {
+        return;
+    }
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 

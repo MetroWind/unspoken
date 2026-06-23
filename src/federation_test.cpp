@@ -363,6 +363,29 @@ TEST(ActivityStreams, NoteJsonCarriesMentionAndHashtagTags)
     EXPECT_EQ(j["tag"][1]["name"], "#Cpp");
 }
 
+TEST(ActivityStreams, NoteJsonCarriesResolvedRemoteMentionTags)
+{
+    Post p;
+    p.id = 7;
+    p.uri = "https://f.test/p/7";
+    p.local_author_id = 1;
+    p.content_html = "<p>hello</p>";
+    p.content_source = "hello @mallory@remote.test";
+    p.created_at = 100;
+
+    std::vector<PostRecipient> recipients = {
+        {7, std::string(AS_PUBLIC), "to"},
+        {7, "https://remote.test/users/mallory", "to"},
+    };
+    auto j = noteJson(testConfig(), p, testUser(), recipients, {});
+
+    ASSERT_TRUE(j.contains("tag"));
+    ASSERT_EQ(j["tag"].size(), 1u);
+    EXPECT_EQ(j["tag"][0]["type"], "Mention");
+    EXPECT_EQ(j["tag"][0]["href"], "https://remote.test/users/mallory");
+    EXPECT_EQ(j["tag"][0]["name"], "@mallory@remote.test");
+}
+
 TEST(ActivityStreams, NoteJsonCarriesCustomEmojiTags)
 {
     namespace fs = std::filesystem;
