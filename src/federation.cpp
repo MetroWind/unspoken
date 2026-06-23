@@ -1548,6 +1548,21 @@ mw::E<mw::HTTPRequest> signedGetRequest(const Config& config,
                              "GET", uri);
 }
 
+mw::E<mw::HTTPRequest> webFingerRequest(std::string_view uri)
+{
+    auto parsed = mw::URL::fromStr(std::string(uri));
+    if(!parsed.has_value() || parsed->scheme() != "https"
+       || parsed->host().empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Outbound WebFinger URL must be absolute https"));
+    }
+
+    mw::HTTPRequest req{std::string(uri)};
+    req.addHeader("Accept", "application/jrd+json, application/json");
+    return req;
+}
+
 SigningActor signingActorFor(const Config& config, const User& user)
 {
     std::string actor = config.url_root + "u/" + user.username;
@@ -1712,8 +1727,7 @@ mw::E<RemoteActor> resolveWebFingerActor(
         + percentEncode("acct:" + acct);
 
     DO_OR_RETURN(hardenOutboundSession(http));
-    ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
-                                                uri));
+    ASSIGN_OR_RETURN(auto req, webFingerRequest(uri));
     ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
     if(res->status < 200 || res->status >= 300)
     {
@@ -1727,12 +1741,6 @@ mw::E<RemoteActor> resolveWebFingerActor(
     {
         return std::unexpected(mw::runtimeError(
             "WebFinger response is not JSON"));
-    }
-    std::string subject = doc.value("subject", std::string());
-    if(lower(subject) != lower("acct:" + acct))
-    {
-        return std::unexpected(mw::runtimeError(
-            "WebFinger response subject does not match query"));
     }
 
     if(!doc.contains("links") || !doc["links"].is_array())

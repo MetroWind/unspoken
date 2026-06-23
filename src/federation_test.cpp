@@ -153,6 +153,7 @@ public:
     mw::HTTPResponse response{200, "{}"};
     std::vector<mw::HTTPResponse> responses;
     std::vector<std::string> get_urls;
+    std::vector<mw::HTTPRequest> get_requests;
     size_t get_count = 0;
     bool post_called = false;
     size_t post_count = 0;
@@ -165,6 +166,7 @@ public:
     mw::E<const mw::HTTPResponse*> get(const mw::HTTPRequest& req) override
     {
         last_request = req;
+        get_requests.push_back(req);
         get_urls.push_back(req.url);
         if(get_count < responses.size())
         {
@@ -622,7 +624,7 @@ TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
     FakeSession http;
     http.responses = {
         mw::HTTPResponse(200, nlohmann::json({
-            {"subject", "acct:bob@remote.test"},
+            {"subject", "acct:bob@canonical.remote.test"},
             {"links", nlohmann::json::array({
                 {
                     {"rel", "self"},
@@ -652,6 +654,11 @@ TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
               "https://remote.test/.well-known/webfinger?resource="
               "acct%3Abob%40remote.test");
     EXPECT_EQ(http.get_urls[1], "https://remote.test/u/bob");
+    ASSERT_EQ(http.get_requests.size(), 2u);
+    EXPECT_EQ(http.get_requests[0].header["Accept"],
+              "application/jrd+json, application/json");
+    EXPECT_EQ(http.get_requests[1].header["Accept"],
+              "application/activity+json");
 
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(cached.has_value());
