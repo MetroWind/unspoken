@@ -407,7 +407,25 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
     }
     if(author.is_null())
     {
-        // Remote authors are resolved in Phase 4; placeholder for now.
+        if(p.remote_author_id.has_value())
+        {
+            ASSIGN_OR_RETURN(auto a, data.getRemoteActorById(
+                *p.remote_author_id));
+            if(a.has_value())
+            {
+                std::string display = a->display_name.empty()
+                    ? a->username : a->display_name;
+                author["username"] = esc(a->username);
+                author["display_name"] = esc(display);
+                author["handle"] =
+                    esc(std::format("@{}@{}", a->username, a->domain));
+                author["profile_url"] = esc(a->uri);
+                author["is_local"] = false;
+            }
+        }
+    }
+    if(author.is_null())
+    {
         author["username"] = "unknown";
         author["display_name"] = "unknown";
         author["handle"] = "";

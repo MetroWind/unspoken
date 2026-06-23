@@ -401,3 +401,37 @@ TEST(ServiceView, RemoteCustomEmojiReactionRendersImage)
                   "https://remote.test/e/blobcat.png"),
               std::string::npos);
 }
+
+TEST(ServiceView, RemotePostShowsRemoteAuthor)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.display_name = "Bob Remote";
+    remote.inbox = "https://remote.test/users/bob/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    remote.actor_json = "{}";
+    ASSIGN_OR_FAIL(remote, db->upsertRemoteActor(remote));
+
+    NewPost np;
+    np.uri = "https://remote.test/users/bob/statuses/1";
+    np.remote_author_id = remote.id;
+    np.content_html = "<p>remote reply</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["username"], "bob");
+    EXPECT_EQ(view["author"]["display_name"], "Bob Remote");
+    EXPECT_EQ(view["author"]["handle"], "@bob@remote.test");
+    EXPECT_EQ(view["author"]["profile_url"], remote.uri);
+    EXPECT_FALSE(view["author"]["is_local"]);
+}
