@@ -15,6 +15,15 @@
 namespace
 {
 
+ryml::ConstNodeRef child(const ryml::ConstNodeRef& node, const char* name)
+{
+    if(!node.readable() || !node.is_map())
+    {
+        return {};
+    }
+    return node.find_child(ryml::to_csubstr(name));
+}
+
 mw::E<std::vector<char>> readFile(const std::filesystem::path& path)
 {
     std::ifstream f(path, std::ios::binary);
@@ -171,46 +180,49 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
     ryml::ConstNodeRef root = tree.crootref();
 
     Config config;
-    readStr(root["url_root"], config.url_root);
-    readStr(root["public_domain"], config.public_domain);
-    readStr(root["listen_address"], config.listen_address);
-    readInt(root["listen_port"], config.listen_port);
+    readStr(child(root, "url_root"), config.url_root);
+    readStr(child(root, "public_domain"), config.public_domain);
+    readStr(child(root, "listen_address"), config.listen_address);
+    readInt(child(root, "listen_port"), config.listen_port);
 
-    readStr(root["database_path"], config.database_path);
-    readStr(root["attachment_dir"], config.attachment_dir);
-    readStr(root["emoji_dir"], config.emoji_dir);
-    readStr(root["template_dir"], config.template_dir);
-    readStr(root["static_dir"], config.static_dir);
+    readStr(child(root, "database_path"), config.database_path);
+    readStr(child(root, "attachment_dir"), config.attachment_dir);
+    readStr(child(root, "emoji_dir"), config.emoji_dir);
+    readStr(child(root, "template_dir"), config.template_dir);
+    readStr(child(root, "static_dir"), config.static_dir);
 
-    readInt(root["posts_per_page"], config.posts_per_page);
+    readInt(child(root, "posts_per_page"), config.posts_per_page);
 
-    readInt(root["http_signature_skew_seconds"],
+    readInt(child(root, "http_signature_skew_seconds"),
             config.http_signature_skew_seconds);
-    readInt(root["thread_fetch_max_depth"], config.thread_fetch_max_depth);
-    readInt(root["sqlite_busy_timeout_ms"], config.sqlite_busy_timeout_ms);
+    readInt(child(root, "thread_fetch_max_depth"),
+            config.thread_fetch_max_depth);
+    readInt(child(root, "sqlite_busy_timeout_ms"),
+            config.sqlite_busy_timeout_ms);
 
-    readInt(root["job_workers"], config.job_workers);
-    readInt(root["job_max_retries"], config.job_max_retries);
-    readInt(root["job_retry_base_delay_seconds"],
+    readInt(child(root, "job_workers"), config.job_workers);
+    readInt(child(root, "job_max_retries"), config.job_max_retries);
+    readInt(child(root, "job_retry_base_delay_seconds"),
             config.job_retry_base_delay_seconds);
 
-    readInt64(root["max_upload_bytes"], config.max_upload_bytes);
+    readInt64(child(root, "max_upload_bytes"), config.max_upload_bytes);
 
-    if(root["oidc"].readable() && root["oidc"].is_map())
+    ryml::ConstNodeRef oidc = child(root, "oidc");
+    if(oidc.readable() && oidc.is_map())
     {
-        ryml::ConstNodeRef oidc = root["oidc"];
-        readStr(oidc["issuer"], config.oidc.issuer);
-        readStr(oidc["client_id"], config.oidc.client_id);
-        readStr(oidc["client_secret"], config.oidc.client_secret);
-        readStr(oidc["scopes"], config.oidc.scopes);
+        readStr(child(oidc, "issuer"), config.oidc.issuer);
+        readStr(child(oidc, "client_id"), config.oidc.client_id);
+        readStr(child(oidc, "client_secret"), config.oidc.client_secret);
+        readStr(child(oidc, "scopes"), config.oidc.scopes);
     }
 
-    if(root["nodeinfo"].readable() && root["nodeinfo"].is_map())
+    ryml::ConstNodeRef ni = child(root, "nodeinfo");
+    if(ni.readable() && ni.is_map())
     {
-        ryml::ConstNodeRef ni = root["nodeinfo"];
-        readStr(ni["software_name"], config.nodeinfo.software_name);
-        readBool(ni["open_registrations"], config.nodeinfo.open_registrations);
-        readStr(ni["description"], config.nodeinfo.description);
+        readStr(child(ni, "software_name"), config.nodeinfo.software_name);
+        readBool(child(ni, "open_registrations"),
+                 config.nodeinfo.open_registrations);
+        readStr(child(ni, "description"), config.nodeinfo.description);
     }
 
     auto valid = config.validateAndFinalize();

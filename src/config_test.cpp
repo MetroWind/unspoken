@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+
 #include <mw/error.hpp>
 
 #include "config.hpp"
@@ -44,6 +47,30 @@ TEST(Config, PublicDomainDefaultsToUrlRootHost)
     c.public_domain = "";
     ASSERT_TRUE(c.validateAndFinalize().has_value());
     EXPECT_EQ(c.public_domain, "f.mws.rocks");
+}
+
+TEST(Config, FromYamlAllowsMissingPublicDomain)
+{
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "unspoken_config_test.yaml";
+    std::ofstream out(path);
+    out << R"(
+url_root: "https://f.mws.rocks/"
+listen_address: "127.0.0.1"
+listen_port: 8080
+database_path: ":memory:"
+oidc:
+  issuer: "https://kc.example/realms/main"
+  client_id: "unspoken"
+  client_secret: "secret"
+)";
+    out.close();
+
+    auto config = Config::fromYaml(path);
+    std::filesystem::remove(path);
+
+    ASSERT_TRUE(config.has_value()) << mw::errorMsg(config.error());
+    EXPECT_EQ(config->public_domain, "f.mws.rocks");
 }
 
 TEST(Config, PublicDomainOverrideKept)
