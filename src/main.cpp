@@ -27,6 +27,8 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    spdlog::set_pattern("[%l] %v");
+    bool cli_verbose = opts.count("verbose") > 0;
     if(opts.count("verbose"))
     {
         spdlog::set_level(spdlog::level::debug);
@@ -42,6 +44,10 @@ int main(int argc, char** argv)
         spdlog::error("Failed to load config {}: {}", config_file,
                       mw::errorMsg(config.error()));
         return 1;
+    }
+    if(config->verbose || cli_verbose)
+    {
+        spdlog::set_level(spdlog::level::debug);
     }
 
     // Initialize the database (create the schema at v1 if fresh) once at

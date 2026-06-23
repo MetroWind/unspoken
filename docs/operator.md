@@ -35,6 +35,8 @@ Common optional keys and defaults:
 - `public_domain`: handle domain. Defaults to the host of `url_root`.
 - `listen_address`: `127.0.0.1`.
 - `listen_port`: `8080`.
+- `verbose`: `false`. Enables debug logging, including full federation
+  request/response headers and bodies.
 - `database_path`: `unspoken.db`.
 - `attachment_dir`: `attachments`.
 - `emoji_dir`: `emoji`.
@@ -60,6 +62,7 @@ url_root: https://fedi.internal.example.org/
 public_domain: example.org
 listen_address: 127.0.0.1
 listen_port: 8080
+verbose: false
 database_path: /var/lib/unspoken/unspoken.db
 attachment_dir: /var/lib/unspoken/attachments
 emoji_dir: /var/lib/unspoken/emoji

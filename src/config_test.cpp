@@ -73,6 +73,30 @@ oidc:
     EXPECT_EQ(config->public_domain, "f.mws.rocks");
 }
 
+TEST(Config, FromYamlReadsVerbose)
+{
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path()
+        / "unspoken_config_verbose_test.yaml";
+    std::ofstream out(path);
+    out << R"(
+url_root: "https://f.mws.rocks/"
+verbose: true
+database_path: ":memory:"
+oidc:
+  issuer: "https://kc.example/realms/main"
+  client_id: "unspoken"
+  client_secret: "secret"
+)";
+    out.close();
+
+    auto config = Config::fromYaml(path);
+    std::filesystem::remove(path);
+
+    ASSERT_TRUE(config.has_value()) << mw::errorMsg(config.error());
+    EXPECT_TRUE(config->verbose);
+}
+
 TEST(Config, PublicDomainOverrideKept)
 {
     Config c = validBase();

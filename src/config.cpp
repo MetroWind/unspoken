@@ -184,6 +184,7 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
     readStr(child(root, "public_domain"), config.public_domain);
     readStr(child(root, "listen_address"), config.listen_address);
     readInt(child(root, "listen_port"), config.listen_port);
+    readBool(child(root, "verbose"), config.verbose);
 
     readStr(child(root, "database_path"), config.database_path);
     readStr(child(root, "attachment_dir"), config.attachment_dir);

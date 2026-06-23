@@ -3,6 +3,7 @@ url_root: "https://fedi.example.org/"
 public_domain: "example.org"
 listen_address: "127.0.0.1"
 listen_port: 8080
+verbose: false
 
 database_path: "/var/lib/unspoken/unspoken.db"
 attachment_dir: "/var/lib/unspoken/attachments"

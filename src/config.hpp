@@ -36,6 +36,9 @@ struct Config
     std::string public_domain;
     std::string listen_address = "127.0.0.1";
     int listen_port = 8080;
+    // Enable debug logging, including full federation request/response
+    // headers and bodies.
+    bool verbose = false;
 
     // ─── Storage ─────────────────────────────────────────────────
     std::string database_path = "unspoken.db";
