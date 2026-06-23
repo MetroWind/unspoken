@@ -300,6 +300,25 @@ bool containsHeader(const std::vector<std::string>& headers,
     return false;
 }
 
+std::string firstForwardedValue(std::string_view value)
+{
+    size_t comma = value.find(',');
+    return std::string(mw::strip(
+        comma == std::string_view::npos ? value : value.substr(0, comma)));
+}
+
+std::unordered_map<std::string, std::string> signatureHeaders(
+    const std::unordered_map<std::string, std::string>& raw_headers)
+{
+    auto headers = lowerHeaders(raw_headers);
+    auto forwarded_host = header(headers, "x-forwarded-host");
+    if(forwarded_host.has_value() && !forwarded_host->empty())
+    {
+        headers["host"] = firstForwardedValue(*forwarded_host);
+    }
+    return headers;
+}
+
 mw::E<std::string> signingString(
     const IncomingHttpRequest& req,
     const std::unordered_map<std::string, std::string>& headers,
@@ -1840,7 +1859,7 @@ mw::E<VerifiedSignature> verifyHttpSignature(
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
     int64_t now_seconds)
 {
-    auto headers = lowerHeaders(req.headers);
+    auto headers = signatureHeaders(req.headers);
     auto sig_header = header(headers, "signature");
     if(!sig_header.has_value())
     {
@@ -1937,7 +1956,7 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     auto first = verifyHttpSignature(config, data, crypto, req, now_seconds);
     if(first.has_value()) return *first;
 
-    auto headers = lowerHeaders(req.headers);
+    auto headers = signatureHeaders(req.headers);
     auto sig_header = header(headers, "signature");
     if(!sig_header.has_value()) return std::unexpected(first.error());
     auto params = parseSignatureParams(*sig_header);

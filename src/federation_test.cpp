@@ -102,6 +102,7 @@ IncomingHttpRequest signedIncomingRequest(
     req.body = std::string(body);
     req.headers["Host"] = "f.test";
     req.headers["Date"] = httpDateFor(now);
+    req.headers["Content-Type"] = "application/activity+json";
     std::string signed_headers = sign_digest
         ? "(request-target) host date digest"
         : "(request-target) host date";
@@ -127,6 +128,8 @@ IncomingHttpRequest signedIncomingRequest(
     {
         lines.push_back("digest: " + req.headers["Digest"]);
     }
+    if(signed_headers.find("content-type") != std::string::npos)
+        lines.push_back("content-type: " + req.headers["Content-Type"]);
     std::string input;
     for(size_t i = 0; i < lines.size(); ++i)
     {
@@ -732,6 +735,34 @@ TEST(HttpSignature, AcceptsHs2019LabelForRsaSignature)
     auto req = signedIncomingRequest(
         crypto, keys.private_key, actor.public_key_id, "hs2019",
         "get", "/p/1", "", now, false, false);
+    EXPECT_TRUE(verifyHttpSignature(testConfig(), *db, crypto, req, now)
+                    .has_value());
+}
+
+TEST(HttpSignature, UsesForwardedHostForProxiedRequests)
+{
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor;
+    actor.uri = "https://remote.test/u/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.inbox = "https://remote.test/u/bob/inbox";
+    actor.public_key_id = actor.uri + "#main-key";
+    actor.public_key_pem = keys.public_key;
+    actor.actor_json = "{}";
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+
+    int64_t now = 100000;
+    auto req = signedIncomingRequest(
+        crypto, keys.private_key, actor.public_key_id, "rsa-sha256",
+        "post", "/inbox", "{}", now, true, true,
+        "(request-target) host date digest content-type");
+    req.headers["Content-Type"] = "application/activity+json";
+    req.headers["Host"] = "127.0.0.1:41189";
+    req.headers["X-Forwarded-Host"] = "f.test";
+
     EXPECT_TRUE(verifyHttpSignature(testConfig(), *db, crypto, req, now)
                     .has_value());
 }
