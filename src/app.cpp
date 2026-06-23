@@ -194,6 +194,48 @@ bool respondIfError(const mw::E<void>& r, mw::HTTPServer::Response& res)
     return true;
 }
 
+template<typename Headers>
+nlohmann::json headersJson(const Headers& headers)
+{
+    nlohmann::json out = nlohmann::json::object();
+    for(const auto& [key, value] : headers) out[key] = value;
+    return out;
+}
+
+void logIncomingFederationRequest(const mw::HTTPServer::Request& req)
+{
+    spdlog::info("Incoming federation request: {} {} from {}:{} bytes={}",
+                 req.method, req.target, req.remote_addr, req.remote_port,
+                 req.body.size());
+    spdlog::debug("Incoming federation request headers: {}",
+                  headersJson(req.headers).dump());
+    spdlog::debug("Incoming federation request body: {}", req.body);
+}
+
+class IncomingFederationResponseLog
+{
+public:
+    IncomingFederationResponseLog(const mw::HTTPServer::Request& req,
+                                  const mw::HTTPServer::Response& res)
+        : request(req), response(res)
+    {}
+
+    ~IncomingFederationResponseLog()
+    {
+        spdlog::info("Incoming federation response: {} {} status={} bytes={}",
+                     request.method, request.target, response.status,
+                     response.body.size());
+        spdlog::debug("Incoming federation response headers: {}",
+                      headersJson(response.headers).dump());
+        spdlog::debug("Incoming federation response body: {}",
+                      response.body);
+    }
+
+private:
+    const mw::HTTPServer::Request& request;
+    const mw::HTTPServer::Response& response;
+};
+
 bool respondIfCannotView(const Service& svc, const unspoken::Post& post,
                          const std::optional<unspoken::User>& viewer,
                          mw::HTTPServer::Response& res)
@@ -1506,6 +1548,8 @@ void App::handleNodeInfo([[maybe_unused]] const Request& req,
 
 void App::handleInbox(const Request& req, Response& res) const
 {
+    logIncomingFederationRequest(req);
+    IncomingFederationResponseLog response_log(req, res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     int64_t now = mw::timeToSeconds(mw::Clock::now());
     ASSIGN_OR_RESPOND_ERROR(auto system, systemActor(), res);

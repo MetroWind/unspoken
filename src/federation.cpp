@@ -25,6 +25,7 @@
 #include <mw/http_client.hpp>
 #include <mw/url.hpp>
 #include <mw/utils.hpp>
+#include <spdlog/spdlog.h>
 
 #include "attachments.hpp"
 #include "data.hpp"
@@ -94,6 +95,37 @@ std::string requestAuthority(const mw::URL& url)
         return host;
     }
     return host + ":" + port;
+}
+
+nlohmann::json headersJson(
+    const std::unordered_map<std::string, std::string>& headers)
+{
+    nlohmann::json out = nlohmann::json::object();
+    for(const auto& [key, value] : headers) out[key] = value;
+    return out;
+}
+
+void logOutgoingFederationRequest(std::string_view method,
+                                  const mw::HTTPRequest& req)
+{
+    spdlog::info("Outgoing federation request: {} {} bytes={}",
+                 method, req.url, req.request_data.size());
+    spdlog::debug("Outgoing federation request headers: {}",
+                  headersJson(req.header).dump());
+    spdlog::debug("Outgoing federation request body: {}",
+                  req.request_data);
+}
+
+void logOutgoingFederationResponse(std::string_view method,
+                                   const mw::HTTPRequest& req,
+                                   const mw::HTTPResponse& res)
+{
+    spdlog::info("Outgoing federation response: {} {} status={} bytes={}",
+                 method, req.url, res.status, res.payload.size());
+    spdlog::debug("Outgoing federation response headers: {}",
+                  headersJson(res.header).dump());
+    spdlog::debug("Outgoing federation response body: {}",
+                  res.payloadAsStr());
 }
 
 bool ipv4In(const std::vector<uint8_t>& a, uint8_t b0)
@@ -373,7 +405,16 @@ mw::E<void> performDeliveryJob(const Config& config,
     DO_OR_RETURN(hardenOutboundSession(http));
     ASSIGN_OR_RETURN(auto req, signedHttpRequest(
         crypto, signer, "POST", inbox, body, "application/activity+json"));
-    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.post(req));
+    logOutgoingFederationRequest("POST", req);
+    auto res_e = http.post(req);
+    if(!res_e.has_value())
+    {
+        spdlog::warn("Outgoing federation response: POST {} failed: {}",
+                     req.url, mw::errorMsg(res_e.error()));
+        return std::unexpected(res_e.error());
+    }
+    const mw::HTTPResponse* res = *res_e;
+    logOutgoingFederationResponse("POST", req, *res);
     if(res->status < 200 || res->status >= 300)
     {
         return std::unexpected(mw::httpError(
