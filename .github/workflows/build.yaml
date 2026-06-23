@@ -19,7 +19,7 @@ jobs:
     - name: Install dependencies
       run: |
         pacman -Syu --noconfirm
-        pacman -S --noconfirm git cmake zstd
+        pacman -S --noconfirm git cmake sudo zstd
         # Add user builder
         useradd -m builder
         echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
@@ -40,7 +40,7 @@ jobs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       run: |
         # Compress the binary built by makepkg
-        zstd packages/arch/src/unspoken/build/unspoken -o unspoken.zst
+        zstd packages/arch/src/build/unspoken -o unspoken.zst
 
     - name: Find Package File
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -1,0 +1,104 @@
+# Maintainer: MetroWind
+
+pkgname=unspoken-git
+pkgver=r67.gc905f92
+pkgrel=1
+pkgdesc='Micro-blog server that federates over ActivityPub'
+arch=('x86_64')
+url='https://github.com/MetroWind/unspoken'
+license=('unknown')
+depends=('curl' 'gcc-libs' 'glibc' 'openssl' 'sqlite')
+makedepends=('cmake' 'git')
+provides=('unspoken')
+conflicts=('unspoken')
+backup=('etc/unspoken/config.yaml')
+
+source=(
+    'unspoken::git+https://github.com/MetroWind/unspoken.git'
+    'libmw::git+https://github.com/MetroWind/libmw.git'
+    'cxxopts::git+https://github.com/jarro2783/cxxopts.git#tag=v3.1.1'
+    'ryml::git+https://github.com/biojppm/rapidyaml.git'
+    'c4core::git+https://github.com/biojppm/c4core.git#commit=ed246e8'
+    'spdlog::git+https://github.com/gabime/spdlog.git#tag=v1.12.0'
+    'json::git+https://github.com/nlohmann/json.git#tag=v3.11.3'
+    'inja::git+https://github.com/pantor/inja.git#branch=main'
+    'macrodown::git+https://git.xeno.darksair.org/macrodown.git'
+    'httplib::git+https://github.com/yhirose/cpp-httplib.git#tag=v0.18.0'
+    'uni-algo::git+https://github.com/uni-algo/uni-algo.git#tag=v1.2.0'
+    'unspoken.service'
+    'unspoken.sysusers'
+    'unspoken.tmpfiles'
+    'config.yaml'
+)
+sha256sums=(
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'c76cb2bef8a68ba70b00df359181160b35aef491d6186f4e6a01bd8e12fd3ace'
+    '854a27c8fb3cc72d6cf541a654e4717339e8dab940b5b653df4c67e2908fd545'
+    '13f941070585e369e52ad4344bf2e5bb02f58fa37ec7f229694f649137ae57df'
+    '6fe57e1bff2d8fe0fbe5f180cfa545fb74ba9c6ed6b95291d83aa8adae27614e'
+)
+
+pkgver()
+{
+    cd "$srcdir/unspoken"
+    printf 'r%s.g%s' \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare()
+{
+    cd "$srcdir"
+    install -d ryml/ext/c4core
+    cp -a c4core/. ryml/ext/c4core/
+}
+
+build()
+{
+    cd "$srcdir"
+    cmake -S unspoken -B build \
+        -DCMAKE_BUILD_TYPE=None \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DUNSPOKEN_BUILD_TESTS=OFF \
+        -DFETCHCONTENT_SOURCE_DIR_LIBMW="$srcdir/libmw" \
+        -DFETCHCONTENT_SOURCE_DIR_CXXOPTS="$srcdir/cxxopts" \
+        -DFETCHCONTENT_SOURCE_DIR_RYML="$srcdir/ryml" \
+        -DFETCHCONTENT_SOURCE_DIR_SPDLOG="$srcdir/spdlog" \
+        -DFETCHCONTENT_SOURCE_DIR_JSON="$srcdir/json" \
+        -DFETCHCONTENT_SOURCE_DIR_INJA="$srcdir/inja" \
+        -DFETCHCONTENT_SOURCE_DIR_MACRODOWN="$srcdir/macrodown" \
+        -DFETCHCONTENT_SOURCE_DIR_HTTPLIB="$srcdir/httplib" \
+        -DFETCHCONTENT_SOURCE_DIR_UNI-ALGO="$srcdir/uni-algo" \
+        -Wno-dev
+    cmake --build build
+}
+
+package()
+{
+    cd "$srcdir"
+    install -Dm755 build/unspoken "$pkgdir/usr/bin/unspoken"
+
+    install -d "$pkgdir/usr/share/unspoken"
+    cp -a unspoken/templates "$pkgdir/usr/share/unspoken/"
+    cp -a unspoken/static "$pkgdir/usr/share/unspoken/"
+
+    install -Dm644 config.yaml "$pkgdir/etc/unspoken/config.yaml"
+    install -Dm644 unspoken/docs/operator.md \
+        "$pkgdir/usr/share/doc/unspoken/operator.md"
+    install -Dm644 unspoken.service \
+        "$pkgdir/usr/lib/systemd/system/unspoken.service"
+    install -Dm644 unspoken.sysusers \
+        "$pkgdir/usr/lib/sysusers.d/unspoken.conf"
+    install -Dm644 unspoken.tmpfiles \
+        "$pkgdir/usr/lib/tmpfiles.d/unspoken.conf"
+}

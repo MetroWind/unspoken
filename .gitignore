@@ -3,6 +3,7 @@ build/
 unspoken.db*
 actpub.db
 config.yaml
+!packages/arch/config.yaml
 unit_tests
 data.db
 src/commit.hpp
