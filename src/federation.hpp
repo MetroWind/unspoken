@@ -76,6 +76,7 @@ nlohmann::json emojiReactActivityJson(
     std::string_view emoji, const std::vector<PostRecipient>& recipients,
     const EmojiRegistry& emoji_registry);
 nlohmann::json webFingerJson(const Config& config, const User& user);
+std::string hostMetaXml(const Config& config);
 nlohmann::json nodeInfoDiscoveryJson(const Config& config);
 nlohmann::json nodeInfoJson(const Config& config);
 

@@ -1535,6 +1535,19 @@ nlohmann::json webFingerJson(const Config& config, const User& user)
     };
 }
 
+std::string hostMetaXml(const Config& config)
+{
+    std::string webfinger = config.url_root
+        + ".well-known/webfinger?resource={uri}";
+    return std::format(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<XRD xmlns=\"http://docs.oasis-open.org/ns/xri/xrd-1.0\">\n"
+        "  <Link rel=\"lrdd\" type=\"application/xrd+xml\" "
+        "template=\"{}\" />\n"
+        "</XRD>\n",
+        webfinger);
+}
+
 nlohmann::json nodeInfoDiscoveryJson(const Config& config)
 {
     return {

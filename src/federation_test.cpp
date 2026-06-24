@@ -493,6 +493,15 @@ TEST(Discovery, WebFingerCanonicalSubject)
     EXPECT_EQ(j["links"][0]["href"], "https://f.test/u/alice");
 }
 
+TEST(Discovery, HostMetaPointsToWebFinger)
+{
+    auto xml = hostMetaXml(testConfig());
+    EXPECT_NE(xml.find("rel=\"lrdd\""), std::string::npos);
+    EXPECT_NE(xml.find("template=\"https://f.test/.well-known/webfinger?"
+                       "resource={uri}\""),
+              std::string::npos);
+}
+
 TEST(Discovery, NodeInfoDiscoveryPointsToUrlRoot)
 {
     auto j = nodeInfoDiscoveryJson(testConfig());

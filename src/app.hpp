@@ -97,6 +97,7 @@ private:
     void handleEmoji(const Request& req, Response& res) const;
     void handleSystemActor(const Request& req, Response& res) const;
     void handleWebFinger(const Request& req, Response& res) const;
+    void handleHostMeta(const Request& req, Response& res) const;
     void handleNodeInfoDiscovery(const Request& req, Response& res) const;
     void handleNodeInfo(const Request& req, Response& res) const;
     void handleInbox(const Request& req, Response& res) const;

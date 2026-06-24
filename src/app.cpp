@@ -1557,6 +1557,12 @@ void App::handleWebFinger(const Request& req, Response& res) const
             "application/jrd+json");
 }
 
+void App::handleHostMeta([[maybe_unused]] const Request& req,
+                         Response& res) const
+{
+    res.set_content(unspoken::hostMetaXml(config), "application/xrd+xml");
+}
+
 void App::handleNodeInfoDiscovery([[maybe_unused]] const Request& req,
                                   Response& res) const
 {
@@ -1759,6 +1765,8 @@ void App::setup()
     { handleSystemActor(req, res); });
     server.Get("/.well-known/webfinger", [&](const Request& req, Response& res)
     { handleWebFinger(req, res); });
+    server.Get("/.well-known/host-meta", [&](const Request& req, Response& res)
+    { handleHostMeta(req, res); });
     server.Get("/.well-known/nodeinfo", [&](const Request& req, Response& res)
     { handleNodeInfoDiscovery(req, res); });
     server.Get("/nodeinfo/2.1", [&](const Request& req, Response& res)
