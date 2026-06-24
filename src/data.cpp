@@ -947,25 +947,45 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
 
 mw::E<std::vector<Post>>
 DataSourceSQLite::homeTimelinePosts(
-    const std::vector<int64_t>& author_ids, int64_t reply_author_id,
+    const std::vector<int64_t>& author_ids,
+    const std::vector<int64_t>& remote_author_ids, int64_t reply_author_id,
     const Cursor& c, int limit, std::string_view viewer_actor) const
 {
-    if(author_ids.empty()) return std::vector<Post>{};
+    if(author_ids.empty() && remote_author_ids.empty())
+        return std::vector<Post>{};
 
     std::string in_list;
     for(size_t i = 0; i < author_ids.size(); ++i)
         in_list += (i == 0) ? "?" : ",?";
+    std::string remote_in_list;
+    for(size_t i = 0; i < remote_author_ids.size(); ++i)
+        remote_in_list += (i == 0) ? "?" : ",?";
+
+    std::string author_where;
+    if(!author_ids.empty())
+    {
+        author_where = std::format("local_author_id IN ({})", in_list);
+    }
+    if(!remote_author_ids.empty())
+    {
+        if(!author_where.empty()) author_where += " OR ";
+        author_where += std::format(
+            "remote_author_id IN ({})", remote_in_list);
+    }
+
     std::string where = std::format(
-        "(local_author_id IN ({}) OR in_reply_to_uri IN "
+        "({} OR in_reply_to_uri IN "
         "(SELECT uri FROM posts WHERE local_author_id = ?) OR "
         "id IN (SELECT post_id FROM post_recipients "
         "WHERE recipient_uri = ?))",
-        in_list);
+        author_where);
     std::string sql = buildTimelineSql(c, where);
 
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
     for(int64_t id : author_ids)
+        DO_OR_RETURN(internalBindAt(st, idx++, id));
+    for(int64_t id : remote_author_ids)
         DO_OR_RETURN(internalBindAt(st, idx++, id));
     DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
     DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));

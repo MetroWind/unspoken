@@ -148,6 +148,48 @@ TEST(ServiceFollow, CanFollowRemoteActorUri)
     EXPECT_FALSE(gone.has_value());
 }
 
+TEST(ServiceTimeline, IncludesAcceptedFollowedRemoteActorPosts)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://activitypub.academy/users/banulius_amudol",
+        "banulius_amudol",
+        "activitypub.academy",
+        "Banulius",
+        "https://activitypub.academy/users/banulius_amudol/inbox",
+        std::nullopt,
+        "PUB",
+        "https://activitypub.academy/users/banulius_amudol#main-key",
+        "{}",
+        0,
+    }));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    Follow follow;
+    follow.follower_uri = svc.actorUri("alice");
+    follow.followee_uri = remote.uri;
+    follow.state = FollowState::ACCEPTED;
+    EXPECT_TRUE(mw::isExpected(db->addFollow(follow)));
+
+    NewPost np;
+    np.uri = "https://activitypub.academy/statuses/1";
+    np.remote_author_id = remote.id;
+    np.content_html = "<p>remote status</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(alice, Cursor{}));
+    std::vector<int64_t> ids;
+    for(const auto& item : timeline) ids.push_back(item.id);
+    EXPECT_NE(std::find(ids.begin(), ids.end(), post.id), ids.end());
+}
+
 TEST(ServiceAuthz, ActorCanViewFollowersPostWhenAcceptedFollower)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

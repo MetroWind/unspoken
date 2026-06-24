@@ -255,20 +255,30 @@ Service::homeTimeline(const User& viewer, const Cursor& c) const
     ASSIGN_OR_RETURN(auto following, data.followingUris(viewer_actor));
 
     std::vector<int64_t> author_ids;
+    std::vector<int64_t> remote_author_ids;
     author_ids.push_back(viewer.id);
     const std::string local_prefix = config.url_root + "u/";
     for(const auto& uri : following)
     {
-        if(!uri.starts_with(local_prefix)) continue; // remote: Phase 4+
-        std::string_view username = std::string_view(uri).substr(
-            local_prefix.size());
-        // Strip any trailing path (defensive; actor URIs have none).
-        if(size_t slash = username.find('/'); slash != std::string_view::npos)
-            username = username.substr(0, slash);
-        ASSIGN_OR_RETURN(auto u, data.getUserByUsername(username));
-        if(u.has_value()) author_ids.push_back(u->id);
+        if(uri.starts_with(local_prefix))
+        {
+            std::string_view username = std::string_view(uri).substr(
+                local_prefix.size());
+            // Strip any trailing path (defensive; actor URIs have none).
+            if(size_t slash = username.find('/');
+               slash != std::string_view::npos)
+            {
+                username = username.substr(0, slash);
+            }
+            ASSIGN_OR_RETURN(auto u, data.getUserByUsername(username));
+            if(u.has_value()) author_ids.push_back(u->id);
+            continue;
+        }
+
+        ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(uri));
+        if(actor.has_value()) remote_author_ids.push_back(actor->id);
     }
-    return data.homeTimelinePosts(author_ids, viewer.id, c,
+    return data.homeTimelinePosts(author_ids, remote_author_ids, viewer.id, c,
                                   config.posts_per_page, viewer_actor);
 }
 

@@ -505,7 +505,7 @@ TEST(Data, HomeTimelineIncludesRepliesToUsersPosts)
         reply_to_bob, {}, "https://f.test/p/"));
 
     ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
-        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20,
+        std::vector<int64_t>{alice.id}, {}, alice.id, Cursor{}, 20,
         "https://f.test/u/alice"));
     std::vector<int64_t> ids;
     for(const auto& post : tl) ids.push_back(post.id);
@@ -543,12 +543,70 @@ TEST(Data, HomeTimelineIncludesPostsAddressedToUser)
         "https://f.test/p/"));
 
     ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
-        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20,
+        std::vector<int64_t>{alice.id}, {}, alice.id, Cursor{}, 20,
         "https://f.test/u/alice"));
 
     std::vector<int64_t> ids;
     for(const auto& item : tl) ids.push_back(item.id);
     EXPECT_NE(std::find(ids.begin(), ids.end(), post.id), ids.end());
+}
+
+TEST(Data, HomeTimelineIncludesFollowedRemoteAuthors)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(sampleUser("alice")));
+    ASSIGN_OR_FAIL(auto followed, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://activitypub.academy/users/banulius_amudol",
+        "banulius_amudol",
+        "activitypub.academy",
+        "Banulius",
+        "https://activitypub.academy/users/banulius_amudol/inbox",
+        std::nullopt,
+        "PUB",
+        "https://activitypub.academy/users/banulius_amudol#main-key",
+        "{}",
+        0,
+    }));
+    ASSIGN_OR_FAIL(auto other, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://remote.test/users/other",
+        "other",
+        "remote.test",
+        "Other",
+        "https://remote.test/users/other/inbox",
+        std::nullopt,
+        "PUB",
+        "https://remote.test/users/other#main-key",
+        "{}",
+        0,
+    }));
+
+    NewPost followed_post;
+    followed_post.uri = "https://activitypub.academy/statuses/1";
+    followed_post.remote_author_id = followed.id;
+    followed_post.content_html = "followed remote";
+    followed_post.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto included, db->insertPost(
+        followed_post, {{0, std::string(AS_PUBLIC), "to"}},
+        "https://f.test/p/"));
+
+    NewPost other_post = followed_post;
+    other_post.uri = "https://remote.test/statuses/1";
+    other_post.remote_author_id = other.id;
+    other_post.content_html = "other remote";
+    ASSIGN_OR_FAIL(auto excluded, db->insertPost(
+        other_post, {{0, std::string(AS_PUBLIC), "to"}},
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+        std::vector<int64_t>{alice.id}, std::vector<int64_t>{followed.id},
+        alice.id, Cursor{}, 20, "https://f.test/u/alice"));
+
+    std::vector<int64_t> ids;
+    for(const auto& item : tl) ids.push_back(item.id);
+    EXPECT_NE(std::find(ids.begin(), ids.end(), included.id), ids.end());
+    EXPECT_EQ(std::find(ids.begin(), ids.end(), excluded.id), ids.end());
 }
 
 // ─── withWriteRetry behavior ───────────────────────────────────────
