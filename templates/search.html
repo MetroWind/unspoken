@@ -17,10 +17,28 @@
 {% endif %}
 {% for u in results %}
   <div class="result">
-    <a class="author" href="{{ u.profile_url }}">
-      <span class="dname">{{ u.display_name }}</span>
-      <span class="handle">{{ u.handle }}</span>
-    </a>
+    <div class="result-head">
+      <a class="author" href="{{ u.profile_url }}">
+        <span class="dname">{{ u.display_name }}</span>
+        <span class="handle">{{ u.handle }}</span>
+      </a>
+{% if u.can_follow %}
+      <form class="inline" method="post" action="{{ site.root }}follow">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if u.actor_uri %}
+        <input type="hidden" name="actor_uri" value="{{ u.actor_uri }}">
+{% else %}
+        <input type="hidden" name="username" value="{{ u.username }}">
+{% endif %}
+{% if u.following %}
+        <input type="hidden" name="undo" value="1">
+        <button type="submit" class="linkbtn on">following — unfollow</button>
+{% else %}
+        <button type="submit" class="linkbtn">follow</button>
+{% endif %}
+      </form>
+{% endif %}
+    </div>
     <div class="bio">{{ u.bio_html }}</div>
   </div>
 {% endfor %}

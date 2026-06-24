@@ -332,27 +332,35 @@ mw::E<void> Service::setBookmark(const User& viewer, const Post& p,
     return data.removeBookmark(viewer.id, p.id);
 }
 
-mw::E<void> Service::setFollow(const User& viewer,
-                               std::string_view target_username,
-                               bool on) const
+mw::E<void> Service::setFollowActor(
+    const User& viewer, std::string_view target_actor_uri, bool on,
+    FollowState state, std::optional<std::string> follow_activity_uri) const
 {
     const std::string follower = actorUri(viewer.username);
-    const std::string followee = actorUri(target_username);
+    const std::string followee(target_actor_uri);
     if(follower == followee)
     {
         return std::unexpected(mw::httpError(400, "Cannot follow yourself"));
     }
     if(on)
     {
-        // Local follows auto-accept immediately (no federation needed).
         Follow f;
         f.follower_uri = follower;
         f.followee_uri = followee;
-        f.state = FollowState::ACCEPTED;
+        f.state = state;
+        f.follow_activity_uri = std::move(follow_activity_uri);
         f.created_at = nowSeconds();
         return data.addFollow(f);
     }
     return data.removeFollow(follower, followee);
+}
+
+mw::E<void> Service::setFollow(const User& viewer,
+                               std::string_view target_username,
+                               bool on) const
+{
+    // Local follows auto-accept immediately (no federation needed).
+    return setFollowActor(viewer, actorUri(target_username), on);
 }
 
 // ─── View models ───────────────────────────────────────────────────────

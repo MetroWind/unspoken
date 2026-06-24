@@ -75,6 +75,12 @@ public:
     mw::E<void> setReaction(const User& viewer, const Post& p,
                             std::string_view emoji, bool on) const;
     mw::E<void> setBookmark(const User& viewer, const Post& p, bool on) const;
+    // Follow or unfollow an actor URI on behalf of a local viewer.
+    mw::E<void> setFollowActor(
+        const User& viewer, std::string_view target_actor_uri, bool on,
+        FollowState state = FollowState::ACCEPTED,
+        std::optional<std::string> follow_activity_uri = std::nullopt) const;
+    // Follow or unfollow a local username on behalf of a local viewer.
     mw::E<void> setFollow(const User& viewer, std::string_view target_username,
                           bool on) const;
 

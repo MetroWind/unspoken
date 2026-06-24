@@ -120,6 +120,34 @@ TEST(ServiceUri, ActorAndHandle)
     EXPECT_EQ(svc.handleFor("alice"), "@alice@f.test");
 }
 
+TEST(ServiceFollow, CanFollowRemoteActorUri)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    std::string follow_id = "https://f.test/activities/follow/1";
+    EXPECT_TRUE(mw::isExpected(svc.setFollowActor(
+        alice, "https://remote.test/users/bob", true,
+        FollowState::PENDING, follow_id)));
+
+    ASSIGN_OR_FAIL(auto follow, db->getFollow(
+        svc.actorUri("alice"), "https://remote.test/users/bob"));
+    ASSERT_TRUE(follow.has_value());
+    EXPECT_EQ(follow->state, FollowState::PENDING);
+    ASSERT_TRUE(follow->follow_activity_uri.has_value());
+    EXPECT_EQ(*follow->follow_activity_uri, follow_id);
+
+    EXPECT_TRUE(mw::isExpected(svc.setFollowActor(
+        alice, "https://remote.test/users/bob", false)));
+    ASSIGN_OR_FAIL(auto gone, db->getFollow(
+        svc.actorUri("alice"), "https://remote.test/users/bob"));
+    EXPECT_FALSE(gone.has_value());
+}
+
 TEST(ServiceAuthz, ActorCanViewFollowersPostWhenAcceptedFollower)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

@@ -1172,6 +1172,83 @@ bool isUndo(const mw::HTTPServer::Request& req)
 {
     return param(req, "undo") == "1";
 }
+
+std::optional<std::string> localUsernameForActor(const Config& config,
+                                                 std::string_view actor_uri)
+{
+    std::string prefix = config.url_root + "u/";
+    if(!actor_uri.starts_with(prefix)) return std::nullopt;
+    std::string username(actor_uri.substr(prefix.size()));
+    if(username.empty() || username.find('/') != std::string::npos)
+        return std::nullopt;
+    return username;
+}
+
+mw::E<unspoken::RemoteActor> ensureRemoteActor(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    mw::CryptoInterface& crypto, const unspoken::SystemActor& system_actor,
+    std::string_view actor_uri)
+{
+    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
+    if(cached.has_value()) return *cached;
+    mw::HTTPSession http;
+    return unspoken::resolveRemoteActor(config, data, crypto, http,
+                                        system_actor, actor_uri);
+}
+
+mw::E<void> enqueueFollowActivity(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    const unspoken::User& viewer, std::string_view target_actor_uri,
+    std::string_view activity_id, int64_t now)
+{
+    const std::string actor_uri = config.url_root + "u/" + viewer.username;
+    nlohmann::json activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "Follow"},
+        {"actor", actor_uri},
+        {"object", std::string(target_actor_uri)},
+        {"to", nlohmann::json::array({std::string(target_actor_uri)})},
+    };
+    std::vector<unspoken::PostRecipient> recipients = {
+        {0, std::string(target_actor_uri), "to"},
+    };
+    ASSIGN_OR_RETURN(auto jobs, unspoken::enqueueOutboundDelivery(
+        config, data, actor_uri, activity, recipients, now));
+    (void)jobs;
+    return {};
+}
+
+mw::E<void> enqueueUndoFollowActivity(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    const unspoken::User& viewer, const unspoken::Follow& follow,
+    std::string_view activity_id, int64_t now)
+{
+    const std::string actor_uri = config.url_root + "u/" + viewer.username;
+    nlohmann::json object = {
+        {"type", "Follow"},
+        {"actor", actor_uri},
+        {"object", follow.followee_uri},
+    };
+    if(follow.follow_activity_uri.has_value())
+        object["id"] = *follow.follow_activity_uri;
+
+    nlohmann::json activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "Undo"},
+        {"actor", actor_uri},
+        {"object", object},
+        {"to", nlohmann::json::array({follow.followee_uri})},
+    };
+    std::vector<unspoken::PostRecipient> recipients = {
+        {0, follow.followee_uri, "to"},
+    };
+    ASSIGN_OR_RETURN(auto jobs, unspoken::enqueueOutboundDelivery(
+        config, data, actor_uri, activity, recipients, now));
+    (void)jobs;
+    return {};
+}
 } // namespace
 
 void App::handleLike(const Request& req, Response& res) const
@@ -1323,14 +1400,62 @@ void App::handleFollow(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     Service svc(config, *ds, emoji);
     std::string target = param(req, "username");
-    // Local follow only in Phase 3 (remote follow is Phase 5).
-    ASSIGN_OR_RESPOND_ERROR(auto target_user, ds->getUserByUsername(target),
-                            res);
-    if(!target_user.has_value()) { res.status = 404;
-                                   res.set_content("No such user",
-                                                   "text/plain");
-                                   return; }
-    if(respondIfError(svc.setFollow(*viewer, target, !isUndo(req)), res)) return;
+    std::string target_actor = param(req, "actor_uri");
+    bool undo = isUndo(req);
+    if(target_actor.empty())
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto target_user, ds->getUserByUsername(target),
+                                res);
+        if(!target_user.has_value()) { res.status = 404;
+                                       res.set_content("No such user",
+                                                       "text/plain");
+                                       return; }
+        target_actor = svc.actorUri(target);
+    }
+
+    if(auto local = localUsernameForActor(config, target_actor);
+       local.has_value())
+    {
+        if(respondIfError(svc.setFollow(*viewer, *local, !undo), res)) return;
+        res.set_redirect(redirectTarget(req));
+        return;
+    }
+
+    if(undo)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto follow, ds->getFollow(
+            svc.actorUri(viewer->username), target_actor), res);
+        if(follow.has_value())
+        {
+            int64_t now = mw::timeToSeconds(mw::Clock::now());
+            std::string activity_id = std::format(
+                "{}activities/undo/follow/{}/{}", config.url_root,
+                follow->id, now);
+            ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+            ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
+                config, *ds, crypto, system_actor, target_actor), res);
+            (void)actor;
+            if(respondIfError(enqueueUndoFollowActivity(
+                config, *ds, *viewer, *follow, activity_id, now), res)) return;
+        }
+        if(respondIfError(svc.setFollowActor(*viewer, target_actor, false),
+                          res)) return;
+        res.set_redirect(redirectTarget(req));
+        return;
+    }
+
+    ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
+        config, *ds, crypto, system_actor, target_actor), res);
+    (void)actor;
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    std::string activity_id = std::format(
+        "{}activities/follow/{}/{}", config.url_root, viewer->id, now);
+    if(respondIfError(svc.setFollowActor(
+        *viewer, target_actor, true, unspoken::FollowState::PENDING,
+        activity_id), res)) return;
+    if(respondIfError(enqueueFollowActivity(
+        config, *ds, *viewer, target_actor, activity_id, now), res)) return;
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1400,14 +1525,45 @@ void App::handleSearch(const Request& req, Response& res) const
             mw::HTTPSession http;
             auto remote = unspoken::resolveWebFingerActor(
                 config, *ds, crypto, http, system_actor, query);
-            if(remote.has_value()) results.push_back(remoteActorView(*remote));
+            if(remote.has_value())
+            {
+                auto view = remoteActorView(*remote);
+                view["actor_uri"] = mw::escapeHTML(remote->uri);
+                view["can_follow"] = viewer.has_value();
+                if(viewer.has_value())
+                {
+                    ASSIGN_OR_RESPOND_ERROR(auto f, ds->getFollow(
+                        svc.actorUri(viewer->username), remote->uri), res);
+                    view["following"] = f.has_value();
+                }
+                else
+                {
+                    view["following"] = false;
+                }
+                results.push_back(std::move(view));
+            }
         }
         else
         {
             std::string q = query;
             if(!q.empty() && q.front() == '@') q.erase(q.begin());
             ASSIGN_OR_RESPOND_ERROR(auto users, ds->searchUsers(q, 50), res);
-            for(const auto& u : users) results.push_back(svc.userView(u));
+            for(const auto& u : users)
+            {
+                auto view = svc.userView(u);
+                const bool is_self = viewer.has_value()
+                    && viewer->id == u.id;
+                view["can_follow"] = viewer.has_value() && !is_self;
+                view["following"] = false;
+                if(viewer.has_value() && !is_self)
+                {
+                    ASSIGN_OR_RESPOND_ERROR(auto f, ds->getFollow(
+                        svc.actorUri(viewer->username),
+                        svc.actorUri(u.username)), res);
+                    view["following"] = f.has_value();
+                }
+                results.push_back(std::move(view));
+            }
         }
     }
     ctx["results"] = results;

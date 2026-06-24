@@ -211,6 +211,13 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
 .searchform { display: flex; gap: 8px; }
 .searchform input { flex: 1; }
 .results { display: flex; flex-direction: column; gap: 10px; }
+.result-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
 
 .foot {
     max-width: 720px;
