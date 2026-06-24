@@ -67,6 +67,9 @@ public:
     MOCK_METHOD(mw::E<std::vector<Post>>, postsForAuthors,
                 ((const std::vector<int64_t>&), const Cursor&, int),
                 (const, override));
+    MOCK_METHOD(mw::E<std::vector<Post>>, homeTimelinePosts,
+                ((const std::vector<int64_t>&), int64_t, const Cursor&, int),
+                (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, threadFor, (std::string_view),
                 (const, override));
 

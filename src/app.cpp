@@ -236,6 +236,27 @@ private:
     const mw::HTTPServer::Response& response;
 };
 
+mw::E<std::string> replyPrefillForPost(
+    const unspoken::DataSourceInterface& data, const Service& svc,
+    const unspoken::Post& post)
+{
+    if(post.local_author_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto user, data.getUserById(*post.local_author_id));
+        if(user.has_value()) return svc.handleFor(user->username) + " ";
+    }
+    if(post.remote_author_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto actor, data.getRemoteActorById(
+            *post.remote_author_id));
+        if(actor.has_value())
+        {
+            return std::format("@{}@{} ", actor->username, actor->domain);
+        }
+    }
+    return std::string();
+}
+
 bool respondIfCannotView(const Service& svc, const unspoken::Post& post,
                          const std::optional<unspoken::User>& viewer,
                          mw::HTTPServer::Response& res)
@@ -885,6 +906,9 @@ void App::handlePostView(const Request& req, Response& res) const
     ctx["posts"] = views;
     ctx["focus_id"] = post->id;
     ctx["reply_to_id"] = post->id;
+    ASSIGN_OR_RESPOND_ERROR(auto reply_prefill,
+                            replyPrefillForPost(*ds, svc, *post), res);
+    ctx["reply_prefill"] = mw::escapeHTML(reply_prefill);
     render(res, 200, "thread.html", ctx);
 }
 

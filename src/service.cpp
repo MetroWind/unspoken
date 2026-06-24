@@ -268,7 +268,8 @@ Service::homeTimeline(const User& viewer, const Cursor& c) const
         ASSIGN_OR_RETURN(auto u, data.getUserByUsername(username));
         if(u.has_value()) author_ids.push_back(u->id);
     }
-    return data.postsForAuthors(author_ids, c, config.posts_per_page);
+    return data.homeTimelinePosts(author_ids, viewer.id, c,
+                                  config.posts_per_page);
 }
 
 // ─── Interactions ──────────────────────────────────────────────────────

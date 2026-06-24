@@ -470,6 +470,50 @@ TEST(Data, PublicTimelineExcludesNonPublic)
     EXPECT_EQ(tl[0].content_html, "public one");
 }
 
+TEST(Data, HomeTimelineIncludesRepliesToUsersPosts)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(sampleUser("alice")));
+    ASSIGN_OR_FAIL(User bob, db->createUser(sampleUser("bob")));
+    Post alice_post = insertLocalPost(*db, alice.id, "alice root");
+    Post bob_post = insertLocalPost(*db, bob.id, "bob root");
+
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/carol";
+    remote.username = "carol";
+    remote.domain = "remote.test";
+    remote.inbox = "https://remote.test/users/carol/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    remote.actor_json = "{}";
+    ASSIGN_OR_FAIL(remote, db->upsertRemoteActor(remote));
+
+    NewPost reply_to_alice;
+    reply_to_alice.uri = "https://remote.test/statuses/reply-alice";
+    reply_to_alice.remote_author_id = remote.id;
+    reply_to_alice.content_html = "reply to alice";
+    reply_to_alice.visibility = Visibility::PUBLIC;
+    reply_to_alice.in_reply_to_uri = alice_post.uri;
+    ASSIGN_OR_FAIL(auto alice_reply, db->insertPost(
+        reply_to_alice, {}, "https://f.test/p/"));
+
+    NewPost reply_to_bob = reply_to_alice;
+    reply_to_bob.uri = "https://remote.test/statuses/reply-bob";
+    reply_to_bob.content_html = "reply to bob";
+    reply_to_bob.in_reply_to_uri = bob_post.uri;
+    ASSIGN_OR_FAIL(auto bob_reply, db->insertPost(
+        reply_to_bob, {}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20));
+    std::vector<int64_t> ids;
+    for(const auto& post : tl) ids.push_back(post.id);
+
+    EXPECT_NE(std::find(ids.begin(), ids.end(), alice_post.id), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), alice_reply.id), ids.end());
+    EXPECT_EQ(std::find(ids.begin(), ids.end(), bob_reply.id), ids.end());
+}
+
 // ─── withWriteRetry behavior ───────────────────────────────────────
 
 // Smoke test that the gmock DataSource implements the interface and can

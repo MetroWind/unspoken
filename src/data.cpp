@@ -940,6 +940,49 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
 }
 
 mw::E<std::vector<Post>>
+DataSourceSQLite::homeTimelinePosts(
+    const std::vector<int64_t>& author_ids, int64_t reply_author_id,
+    const Cursor& c, int limit) const
+{
+    if(author_ids.empty()) return std::vector<Post>{};
+
+    std::string in_list;
+    for(size_t i = 0; i < author_ids.size(); ++i)
+        in_list += (i == 0) ? "?" : ",?";
+    std::string where = std::format(
+        "(local_author_id IN ({}) OR in_reply_to_uri IN "
+        "(SELECT uri FROM posts WHERE local_author_id = ?))",
+        in_list);
+    std::string sql = buildTimelineSql(c, where);
+
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
+    int idx = 1;
+    for(int64_t id : author_ids)
+        DO_OR_RETURN(internalBindAt(st, idx++, id));
+    DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
+    if(c.max_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
+    if(c.min_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
+
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string,
+        std::optional<int64_t>, std::optional<int64_t>, std::string,
+        std::optional<std::string>, std::optional<std::string>, int64_t,
+        std::string, std::optional<std::string>, int64_t,
+        std::optional<std::string>>(std::move(st))));
+    std::vector<Post> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        ASSIGN_OR_RETURN(Post p, rowToPost(r));
+        out.push_back(std::move(p));
+    }
+    if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
+    return out;
+}
+
+mw::E<std::vector<Post>>
 DataSourceSQLite::threadFor(std::string_view root_uri) const
 {
     // Posts whose uri == root, or that reply (directly) to it. Recursive

@@ -98,6 +98,12 @@ public:
     virtual mw::E<std::vector<Post>>
     postsForAuthors(const std::vector<int64_t>& local_author_ids,
                     const Cursor& c, int limit) const = 0;
+    // Home timeline posts: authored by viewer/followed local accounts,
+    // plus replies to the viewer's own local posts.
+    virtual mw::E<std::vector<Post>>
+    homeTimelinePosts(const std::vector<int64_t>& local_author_ids,
+                      int64_t reply_author_id, const Cursor& c,
+                      int limit) const = 0;
     // All posts that share a reply chain root (by in_reply_to_uri /
     // uri), for the thread view.
     virtual mw::E<std::vector<Post>>
@@ -256,6 +262,10 @@ public:
     mw::E<std::vector<Post>>
     postsForAuthors(const std::vector<int64_t>& local_author_ids,
                     const Cursor& c, int limit) const override;
+    mw::E<std::vector<Post>>
+    homeTimelinePosts(const std::vector<int64_t>& local_author_ids,
+                      int64_t reply_author_id, const Cursor& c,
+                      int limit) const override;
     mw::E<std::vector<Post>> threadFor(std::string_view root_uri) const override;
 
     mw::E<void> addFollow(const Follow& f) const override;
