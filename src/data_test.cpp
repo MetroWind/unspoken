@@ -505,13 +505,50 @@ TEST(Data, HomeTimelineIncludesRepliesToUsersPosts)
         reply_to_bob, {}, "https://f.test/p/"));
 
     ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
-        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20));
+        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20,
+        "https://f.test/u/alice"));
     std::vector<int64_t> ids;
     for(const auto& post : tl) ids.push_back(post.id);
 
     EXPECT_NE(std::find(ids.begin(), ids.end(), alice_post.id), ids.end());
     EXPECT_NE(std::find(ids.begin(), ids.end(), alice_reply.id), ids.end());
     EXPECT_EQ(std::find(ids.begin(), ids.end(), bob_reply.id), ids.end());
+}
+
+TEST(Data, HomeTimelineIncludesPostsAddressedToUser)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(sampleUser("alice")));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://remote.test/users/carol",
+        "carol",
+        "remote.test",
+        "Carol",
+        "https://remote.test/users/carol/inbox",
+        std::nullopt,
+        "PUB",
+        "https://remote.test/users/carol#main-key",
+        "{}",
+        0,
+    }));
+
+    NewPost addressed;
+    addressed.uri = "https://remote.test/statuses/mention";
+    addressed.remote_author_id = remote.id;
+    addressed.content_html = "hi alice";
+    addressed.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto post, db->insertPost(
+        addressed, {{0, "https://f.test/u/alice", "to"}},
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+        std::vector<int64_t>{alice.id}, alice.id, Cursor{}, 20,
+        "https://f.test/u/alice"));
+
+    std::vector<int64_t> ids;
+    for(const auto& item : tl) ids.push_back(item.id);
+    EXPECT_NE(std::find(ids.begin(), ids.end(), post.id), ids.end());
 }
 
 // ─── withWriteRetry behavior ───────────────────────────────────────

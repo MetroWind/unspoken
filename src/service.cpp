@@ -269,7 +269,7 @@ Service::homeTimeline(const User& viewer, const Cursor& c) const
         if(u.has_value()) author_ids.push_back(u->id);
     }
     return data.homeTimelinePosts(author_ids, viewer.id, c,
-                                  config.posts_per_page);
+                                  config.posts_per_page, viewer_actor);
 }
 
 // ─── Interactions ──────────────────────────────────────────────────────

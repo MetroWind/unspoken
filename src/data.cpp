@@ -74,6 +74,12 @@ mw::E<void> internalBindAt(const mw::SQLiteStatement& st, int i, int64_t v)
     return mw::internal::bindOne(st, i, v);
 }
 
+mw::E<void> internalBindAt(const mw::SQLiteStatement& st, int i,
+                           const std::string& v)
+{
+    return mw::internal::bindOne(st, i, v);
+}
+
 } // namespace
 
 bool isRetryableSqlError(const mw::Error& e)
@@ -942,7 +948,7 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
 mw::E<std::vector<Post>>
 DataSourceSQLite::homeTimelinePosts(
     const std::vector<int64_t>& author_ids, int64_t reply_author_id,
-    const Cursor& c, int limit) const
+    const Cursor& c, int limit, std::string_view viewer_actor) const
 {
     if(author_ids.empty()) return std::vector<Post>{};
 
@@ -951,7 +957,9 @@ DataSourceSQLite::homeTimelinePosts(
         in_list += (i == 0) ? "?" : ",?";
     std::string where = std::format(
         "(local_author_id IN ({}) OR in_reply_to_uri IN "
-        "(SELECT uri FROM posts WHERE local_author_id = ?))",
+        "(SELECT uri FROM posts WHERE local_author_id = ?) OR "
+        "id IN (SELECT post_id FROM post_recipients "
+        "WHERE recipient_uri = ?))",
         in_list);
     std::string sql = buildTimelineSql(c, where);
 
@@ -960,6 +968,7 @@ DataSourceSQLite::homeTimelinePosts(
     for(int64_t id : author_ids)
         DO_OR_RETURN(internalBindAt(st, idx++, id));
     DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
     if(c.max_id.has_value())
         DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
     if(c.min_id.has_value())
