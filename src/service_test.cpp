@@ -178,6 +178,42 @@ TEST(ServiceAuthz, ActorCanViewDirectPostOnlyWhenAddressed)
     EXPECT_FALSE(denied);
 }
 
+TEST(ServiceAuthz, UserCanViewRemoteFollowersPostWhenAddressed)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://remote.test/users/bob",
+        "bob",
+        "remote.test",
+        "Bob",
+        "https://remote.test/users/bob/inbox",
+        std::optional<std::string>("https://remote.test/inbox"),
+        "PUB",
+        "https://remote.test/users/bob#main-key",
+        "{}",
+        0,
+    }));
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    NewPost np;
+    np.remote_author_id = remote.id;
+    np.content_html = "<p>private hello</p>";
+    np.visibility = Visibility::FOLLOWERS;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, svc.actorUri("alice"), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(bool allowed, svc.canViewPost(post, alice));
+    EXPECT_TRUE(allowed);
+    ASSIGN_OR_FAIL(bool denied, svc.canActorViewPost(
+        post, "https://remote.test/users/eve"));
+    EXPECT_FALSE(denied);
+}
+
 // ─── Emoji registry / substitution (§13.4) ─────────────────────────────
 
 TEST(Emoji, ShortcodeValidation)

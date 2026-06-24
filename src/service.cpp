@@ -64,6 +64,37 @@ mw::E<std::vector<std::string>> localMentionActorUris(
     }
     return out;
 }
+
+std::string localActorUri(const Config& config, std::string_view username)
+{
+    return config.url_root + "u/" + std::string(username);
+}
+
+mw::E<bool> canNonPublicActorViewPost(
+    const Config& config, const DataSourceInterface& data, const Post& post,
+    std::string_view actor_uri)
+{
+    if(post.visibility == Visibility::FOLLOWERS
+       && post.local_author_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto author, data.getUserById(
+            *post.local_author_id));
+        if(author.has_value())
+        {
+            ASSIGN_OR_RETURN(auto f, data.getFollow(
+                actor_uri, localActorUri(config, author->username)));
+            if(f.has_value() && f->state == FollowState::ACCEPTED)
+                return true;
+        }
+    }
+
+    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
+    for(const auto& r : recipients)
+    {
+        if(r.recipient_uri == actor_uri) return true;
+    }
+    return false;
+}
 } // namespace
 
 std::string formatTimestamp(int64_t unix_seconds)
@@ -191,23 +222,7 @@ mw::E<bool> Service::canViewPost(const Post& post,
         return true;
     }
     const std::string viewer_actor = actorUri(viewer->username);
-
-    if(post.visibility == Visibility::FOLLOWERS)
-    {
-        if(!post.local_author_id.has_value()) return false;
-        ASSIGN_OR_RETURN(auto author, data.getUserById(*post.local_author_id));
-        if(!author.has_value()) return false;
-        ASSIGN_OR_RETURN(auto f, data.getFollow(viewer_actor,
-                                                actorUri(author->username)));
-        return f.has_value() && f->state == FollowState::ACCEPTED;
-    }
-    // Direct: the viewer must be an addressee.
-    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
-    for(const auto& r : recipients)
-    {
-        if(r.recipient_uri == viewer_actor) return true;
-    }
-    return false;
+    return canNonPublicActorViewPost(config, data, post, viewer_actor);
 }
 
 mw::E<bool> Service::canActorViewPost(const Post& post,
@@ -228,22 +243,7 @@ mw::E<bool> Service::canActorViewPost(const Post& post,
         }
     }
 
-    if(post.visibility == Visibility::FOLLOWERS)
-    {
-        if(!post.local_author_id.has_value()) return false;
-        ASSIGN_OR_RETURN(auto author, data.getUserById(*post.local_author_id));
-        if(!author.has_value()) return false;
-        ASSIGN_OR_RETURN(auto f, data.getFollow(actor_uri,
-                                                actorUri(author->username)));
-        return f.has_value() && f->state == FollowState::ACCEPTED;
-    }
-
-    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
-    for(const auto& r : recipients)
-    {
-        if(r.recipient_uri == actor_uri) return true;
-    }
-    return false;
+    return canNonPublicActorViewPost(config, data, post, actor_uri);
 }
 
 // ─── Timelines ─────────────────────────────────────────────────────────
