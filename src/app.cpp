@@ -972,9 +972,15 @@ mw::E<std::vector<std::string>> remoteMentionActorUris(
     {
         if(mention.domain.empty() || mention.domain == config.public_domain)
             continue;
-        ASSIGN_OR_RETURN(auto actor, unspoken::resolveWebFingerActor(
-            config, data, crypto, http, system_actor, mention.name));
-        if(seen.insert(actor.uri).second) out.push_back(actor.uri);
+        auto actor = unspoken::resolveWebFingerActor(
+            config, data, crypto, http, system_actor, mention.name);
+        if(!actor.has_value())
+        {
+            spdlog::warn("Skipping unresolved remote mention {}: {}",
+                         mention.name, mw::errorMsg(actor.error()));
+            continue;
+        }
+        if(seen.insert(actor->uri).second) out.push_back(actor->uri);
     }
     return out;
 }
