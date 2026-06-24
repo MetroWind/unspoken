@@ -923,20 +923,34 @@ nlohmann::json tagsForPostSource(const Config& config,
         }
         else
         {
+            std::optional<std::string> alias_href;
+            bool alias_ambiguous = false;
             for(const auto& recipient : addressed)
             {
                 auto url_e = mw::URL::fromStr(recipient);
                 if(!url_e.has_value()) continue;
                 const mw::URL& url = *url_e;
-                if(url.host() != mention.domain) continue;
                 std::string path = url.path();
-                if(path.ends_with("/" + mention.username)
-                   || path.ends_with("/@" + mention.username))
+                bool username_match = path.ends_with(
+                    "/" + mention.username)
+                    || path.ends_with("/@" + mention.username);
+                if(!username_match) continue;
+                if(url.host() == mention.domain)
                 {
                     href = recipient;
                     break;
                 }
+                if(alias_href.has_value())
+                {
+                    alias_ambiguous = true;
+                }
+                else
+                {
+                    alias_href = recipient;
+                }
             }
+            if(href.empty() && alias_href.has_value() && !alias_ambiguous)
+                href = *alias_href;
         }
         if(href.empty()) continue;
         if(!addressed.contains(href)) continue;

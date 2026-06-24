@@ -389,6 +389,50 @@ TEST(ActivityStreams, NoteJsonCarriesResolvedRemoteMentionTags)
     EXPECT_EQ(j["tag"][0]["name"], "@mallory@remote.test");
 }
 
+TEST(ActivityStreams, NoteJsonCarriesAliasedRemoteMentionTag)
+{
+    Post p;
+    p.id = 7;
+    p.uri = "https://f.test/p/7";
+    p.local_author_id = 1;
+    p.content_html = "<p>hello</p>";
+    p.content_source = "hello @mw@f.darksair.org";
+    p.created_at = 100;
+
+    std::vector<PostRecipient> recipients = {
+        {7, std::string(AS_PUBLIC), "to"},
+        {7, "https://pleroma.xeno.darksair.org/users/mw", "to"},
+    };
+    auto j = noteJson(testConfig(), p, testUser(), recipients, {});
+
+    ASSERT_TRUE(j.contains("tag"));
+    ASSERT_EQ(j["tag"].size(), 1u);
+    EXPECT_EQ(j["tag"][0]["type"], "Mention");
+    EXPECT_EQ(j["tag"][0]["href"],
+              "https://pleroma.xeno.darksair.org/users/mw");
+    EXPECT_EQ(j["tag"][0]["name"], "@mw@f.darksair.org");
+}
+
+TEST(ActivityStreams, NoteJsonSkipsAmbiguousAliasedMentionTag)
+{
+    Post p;
+    p.id = 7;
+    p.uri = "https://f.test/p/7";
+    p.local_author_id = 1;
+    p.content_html = "<p>hello</p>";
+    p.content_source = "hello @mw@alias.test";
+    p.created_at = 100;
+
+    std::vector<PostRecipient> recipients = {
+        {7, std::string(AS_PUBLIC), "to"},
+        {7, "https://one.test/users/mw", "to"},
+        {7, "https://two.test/users/mw", "to"},
+    };
+    auto j = noteJson(testConfig(), p, testUser(), recipients, {});
+
+    EXPECT_FALSE(j.contains("tag"));
+}
+
 TEST(ActivityStreams, NoteJsonCarriesCustomEmojiTags)
 {
     namespace fs = std::filesystem;
