@@ -1261,14 +1261,35 @@ mw::E<std::vector<unspoken::PostRecipient>> remoteAuthorRecipient(
     return std::vector<unspoken::PostRecipient>{{0, author->uri, "to"}};
 }
 
+mw::E<std::vector<unspoken::PostRecipient>> boostRecipients(
+    const unspoken::DataSourceInterface& data, const unspoken::Post& post,
+    std::string_view actor_uri)
+{
+    std::vector<unspoken::PostRecipient> recipients = {
+        {0, std::string(unspoken::AS_PUBLIC), "to"},
+        {0, std::string(actor_uri) + "/followers", "cc"},
+    };
+    if(post.remote_author_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto author, data.getRemoteActorById(
+            *post.remote_author_id));
+        if(author.has_value()) recipients.push_back({0, author->uri, "cc"});
+    }
+    return recipients;
+}
+
 nlohmann::json interactionActivity(
     std::string_view type, std::string_view activity_id,
     std::string_view actor_uri, std::string_view object_uri,
     const std::vector<unspoken::PostRecipient>& recipients)
 {
     nlohmann::json to = nlohmann::json::array();
+    nlohmann::json cc = nlohmann::json::array();
     for(const auto& r : recipients)
+    {
         if(r.field == "to") to.push_back(r.recipient_uri);
+        if(r.field == "cc") cc.push_back(r.recipient_uri);
+    }
     return {
         {"@context", "https://www.w3.org/ns/activitystreams"},
         {"id", std::string(activity_id)},
@@ -1276,6 +1297,7 @@ nlohmann::json interactionActivity(
         {"actor", std::string(actor_uri)},
         {"object", std::string(object_uri)},
         {"to", to},
+        {"cc", cc},
     };
 }
 
@@ -1285,8 +1307,12 @@ nlohmann::json undoInteractionActivity(
     const std::vector<unspoken::PostRecipient>& recipients)
 {
     nlohmann::json to = nlohmann::json::array();
+    nlohmann::json cc = nlohmann::json::array();
     for(const auto& r : recipients)
+    {
         if(r.field == "to") to.push_back(r.recipient_uri);
+        if(r.field == "cc") cc.push_back(r.recipient_uri);
+    }
     return {
         {"@context", "https://www.w3.org/ns/activitystreams"},
         {"id", std::string(activity_id)},
@@ -1294,6 +1320,7 @@ nlohmann::json undoInteractionActivity(
         {"actor", std::string(actor_uri)},
         {"object", object},
         {"to", to},
+        {"cc", cc},
     };
 }
 } // namespace
@@ -1404,8 +1431,8 @@ void App::handleBoost(const Request& req, Response& res) const
             if(boost.actor_uri == actor_uri) { existing = boost; break; }
     }
     if(respondIfError(svc.setBoost(*viewer, *post, !undo), res)) return;
-    ASSIGN_OR_RESPOND_ERROR(auto recipients, remoteAuthorRecipient(*ds, *post),
-                            res);
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, boostRecipients(
+        *ds, *post, actor_uri), res);
     if(!recipients.empty())
     {
         int64_t now = mw::timeToSeconds(mw::Clock::now());
