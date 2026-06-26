@@ -85,6 +85,8 @@ TEST(Data, UserRoundTrip)
     ASSERT_TRUE(updated.has_value());
     EXPECT_EQ(updated->display_name, "Alice New");
     EXPECT_EQ(updated->bio, "new bio");
+    ASSIGN_OR_FAIL(auto user_count, db->countUsers());
+    EXPECT_EQ(user_count, 1);
 }
 
 TEST(Data, UsernameIsUnique)
@@ -107,6 +109,8 @@ TEST(Data, LocalPostGetsUriFromId)
     ASSERT_TRUE(by_uri.has_value());
     EXPECT_EQ(by_uri->id, p.id);
     EXPECT_EQ(by_uri->content_html, "hello world");
+    ASSIGN_OR_FAIL(auto local_count, db->countLocalPosts());
+    EXPECT_EQ(local_count, 1);
 }
 
 TEST(Data, RemotePostKeepsItsUri)
@@ -118,6 +122,8 @@ TEST(Data, RemotePostKeepsItsUri)
     np.visibility = Visibility::PUBLIC;
     ASSIGN_OR_FAIL(Post p, db->insertPost(np, {}, "https://f.test/p/"));
     EXPECT_EQ(p.uri, "https://remote.test/objects/1");
+    ASSIGN_OR_FAIL(auto local_count, db->countLocalPosts());
+    EXPECT_EQ(local_count, 0);
 }
 
 TEST(Data, PostRecipientsStored)
@@ -147,6 +153,44 @@ TEST(Data, DeletePostRemovesItAndRecipients)
     EXPECT_FALSE(gone.has_value());
     ASSIGN_OR_FAIL(auto recips, db->getPostRecipients(p.id));
     EXPECT_THAT(recips, IsEmpty());
+}
+
+TEST(Data, ThreadForReturnsRecursiveReplyChain)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User u, db->createUser(sampleUser("alice")));
+    Post root = insertLocalPost(*db, u.id, "root");
+
+    NewPost reply;
+    reply.local_author_id = u.id;
+    reply.content_html = "reply";
+    reply.content_source = "reply";
+    reply.visibility = Visibility::PUBLIC;
+    reply.in_reply_to_uri = root.uri;
+    ASSIGN_OR_FAIL(Post child, db->insertPost(
+        reply, {}, "https://f.test/p/"));
+
+    NewPost grandchild = reply;
+    grandchild.content_html = "grandchild";
+    grandchild.content_source = "grandchild";
+    grandchild.in_reply_to_uri = child.uri;
+    ASSIGN_OR_FAIL(Post nested, db->insertPost(
+        grandchild, {}, "https://f.test/p/"));
+
+    NewPost sibling = reply;
+    sibling.content_html = "sibling";
+    sibling.content_source = "sibling";
+    sibling.in_reply_to_uri = root.uri;
+    ASSIGN_OR_FAIL(Post other, db->insertPost(
+        sibling, {}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto thread, db->threadFor(nested.uri));
+    std::vector<int64_t> ids;
+    for(const auto& post : thread) ids.push_back(post.id);
+    EXPECT_NE(std::find(ids.begin(), ids.end(), root.id), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), child.id), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), nested.id), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), other.id), ids.end());
 }
 
 TEST(Data, RemoteActorUpsert)
@@ -273,7 +317,11 @@ TEST(Data, LikesBoostsReactions)
     EXPECT_THAT(likes2, IsEmpty());
 
     EXPECT_TRUE(mw::isExpected(db->addBoost(Boost{0, actor, post, {}, 0})));
+    ASSIGN_OR_FAIL(auto boosts, db->boostsForPost(post));
+    EXPECT_THAT(boosts, SizeIs(1));
     EXPECT_TRUE(mw::isExpected(db->removeBoost(actor, post)));
+    ASSIGN_OR_FAIL(auto boosts2, db->boostsForPost(post));
+    EXPECT_THAT(boosts2, IsEmpty());
 
     EXPECT_TRUE(mw::isExpected(
         db->addReaction(Reaction{0, actor, post, ":blobcat:",
@@ -606,6 +654,59 @@ TEST(Data, HomeTimelineIncludesFollowedRemoteAuthors)
     std::vector<int64_t> ids;
     for(const auto& item : tl) ids.push_back(item.id);
     EXPECT_NE(std::find(ids.begin(), ids.end(), included.id), ids.end());
+    EXPECT_EQ(std::find(ids.begin(), ids.end(), excluded.id), ids.end());
+}
+
+TEST(Data, HomeTimelineHidesUnaddressedRemotePrivateFollowedPosts)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(sampleUser("alice")));
+    ASSIGN_OR_FAIL(auto followed, db->upsertRemoteActor(RemoteActor{
+        0,
+        "https://remote.test/users/carol",
+        "carol",
+        "remote.test",
+        "Carol",
+        "https://remote.test/users/carol/inbox",
+        std::nullopt,
+        "PUB",
+        "https://remote.test/users/carol#main-key",
+        "{}",
+        0,
+    }));
+
+    NewPost public_post;
+    public_post.uri = "https://remote.test/statuses/public";
+    public_post.remote_author_id = followed.id;
+    public_post.content_html = "public";
+    public_post.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto included, db->insertPost(
+        public_post, {{0, std::string(AS_PUBLIC), "to"}},
+        "https://f.test/p/"));
+
+    NewPost private_post = public_post;
+    private_post.uri = "https://remote.test/statuses/private";
+    private_post.content_html = "private";
+    private_post.visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(auto excluded, db->insertPost(
+        private_post, {{0, "https://remote.test/users/other", "to"}},
+        "https://f.test/p/"));
+
+    NewPost addressed_post = private_post;
+    addressed_post.uri = "https://remote.test/statuses/addressed";
+    addressed_post.content_html = "addressed";
+    ASSIGN_OR_FAIL(auto addressed, db->insertPost(
+        addressed_post, {{0, "https://f.test/u/alice", "to"}},
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+        std::vector<int64_t>{alice.id}, std::vector<int64_t>{followed.id},
+        alice.id, Cursor{}, 20, "https://f.test/u/alice"));
+
+    std::vector<int64_t> ids;
+    for(const auto& item : tl) ids.push_back(item.id);
+    EXPECT_NE(std::find(ids.begin(), ids.end(), included.id), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), addressed.id), ids.end());
     EXPECT_EQ(std::find(ids.begin(), ids.end(), excluded.id), ids.end());
 }
 

@@ -1249,6 +1249,53 @@ mw::E<void> enqueueUndoFollowActivity(
     (void)jobs;
     return {};
 }
+
+mw::E<std::vector<unspoken::PostRecipient>> remoteAuthorRecipient(
+    const unspoken::DataSourceInterface& data, const unspoken::Post& post)
+{
+    if(!post.remote_author_id.has_value())
+        return std::vector<unspoken::PostRecipient>{};
+    ASSIGN_OR_RETURN(auto author, data.getRemoteActorById(
+        *post.remote_author_id));
+    if(!author.has_value()) return std::vector<unspoken::PostRecipient>{};
+    return std::vector<unspoken::PostRecipient>{{0, author->uri, "to"}};
+}
+
+nlohmann::json interactionActivity(
+    std::string_view type, std::string_view activity_id,
+    std::string_view actor_uri, std::string_view object_uri,
+    const std::vector<unspoken::PostRecipient>& recipients)
+{
+    nlohmann::json to = nlohmann::json::array();
+    for(const auto& r : recipients)
+        if(r.field == "to") to.push_back(r.recipient_uri);
+    return {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", std::string(type)},
+        {"actor", std::string(actor_uri)},
+        {"object", std::string(object_uri)},
+        {"to", to},
+    };
+}
+
+nlohmann::json undoInteractionActivity(
+    std::string_view activity_id, std::string_view actor_uri,
+    const nlohmann::json& object,
+    const std::vector<unspoken::PostRecipient>& recipients)
+{
+    nlohmann::json to = nlohmann::json::array();
+    for(const auto& r : recipients)
+        if(r.field == "to") to.push_back(r.recipient_uri);
+    return {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", std::string(activity_id)},
+        {"type", "Undo"},
+        {"actor", std::string(actor_uri)},
+        {"object", object},
+        {"to", to},
+    };
+}
 } // namespace
 
 void App::handleLike(const Request& req, Response& res) const
@@ -1269,7 +1316,62 @@ void App::handleLike(const Request& req, Response& res) const
                             res.set_content("No such post", "text/plain");
                             return; }
     if(respondIfCannotView(svc, *post, viewer, res)) return;
-    if(respondIfError(svc.setLike(*viewer, *post, !isUndo(req)), res)) return;
+    const bool undo = isUndo(req);
+    const std::string actor_uri = svc.actorUri(viewer->username);
+    std::optional<unspoken::Like> existing;
+    if(undo)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto likes, ds->likesForPost(post->uri), res);
+        for(const auto& like : likes)
+            if(like.actor_uri == actor_uri) { existing = like; break; }
+    }
+    if(respondIfError(svc.setLike(*viewer, *post, !undo), res)) return;
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, remoteAuthorRecipient(*ds, *post),
+                            res);
+    if(!recipients.empty())
+    {
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        nlohmann::json activity;
+        if(undo)
+        {
+            if(!existing.has_value())
+            {
+                res.set_redirect(redirectTarget(req));
+                return;
+            }
+            nlohmann::json object = {
+                {"type", "Like"},
+                {"actor", actor_uri},
+                {"object", post->uri},
+            };
+            if(existing->activity_uri.has_value())
+                object["id"] = *existing->activity_uri;
+            activity = undoInteractionActivity(
+                std::format("{}activities/undo/like/{}/{}", config.url_root,
+                            existing->id, now),
+                actor_uri, object, recipients);
+        }
+        else
+        {
+            ASSIGN_OR_RESPOND_ERROR(auto likes, ds->likesForPost(post->uri),
+                                    res);
+            std::string activity_id;
+            for(const auto& like : likes)
+            {
+                if(like.actor_uri == actor_uri)
+                    activity_id = like.activity_uri.value_or("");
+            }
+            if(activity_id.empty())
+                activity_id = std::format("{}activities/like/{}/{}",
+                                          config.url_root, viewer->id,
+                                          post->id);
+            activity = interactionActivity("Like", activity_id, actor_uri,
+                                           post->uri, recipients);
+        }
+        ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
+            config, *ds, actor_uri, activity, recipients, now), res);
+        (void)jobs;
+    }
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1291,7 +1393,63 @@ void App::handleBoost(const Request& req, Response& res) const
                             res.set_content("No such post", "text/plain");
                             return; }
     if(respondIfCannotView(svc, *post, viewer, res)) return;
-    if(respondIfError(svc.setBoost(*viewer, *post, !isUndo(req)), res)) return;
+    const bool undo = isUndo(req);
+    const std::string actor_uri = svc.actorUri(viewer->username);
+    std::optional<unspoken::Boost> existing;
+    if(undo)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto boosts, ds->boostsForPost(post->uri),
+                                res);
+        for(const auto& boost : boosts)
+            if(boost.actor_uri == actor_uri) { existing = boost; break; }
+    }
+    if(respondIfError(svc.setBoost(*viewer, *post, !undo), res)) return;
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, remoteAuthorRecipient(*ds, *post),
+                            res);
+    if(!recipients.empty())
+    {
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        nlohmann::json activity;
+        if(undo)
+        {
+            if(!existing.has_value())
+            {
+                res.set_redirect(redirectTarget(req));
+                return;
+            }
+            nlohmann::json object = {
+                {"type", "Announce"},
+                {"actor", actor_uri},
+                {"object", post->uri},
+            };
+            if(existing->activity_uri.has_value())
+                object["id"] = *existing->activity_uri;
+            activity = undoInteractionActivity(
+                std::format("{}activities/undo/boost/{}/{}", config.url_root,
+                            existing->id, now),
+                actor_uri, object, recipients);
+        }
+        else
+        {
+            ASSIGN_OR_RESPOND_ERROR(auto boosts, ds->boostsForPost(post->uri),
+                                    res);
+            std::string activity_id;
+            for(const auto& boost : boosts)
+            {
+                if(boost.actor_uri == actor_uri)
+                    activity_id = boost.activity_uri.value_or("");
+            }
+            if(activity_id.empty())
+                activity_id = std::format("{}activities/boost/{}/{}",
+                                          config.url_root,
+                                          viewer->id, post->id);
+            activity = interactionActivity("Announce", activity_id,
+                                           actor_uri, post->uri, recipients);
+        }
+        ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
+            config, *ds, actor_uri, activity, recipients, now), res);
+        (void)jobs;
+    }
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1318,31 +1476,70 @@ void App::handleReact(const Request& req, Response& res) const
                                                       "text/plain");
                     return; }
     bool undo = isUndo(req);
+    const std::string actor_uri = svc.actorUri(viewer->username);
+    std::optional<unspoken::Reaction> existing;
+    if(undo)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto reactions,
+                                ds->reactionsForPost(post->uri), res);
+        for(const auto& reaction : reactions)
+        {
+            if(reaction.actor_uri == actor_uri && reaction.emoji == e)
+            {
+                existing = reaction;
+                break;
+            }
+        }
+    }
     if(respondIfError(svc.setReaction(*viewer, *post, e, !undo), res))
         return;
-    if(!undo && post->remote_author_id.has_value())
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, remoteAuthorRecipient(*ds, *post),
+                            res);
+    if(!recipients.empty())
     {
-        ASSIGN_OR_RESPOND_ERROR(auto remote_author,
-                                ds->getRemoteActorById(
-                                    *post->remote_author_id), res);
-        if(remote_author.has_value())
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        nlohmann::json activity;
+        if(undo)
         {
-            int64_t now = mw::timeToSeconds(mw::Clock::now());
-            std::string actor_uri = svc.actorUri(viewer->username);
-            std::vector<unspoken::PostRecipient> recipients = {
-                {0, remote_author->uri, "to"},
+            if(!existing.has_value())
+            {
+                res.set_redirect(redirectTarget(req));
+                return;
+            }
+            nlohmann::json object = {
+                {"type", "EmojiReact"},
+                {"actor", actor_uri},
+                {"object", post->uri},
+                {"content", e},
             };
-            nlohmann::json activity = unspoken::emojiReactActivityJson(
-                config,
-                std::format("{}activities/react/{}/{}/{}",
-                            config.url_root, viewer->id, post->id, now),
-                actor_uri, post->uri, e, recipients, emoji);
-            ASSIGN_OR_RESPOND_ERROR(auto jobs,
-                                    unspoken::enqueueOutboundDelivery(
-                                        config, *ds, actor_uri, activity,
-                                        recipients, now), res);
-            (void)jobs;
+            if(existing->activity_uri.has_value())
+                object["id"] = *existing->activity_uri;
+            activity = undoInteractionActivity(
+                std::format("{}activities/undo/react/{}/{}", config.url_root,
+                            existing->id, now),
+                actor_uri, object, recipients);
         }
+        else
+        {
+            ASSIGN_OR_RESPOND_ERROR(auto reactions,
+                                    ds->reactionsForPost(post->uri), res);
+            std::string activity_id;
+            for(const auto& reaction : reactions)
+            {
+                if(reaction.actor_uri == actor_uri && reaction.emoji == e)
+                    activity_id = reaction.activity_uri.value_or("");
+            }
+            if(activity_id.empty())
+                activity_id = std::format("{}activities/react/{}/{}/{}",
+                                          config.url_root, viewer->id,
+                                          post->id, now);
+            activity = unspoken::emojiReactActivityJson(
+                config, activity_id, actor_uri, post->uri, e, recipients,
+                emoji);
+        }
+        ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
+            config, *ds, actor_uri, activity, recipients, now), res);
+        (void)jobs;
     }
     res.set_redirect(redirectTarget(req));
 }
@@ -1489,18 +1686,12 @@ void App::handleProfilePost(const Request& req, Response& res) const
     if(updated.has_value())
     {
         int64_t now = mw::timeToSeconds(mw::Clock::now());
-        std::string actor_uri = config.url_root + "u/" + updated->username;
-        std::vector<unspoken::PostRecipient> recipients = {
-            {0, actor_uri + "/followers", "to"},
-        };
-        nlohmann::json activity = unspoken::actorUpdateActivityJson(
-            config,
-            std::format("{}activities/update/profile/{}/{}",
-                        config.url_root, updated->id, now),
-            *updated, unspoken::renderPostContent(updated->bio, emoji),
-            recipients);
-        ASSIGN_OR_RESPOND_ERROR(auto jobs, unspoken::enqueueOutboundDelivery(
-            config, *ds, actor_uri, activity, recipients, now), res);
+        ASSIGN_OR_RESPOND_ERROR(auto jobs,
+                                unspoken::enqueueActorUpdateDelivery(
+                                    config, *ds, *updated,
+                                    unspoken::renderPostContent(
+                                        updated->bio, emoji),
+                                    now), res);
         (void)jobs;
     }
     res.set_redirect(urlFor("u/" + viewer->username));
@@ -1735,7 +1926,10 @@ void App::handleNodeInfoDiscovery([[maybe_unused]] const Request& req,
 void App::handleNodeInfo([[maybe_unused]] const Request& req,
                          Response& res) const
 {
-    setJson(res, unspoken::nodeInfoJson(config), "application/json");
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto json, unspoken::nodeInfoJson(config, *ds),
+                            res);
+    setJson(res, json, "application/json");
 }
 
 void App::handleInbox(const Request& req, Response& res) const

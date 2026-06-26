@@ -36,6 +36,7 @@ public:
                 (const, override));
     MOCK_METHOD(mw::E<std::vector<User>>, searchUsers,
                 (std::string_view, int), (const, override));
+    MOCK_METHOD(mw::E<int64_t>, countUsers, (), (const, override));
 
     MOCK_METHOD(mw::E<std::optional<SystemActor>>, getSystemActor, (),
                 (const, override));
@@ -58,6 +59,9 @@ public:
     MOCK_METHOD(mw::E<std::optional<Post>>, getPostByUri, (std::string_view),
                 (const, override));
     MOCK_METHOD(mw::E<void>, deletePost, (int64_t), (const, override));
+    MOCK_METHOD(mw::E<void>, updatePost,
+                (int64_t, const NewPost&, (const std::vector<PostRecipient>&)),
+                (const, override));
     MOCK_METHOD(mw::E<std::vector<PostRecipient>>, getPostRecipients,
                 (int64_t), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, timelinePublic,
@@ -74,6 +78,7 @@ public:
                 (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, threadFor, (std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<int64_t>, countLocalPosts, (), (const, override));
 
     MOCK_METHOD(mw::E<void>, addFollow, (const Follow&), (const, override));
     MOCK_METHOD(mw::E<std::optional<Follow>>, getFollow,
@@ -101,6 +106,8 @@ public:
     MOCK_METHOD(mw::E<void>, addBoost, (const Boost&), (const, override));
     MOCK_METHOD(mw::E<void>, removeBoost,
                 (std::string_view, std::string_view), (const, override));
+    MOCK_METHOD(mw::E<std::vector<Boost>>, boostsForPost,
+                (std::string_view), (const, override));
 
     MOCK_METHOD(mw::E<void>, addReaction, (const Reaction&), (const, override));
     MOCK_METHOD(mw::E<void>, removeReaction,

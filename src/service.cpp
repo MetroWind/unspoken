@@ -1,6 +1,8 @@
 #include "service.hpp"
 
 #include <ctime>
+#include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -292,6 +294,8 @@ mw::E<void> Service::setLike(const User& viewer, const Post& p, bool on) const
         Like l;
         l.actor_uri = actor;
         l.post_uri = p.uri;
+        l.activity_uri = std::format("{}activities/like/{}/{}",
+                                     config.url_root, viewer.id, p.id);
         l.created_at = nowSeconds();
         return data.addLike(l);
     }
@@ -313,6 +317,8 @@ mw::E<void> Service::setBoost(const User& viewer, const Post& p, bool on) const
         Boost b;
         b.actor_uri = actor;
         b.post_uri = p.uri;
+        b.activity_uri = std::format("{}activities/boost/{}/{}",
+                                     config.url_root, viewer.id, p.id);
         b.created_at = nowSeconds();
         return data.addBoost(b);
     }
@@ -329,6 +335,9 @@ mw::E<void> Service::setReaction(const User& viewer, const Post& p,
         r.actor_uri = actor;
         r.post_uri = p.uri;
         r.emoji = std::string(emoji_str);
+        r.activity_uri = std::format("{}activities/react/{}/{}/{:x}",
+                                     config.url_root, viewer.id, p.id,
+                                     std::hash<std::string>{}(r.emoji));
         r.created_at = nowSeconds();
         return data.addReaction(r);
     }
@@ -488,6 +497,13 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
     for(const auto& l : likes)
         if(l.actor_uri == viewer_actor) { liked = true; break; }
     j["liked"] = liked;
+
+    ASSIGN_OR_RETURN(auto boosts, data.boostsForPost(p.uri));
+    j["boost_count"] = boosts.size();
+    bool boosted = false;
+    for(const auto& b : boosts)
+        if(b.actor_uri == viewer_actor) { boosted = true; break; }
+    j["boosted"] = boosted;
 
     ASSIGN_OR_RETURN(auto reactions, data.reactionsForPost(p.uri));
     // Group reactions by emoji, count, and whether the viewer reacted.

@@ -55,6 +55,7 @@ public:
     // search is Phase 6.
     virtual mw::E<std::vector<User>>
     searchUsers(std::string_view query, int limit) const = 0;
+    virtual mw::E<int64_t> countUsers() const = 0;
 
     // ── System actor ─────────────────────────────────────────────
     virtual mw::E<std::optional<SystemActor>> getSystemActor() const = 0;
@@ -83,6 +84,9 @@ public:
     virtual mw::E<std::optional<Post>>
     getPostByUri(std::string_view uri) const = 0;
     virtual mw::E<void> deletePost(int64_t id) const = 0;
+    virtual mw::E<void>
+    updatePost(int64_t id, const NewPost& np,
+               const std::vector<PostRecipient>& recipients) const = 0;
     virtual mw::E<std::vector<PostRecipient>>
     getPostRecipients(int64_t post_id) const = 0;
     // Public global timeline: only 'public' posts, newest first, one
@@ -110,6 +114,7 @@ public:
     // uri), for the thread view.
     virtual mw::E<std::vector<Post>>
     threadFor(std::string_view root_uri) const = 0;
+    virtual mw::E<int64_t> countLocalPosts() const = 0;
 
     // ── Follows ─────────────────────────────────────────────────
     virtual mw::E<void> addFollow(const Follow& f) const = 0;
@@ -145,6 +150,8 @@ public:
     virtual mw::E<void>
     removeBoost(std::string_view actor_uri,
                 std::string_view post_uri) const = 0;
+    virtual mw::E<std::vector<Boost>>
+    boostsForPost(std::string_view post_uri) const = 0;
 
     virtual mw::E<void> addReaction(const Reaction& r) const = 0;
     virtual mw::E<void>
@@ -238,6 +245,7 @@ public:
                                   std::string_view bio) const override;
     mw::E<std::vector<User>>
     searchUsers(std::string_view query, int limit) const override;
+    mw::E<int64_t> countUsers() const override;
     mw::E<std::optional<SystemActor>> getSystemActor() const override;
     mw::E<void> setSystemActor(std::string_view private_key_pem,
                                std::string_view public_key_pem) const override;
@@ -255,6 +263,9 @@ public:
     mw::E<std::optional<Post>>
     getPostByUri(std::string_view uri) const override;
     mw::E<void> deletePost(int64_t id) const override;
+    mw::E<void>
+    updatePost(int64_t id, const NewPost& np,
+               const std::vector<PostRecipient>& recipients) const override;
     mw::E<std::vector<PostRecipient>>
     getPostRecipients(int64_t post_id) const override;
     mw::E<std::vector<Post>>
@@ -270,6 +281,7 @@ public:
                       int64_t reply_author_id, const Cursor& c, int limit,
                       std::string_view viewer_actor) const override;
     mw::E<std::vector<Post>> threadFor(std::string_view root_uri) const override;
+    mw::E<int64_t> countLocalPosts() const override;
 
     mw::E<void> addFollow(const Follow& f) const override;
     mw::E<std::optional<Follow>>
@@ -300,6 +312,8 @@ public:
     mw::E<void> addBoost(const Boost& b) const override;
     mw::E<void> removeBoost(std::string_view actor_uri,
                             std::string_view post_uri) const override;
+    mw::E<std::vector<Boost>>
+    boostsForPost(std::string_view post_uri) const override;
 
     mw::E<void> addReaction(const Reaction& r) const override;
     mw::E<void> removeReaction(std::string_view actor_uri,

@@ -488,6 +488,14 @@ DataSourceSQLite::searchUsers(std::string_view query, int limit) const
     return out;
 }
 
+mw::E<int64_t> DataSourceSQLite::countUsers() const
+{
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t>(
+        "SELECT COUNT(*) FROM users;")));
+    if(rows.empty()) return int64_t{0};
+    return std::get<0>(rows[0]);
+}
+
 // ─── System actor ────────────────────────────────────────────────────
 
 mw::E<std::optional<SystemActor>> DataSourceSQLite::getSystemActor() const
@@ -794,6 +802,76 @@ mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
     return withWriteRetry(txn);
 }
 
+mw::E<void>
+DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
+                             const std::vector<PostRecipient>& recipients)
+    const
+{
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        {
+            auto st_e = db->statementFromStr(
+                "UPDATE posts SET uri = ?, local_author_id = ?, "
+                "remote_author_id = ?, content_html = ?, "
+                "content_source = ?, summary = ?, sensitive = ?, "
+                "visibility = ?, in_reply_to_uri = ?, published = ? "
+                "WHERE id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto& st = *st_e;
+            auto b = st.bind<std::string, std::optional<int64_t>,
+                std::optional<int64_t>, std::string,
+                std::optional<std::string>, std::optional<std::string>,
+                int64_t, std::string, std::optional<std::string>,
+                std::optional<std::string>, int64_t>(
+                np.uri.value_or(""), np.local_author_id,
+                np.remote_author_id, np.content_html, np.content_source,
+                np.summary, np.sensitive ? 1 : 0,
+                std::string(visibilityToStr(np.visibility)),
+                np.in_reply_to_uri, np.published, id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(st));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        {
+            auto st_e = db->statementFromStr(
+                "DELETE FROM post_recipients WHERE post_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        {
+            auto st_e = db->statementFromStr(
+                "DELETE FROM attachments WHERE post_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        for(const auto& rec : recipients)
+        {
+            auto st_e = db->statementFromStr(
+                "INSERT INTO post_recipients (post_id, recipient_uri, field) "
+                "VALUES (?, ?, ?);");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto& st = *st_e;
+            auto b = st.bind<int64_t, std::string, std::string>(
+                id, rec.recipient_uri, rec.field);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(st));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        return db->execute("COMMIT;");
+    };
+    return withWriteRetry(txn);
+}
+
 mw::E<std::vector<PostRecipient>>
 DataSourceSQLite::getPostRecipients(int64_t post_id) const
 {
@@ -961,32 +1039,44 @@ DataSourceSQLite::homeTimelinePosts(
     for(size_t i = 0; i < remote_author_ids.size(); ++i)
         remote_in_list += (i == 0) ? "?" : ",?";
 
+    std::string addressed_where =
+        "id IN (SELECT post_id FROM post_recipients WHERE recipient_uri = ?)";
     std::string author_where;
     if(!author_ids.empty())
     {
-        author_where = std::format("local_author_id IN ({})", in_list);
+        author_where = std::format(
+            "(local_author_id IN ({}) AND "
+            "(local_author_id = ? OR visibility != 'direct' OR {}))",
+            in_list, addressed_where);
     }
     if(!remote_author_ids.empty())
     {
         if(!author_where.empty()) author_where += " OR ";
         author_where += std::format(
-            "remote_author_id IN ({})", remote_in_list);
+            "(remote_author_id IN ({}) AND "
+            "(visibility IN ('public', 'unlisted') OR {}))",
+            remote_in_list, addressed_where);
     }
 
     std::string where = std::format(
         "({} OR in_reply_to_uri IN "
-        "(SELECT uri FROM posts WHERE local_author_id = ?) OR "
-        "id IN (SELECT post_id FROM post_recipients "
-        "WHERE recipient_uri = ?))",
-        author_where);
+        "(SELECT uri FROM posts WHERE local_author_id = ?) OR {})",
+        author_where, addressed_where);
     std::string sql = buildTimelineSql(c, where);
 
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
     for(int64_t id : author_ids)
         DO_OR_RETURN(internalBindAt(st, idx++, id));
+    if(!author_ids.empty())
+    {
+        DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
+        DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
+    }
     for(int64_t id : remote_author_ids)
         DO_OR_RETURN(internalBindAt(st, idx++, id));
+    if(!remote_author_ids.empty())
+        DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
     DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
     DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
     if(c.max_id.has_value())
@@ -1014,14 +1104,19 @@ DataSourceSQLite::homeTimelinePosts(
 mw::E<std::vector<Post>>
 DataSourceSQLite::threadFor(std::string_view root_uri) const
 {
-    // Posts whose uri == root, or that reply (directly) to it. Recursive
-    // ancestor/descendant backfill across servers is Phase 6; this is the
-    // local slice used by the thread view.
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(std::format(
-        "SELECT {} FROM posts WHERE uri = ? OR in_reply_to_uri = ? "
+        "WITH RECURSIVE thread(uri) AS ("
+        "  VALUES (?)"
+        "  UNION "
+        "  SELECT p.in_reply_to_uri FROM posts p JOIN thread t "
+        "    ON p.uri = t.uri WHERE p.in_reply_to_uri IS NOT NULL"
+        "  UNION "
+        "  SELECT p.uri FROM posts p JOIN thread t "
+        "    ON p.in_reply_to_uri = t.uri"
+        ") "
+        "SELECT {} FROM posts WHERE uri IN (SELECT uri FROM thread) "
         "ORDER BY created_at ASC, id ASC;", POST_COLS)));
-    DO_OR_RETURN((st.bind<std::string, std::string>(
-        std::string(root_uri), std::string(root_uri))));
+    DO_OR_RETURN(st.bind<std::string>(std::string(root_uri)));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
@@ -1035,6 +1130,14 @@ DataSourceSQLite::threadFor(std::string_view root_uri) const
         out.push_back(std::move(p));
     }
     return out;
+}
+
+mw::E<int64_t> DataSourceSQLite::countLocalPosts() const
+{
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t>(
+        "SELECT COUNT(*) FROM posts WHERE local_author_id IS NOT NULL;")));
+    if(rows.empty()) return int64_t{0};
+    return std::get<0>(rows[0]);
 }
 
 // ─── Follows ───────────────────────────────────────────────────────
@@ -1291,6 +1394,30 @@ mw::E<void> DataSourceSQLite::removeBoost(std::string_view actor_uri,
         return db->execute(std::move(st));
     };
     return withWriteRetry(txn);
+}
+
+mw::E<std::vector<Boost>>
+DataSourceSQLite::boostsForPost(std::string_view post_uri) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT id, actor_uri, post_uri, activity_uri, created_at "
+        "FROM boosts WHERE post_uri = ? ORDER BY created_at ASC;"));
+    DO_OR_RETURN(st.bind<std::string>(std::string(post_uri)));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
+        std::optional<std::string>, int64_t>(std::move(st))));
+    std::vector<Boost> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        Boost b;
+        b.id = std::get<0>(r);
+        b.actor_uri = std::get<1>(r);
+        b.post_uri = std::get<2>(r);
+        b.activity_uri = std::get<3>(r);
+        b.created_at = std::get<4>(r);
+        out.push_back(std::move(b));
+    }
+    return out;
 }
 
 mw::E<void> DataSourceSQLite::addReaction(const Reaction& r) const

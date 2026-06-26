@@ -79,6 +79,10 @@ nlohmann::json webFingerJson(const Config& config, const User& user);
 std::string hostMetaXml(const Config& config);
 nlohmann::json nodeInfoDiscoveryJson(const Config& config);
 nlohmann::json nodeInfoJson(const Config& config);
+nlohmann::json nodeInfoJson(const Config& config, int64_t user_count,
+                            int64_t local_post_count);
+mw::E<nlohmann::json> nodeInfoJson(const Config& config,
+                                   const DataSourceInterface& data);
 
 bool isAllowedOutboundAddress(const mw::SockAddr& addr);
 mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http);
@@ -128,6 +132,9 @@ mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
     const Config& config, const DataSourceInterface& data,
     std::string_view signer_actor_uri, const nlohmann::json& activity,
     const std::vector<PostRecipient>& recipients, int64_t now_seconds);
+mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
+    const Config& config, const DataSourceInterface& data, const User& user,
+    std::string_view summary_html, int64_t now_seconds);
 mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
                                      std::string_view root_uri,
                                      int64_t now_seconds);

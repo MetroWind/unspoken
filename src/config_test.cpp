@@ -19,6 +19,7 @@ Config validBase()
     c.oidc.client_id = "unspoken";
     c.oidc.client_secret = "secret";
     c.database_path = ":memory:";
+    c.attachment_dir = std::filesystem::temp_directory_path().string();
     return c;
 }
 
@@ -59,6 +60,7 @@ url_root: "https://f.mws.rocks/"
 listen_address: "127.0.0.1"
 listen_port: 8080
 database_path: ":memory:"
+attachment_dir: "/tmp"
 oidc:
   issuer: "https://kc.example/realms/main"
   client_id: "unspoken"
@@ -83,6 +85,7 @@ TEST(Config, FromYamlReadsVerbose)
 url_root: "https://f.mws.rocks/"
 verbose: true
 database_path: ":memory:"
+attachment_dir: "/tmp"
 oidc:
   issuer: "https://kc.example/realms/main"
   client_id: "unspoken"
@@ -130,5 +133,14 @@ TEST(Config, RejectsNonPositiveTuning)
 {
     Config c = validBase();
     c.posts_per_page = 0;
+    EXPECT_FALSE(c.validateAndFinalize().has_value());
+}
+
+TEST(Config, RejectsMissingAttachmentDir)
+{
+    Config c = validBase();
+    c.attachment_dir =
+        (std::filesystem::temp_directory_path()
+         / "unspoken_missing_attachment_dir").string();
     EXPECT_FALSE(c.validateAndFinalize().has_value());
 }

@@ -94,7 +94,8 @@ IncomingHttpRequest signedIncomingRequest(
     std::string_view key_id, std::string_view algorithm,
     std::string_view method, std::string_view target,
     std::string_view body, int64_t now, bool include_digest,
-    bool sign_digest, std::string_view signed_headers_override = "")
+    bool sign_digest, std::string_view signed_headers_override = "",
+    std::string_view digest_override = "")
 {
     IncomingHttpRequest req;
     req.method = std::string(method);
@@ -110,7 +111,8 @@ IncomingHttpRequest signedIncomingRequest(
         signed_headers = std::string(signed_headers_override);
     if(include_digest)
     {
-        req.headers["Digest"] = sha256DigestHeader(body);
+        req.headers["Digest"] = digest_override.empty()
+            ? sha256DigestHeader(body) : std::string(digest_override);
     }
 
     std::vector<std::string> lines;
@@ -552,6 +554,32 @@ TEST(Discovery, NodeInfoDiscoveryPointsToUrlRoot)
     EXPECT_EQ(j["links"][0]["href"], "https://f.test/nodeinfo/2.1");
 }
 
+TEST(Discovery, NodeInfoReportsUsageCounts)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(testNewUser("alice")));
+
+    NewPost local_np;
+    local_np.local_author_id = alice.id;
+    local_np.content_html = "local";
+    local_np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto local_post, db->insertPost(
+        local_np, {}, "https://f.test/p/"));
+    (void)local_post;
+
+    NewPost remote_np;
+    remote_np.uri = "https://remote.test/o/1";
+    remote_np.content_html = "remote";
+    remote_np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto remote_post, db->insertPost(
+        remote_np, {}, "https://f.test/p/"));
+    (void)remote_post;
+
+    ASSIGN_OR_FAIL(auto j, nodeInfoJson(testConfig(), *db));
+    EXPECT_EQ(j["usage"]["users"]["total"], 1);
+    EXPECT_EQ(j["usage"]["localPosts"], 1);
+}
+
 TEST(SSRF, BlocksPrivateAndAllowsPublicAddresses)
 {
     EXPECT_FALSE(isAllowedOutboundAddress({
@@ -687,6 +715,37 @@ TEST(RemoteActor, RejectsPartialActorDocumentWithoutCaching)
                      .has_value());
     ASSIGN_OR_FAIL(auto cached,
                    db->getRemoteActorByUri("https://remote.test/u/bob"));
+    EXPECT_FALSE(cached.has_value());
+}
+
+TEST(RemoteActor, RejectsMismatchedActorIdWithoutCaching)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, R"({
+        "id": "https://remote.test/u/other",
+        "type": "Person",
+        "preferredUsername": "bob",
+        "inbox": "https://remote.test/u/bob/inbox",
+        "publicKey": {
+          "id": "https://remote.test/u/bob#main-key",
+          "owner": "https://remote.test/u/bob",
+          "publicKeyPem": "PUB"
+        }
+    })");
+
+    EXPECT_FALSE(resolveRemoteActor(
+        c, *db, crypto, http, system, "https://remote.test/u/bob")
+                     .has_value());
+    ASSIGN_OR_FAIL(auto cached,
+                   db->getRemoteActorByUri("https://remote.test/u/other"));
     EXPECT_FALSE(cached.has_value());
 }
 
@@ -888,6 +947,39 @@ TEST(HttpSignature, RejectsBadDigest)
     req.body = R"({"tampered":true})";
     EXPECT_FALSE(verifyHttpSignature(testConfig(), *db, crypto, req, now)
                      .has_value());
+}
+
+TEST(HttpSignature, AcceptsDigestCaseAndMultipleValues)
+{
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor;
+    actor.uri = "https://remote.test/u/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.inbox = "https://remote.test/u/bob/inbox";
+    actor.public_key_id = actor.uri + "#main-key";
+    actor.public_key_pem = keys.public_key;
+    actor.actor_json = "{}";
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+
+    int64_t now = 100000;
+    std::string digest = sha256DigestHeader("{}");
+    std::string digest_value = digest.substr(digest.find('=') + 1);
+    auto lowercase_req = signedIncomingRequest(
+        crypto, keys.private_key, actor.public_key_id, "rsa-sha256",
+        "post", "/inbox", "{}", now, true, true, "",
+        "sha-256=" + digest_value);
+    EXPECT_TRUE(verifyHttpSignature(testConfig(), *db, crypto, lowercase_req,
+                                    now).has_value());
+
+    auto multiple_req = signedIncomingRequest(
+        crypto, keys.private_key, actor.public_key_id, "rsa-sha256",
+        "post", "/inbox", "{}", now, true, true, "",
+        "SHA-512=bogus, sha-256= " + digest_value);
+    EXPECT_TRUE(verifyHttpSignature(testConfig(), *db, crypto, multiple_req,
+                                    now).has_value());
 }
 
 TEST(HttpSignature, RejectsDateOutsideSkew)
@@ -1432,6 +1524,55 @@ TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
     EXPECT_EQ(stable_atts.size(), 1u);
 }
 
+TEST(InboxDispatch, CreateClassifiesRemoteDirectAndFollowersPosts)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+
+    nlohmann::json direct_raw = {
+        {"id", "https://remote.test/a/create/direct"},
+        {"type", "Create"},
+        {"actor", remote.uri},
+        {"object", {
+            {"id", "https://remote.test/o/direct"},
+            {"type", "Note"},
+            {"attributedTo", remote.uri},
+            {"content", "direct"},
+            {"to", nlohmann::json::array({"https://f.test/u/alice"})},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto direct_activity, parseActivity(direct_raw));
+    EXPECT_TRUE(dispatchIncomingActivity(
+        c, *db, remote.uri, direct_activity, 100).has_value());
+    ASSIGN_OR_FAIL(auto direct_post,
+                   db->getPostByUri("https://remote.test/o/direct"));
+    ASSERT_TRUE(direct_post.has_value());
+    EXPECT_EQ(direct_post->visibility, Visibility::DIRECT);
+
+    nlohmann::json followers_raw = {
+        {"id", "https://remote.test/a/create/followers"},
+        {"type", "Create"},
+        {"actor", remote.uri},
+        {"object", {
+            {"id", "https://remote.test/o/followers"},
+            {"type", "Note"},
+            {"attributedTo", remote.uri},
+            {"content", "followers"},
+            {"to", nlohmann::json::array({
+                "https://remote.test/u/bob/followers"})},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto followers_activity, parseActivity(followers_raw));
+    EXPECT_TRUE(dispatchIncomingActivity(
+        c, *db, remote.uri, followers_activity, 101).has_value());
+    ASSIGN_OR_FAIL(auto followers_post,
+                   db->getPostByUri("https://remote.test/o/followers"));
+    ASSERT_TRUE(followers_post.has_value());
+    EXPECT_EQ(followers_post->visibility, Visibility::FOLLOWERS);
+}
+
 TEST(InboxForwarding, ForwardsFirstSeenActivityAfterRefetchVerification)
 {
     Config c = testConfig();
@@ -1596,6 +1737,9 @@ TEST(InboxDispatch, FollowAutoAcceptsAndQueuesAccept)
     EXPECT_EQ(payload["target_inbox"], "https://remote.test/inbox");
     EXPECT_EQ(payload["signer_actor"], "https://f.test/u/alice");
     EXPECT_EQ(payload["activity"]["type"], "Accept");
+    EXPECT_EQ(payload["activity"]["id"],
+              std::format("https://f.test/activities/accept/{}/200",
+                          follow->id));
     (void)local;
 }
 
@@ -1691,6 +1835,11 @@ TEST(InboxDispatch, UpdateReplacesKnownRemoteNote)
     np.visibility = Visibility::PUBLIC;
     ASSIGN_OR_FAIL(auto original, db->insertPost(
         np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+    Like like;
+    like.actor_uri = "https://f.test/u/alice";
+    like.post_uri = original.uri;
+    like.activity_uri = "https://f.test/activities/like/1";
+    EXPECT_TRUE(mw::isExpected(db->addLike(like)));
 
     nlohmann::json raw = {
         {"id", "https://remote.test/a/update/1"},
@@ -1710,12 +1859,55 @@ TEST(InboxDispatch, UpdateReplacesKnownRemoteNote)
         c, *db, remote.uri, activity, 100));
     EXPECT_FALSE(result.duplicate);
 
-    ASSIGN_OR_FAIL(auto gone, db->getPostById(original.id));
-    EXPECT_FALSE(gone.has_value());
+    ASSIGN_OR_FAIL(auto by_id, db->getPostById(original.id));
+    ASSERT_TRUE(by_id.has_value());
     ASSIGN_OR_FAIL(auto updated, db->getPostByUri(*np.uri));
     ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->id, original.id);
     EXPECT_EQ(updated->content_html, "<b>new</b>");
     EXPECT_EQ(updated->visibility, Visibility::UNLISTED);
     ASSERT_TRUE(updated->summary.has_value());
     EXPECT_EQ(*updated->summary, "changed");
+    ASSIGN_OR_FAIL(auto likes, db->likesForPost(original.uri));
+    ASSERT_EQ(likes.size(), 1u);
+    EXPECT_EQ(likes[0].actor_uri, "https://f.test/u/alice");
+}
+
+TEST(InboxDispatch, UpdateRefreshesCachedRemoteActor)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.display_name = "Old Bob";
+    actor.shared_inbox = std::nullopt;
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/update/actor"},
+        {"type", "Update"},
+        {"actor", actor.uri},
+        {"object", {
+            {"id", actor.uri},
+            {"type", "Person"},
+            {"preferredUsername", "bobby"},
+            {"name", "New Bob"},
+            {"inbox", "https://remote.test/u/bob/new-inbox"},
+            {"endpoints", {
+                {"sharedInbox", "https://remote.test/inbox"},
+            }},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    EXPECT_TRUE(dispatchIncomingActivity(c, *db, actor.uri, activity, 500)
+                    .has_value());
+
+    ASSIGN_OR_FAIL(auto updated, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(updated.has_value());
+    EXPECT_EQ(updated->username, "bobby");
+    EXPECT_EQ(updated->display_name, "New Bob");
+    EXPECT_EQ(updated->inbox, "https://remote.test/u/bob/new-inbox");
+    ASSERT_TRUE(updated->shared_inbox.has_value());
+    EXPECT_EQ(*updated->shared_inbox, "https://remote.test/inbox");
+    EXPECT_EQ(updated->public_key_id, actor.public_key_id);
+    EXPECT_EQ(updated->fetched_at, 500);
 }

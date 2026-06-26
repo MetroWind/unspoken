@@ -76,6 +76,47 @@ void readBool(const ryml::ConstNodeRef& node, bool& out)
     }
 }
 
+mw::E<void> requireDirectory(const std::filesystem::path& path,
+                             std::string_view config_key)
+{
+    std::error_code ec;
+    if(!std::filesystem::is_directory(path, ec))
+    {
+        return std::unexpected(mw::runtimeError(std::format(
+            "{} directory does not exist: {}", config_key, path.string())));
+    }
+    return {};
+}
+
+mw::E<void> requireWritableDirectory(const std::filesystem::path& path,
+                                     std::string_view config_key)
+{
+    auto dir = requireDirectory(path, config_key);
+    if(!dir.has_value()) return std::unexpected(dir.error());
+
+    std::filesystem::path probe =
+        path / ".unspoken-write-test.tmp";
+    {
+        std::ofstream out(probe, std::ios::binary | std::ios::trunc);
+        if(!out)
+        {
+            return std::unexpected(mw::runtimeError(std::format(
+                "{} directory is not writable: {}", config_key,
+                path.string())));
+        }
+        out << "ok";
+    }
+    std::error_code ec;
+    std::filesystem::remove(probe, ec);
+    if(ec)
+    {
+        return std::unexpected(mw::runtimeError(std::format(
+            "{} directory write probe could not be removed: {}", config_key,
+            probe.string())));
+    }
+    return {};
+}
+
 } // namespace
 
 mw::E<void> Config::validateAndFinalize()
@@ -151,19 +192,23 @@ mw::E<void> Config::validateAndFinalize()
 
     // The database parent directory and attachment dir must exist and
     // be writable.
-    std::error_code ec;
     std::filesystem::path db_parent =
         std::filesystem::path(database_path).parent_path();
     if(db_parent.empty())
     {
         db_parent = ".";
     }
-    if(!std::filesystem::is_directory(db_parent, ec))
-    {
-        return std::unexpected(mw::runtimeError(std::format(
-            "database_path parent directory does not exist: {}",
-            db_parent.string())));
-    }
+    auto db_writable =
+        requireWritableDirectory(db_parent, "database_path parent");
+    if(!db_writable.has_value()) return std::unexpected(db_writable.error());
+    auto attachment_writable =
+        requireWritableDirectory(attachment_dir, "attachment_dir");
+    if(!attachment_writable.has_value())
+        return std::unexpected(attachment_writable.error());
+    auto templates = requireDirectory(template_dir, "template_dir");
+    if(!templates.has_value()) return std::unexpected(templates.error());
+    auto statics = requireDirectory(static_dir, "static_dir");
+    if(!statics.has_value()) return std::unexpected(statics.error());
 
     return {};
 }
