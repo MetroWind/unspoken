@@ -110,6 +110,12 @@ mw::E<RemoteActor> resolveWebFingerActor(const Config& config,
                                          mw::HTTPSessionInterface& http,
                                          const SystemActor& system_actor,
                                          std::string_view handle);
+mw::E<Post> fetchRemotePostByUri(const Config& config,
+                                 const DataSourceInterface& data,
+                                 mw::CryptoInterface& crypto,
+                                 mw::HTTPSessionInterface& http,
+                                 const SystemActor& system_actor,
+                                 std::string_view post_uri);
 mw::E<VerifiedSignature> verifyHttpSignature(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,

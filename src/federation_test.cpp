@@ -803,6 +803,63 @@ TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
     EXPECT_EQ(cached->username, "bob");
 }
 
+TEST(RemotePost, FetchByUriCachesAuthorAndStoresPost)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    FakeSession http;
+    http.responses = {
+        mw::HTTPResponse(200, nlohmann::json({
+            {"id", "https://remote.test/o/1"},
+            {"type", "Note"},
+            {"attributedTo", "https://remote.test/u/bob"},
+            {"content", "<p>hello</p>"},
+            {"to", std::string(AS_PUBLIC)},
+        }).dump()),
+        mw::HTTPResponse(200, nlohmann::json({
+            {"id", "https://remote.test/u/bob"},
+            {"type", "Person"},
+            {"preferredUsername", "bob"},
+            {"name", "Bob"},
+            {"inbox", "https://remote.test/u/bob/inbox"},
+            {"publicKey", {
+                {"id", "https://remote.test/u/bob#main-key"},
+                {"owner", "https://remote.test/u/bob"},
+                {"publicKeyPem", "PUB"},
+            }},
+        }).dump()),
+    };
+
+    ASSIGN_OR_FAIL(auto post, fetchRemotePostByUri(
+        c, *db, crypto, http, system, "https://remote.test/o/1"));
+    EXPECT_EQ(post.uri, "https://remote.test/o/1");
+    EXPECT_EQ(post.visibility, Visibility::PUBLIC);
+    ASSERT_TRUE(post.remote_author_id.has_value());
+    ASSERT_EQ(http.get_urls.size(), 2u);
+    EXPECT_EQ(http.get_urls[0], "https://remote.test/o/1");
+    EXPECT_EQ(http.get_urls[1], "https://remote.test/u/bob");
+
+    ASSIGN_OR_FAIL(auto cached_author,
+                   db->getRemoteActorByUri("https://remote.test/u/bob"));
+    ASSERT_TRUE(cached_author.has_value());
+    EXPECT_EQ(cached_author->username, "bob");
+
+    ASSIGN_OR_FAIL(auto stored, db->getPostByUri("https://remote.test/o/1"));
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->remote_author_id, post.remote_author_id);
+
+    ASSIGN_OR_FAIL(auto cached_post, fetchRemotePostByUri(
+        c, *db, crypto, http, system, "https://remote.test/o/1"));
+    EXPECT_EQ(cached_post.id, post.id);
+    EXPECT_EQ(http.get_urls.size(), 2u);
+}
+
 TEST(HttpSignature, VerifiesGoodRsaSha256Signature)
 {
     mw::Crypto crypto;

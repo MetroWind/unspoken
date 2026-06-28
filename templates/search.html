@@ -3,17 +3,17 @@
   <h1>Search</h1>
   <form method="get" action="{{ site.root }}search" class="searchform">
     <input type="text" name="q" value="{{ query }}"
-           placeholder="username or @user@domain" autofocus>
+           placeholder="username, @user@domain, or URL" autofocus>
     <button type="submit">Search</button>
   </form>
   <p class="hint">
-    Search local usernames, or enter @user@domain for remote lookup.
+    Search local usernames, @user@domain handles, actor URLs, or post URLs.
   </p>
 </section>
 
 <div class="results">
-{% if length(query) > 0 and length(results) == 0 %}
-<p class="empty">No users found.</p>
+{% if has_no_results %}
+<p class="empty">No users or posts found.</p>
 {% endif %}
 {% for u in results %}
   <div class="result">
@@ -43,4 +43,12 @@
   </div>
 {% endfor %}
 </div>
+
+{% if length(post_results) > 0 %}
+<div class="timeline">
+{% for post in post_results %}
+{% include "_post.html" %}
+{% endfor %}
+</div>
+{% endif %}
 {% include "_footer.html" %}

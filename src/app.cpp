@@ -112,6 +112,32 @@ std::optional<int64_t> parseInt64(std::string_view value)
     return out;
 }
 
+bool looksUrl(std::string_view value)
+{
+    auto url = mw::URL::fromStr(std::string(value));
+    return url.has_value() && url->scheme() == "https"
+        && !url->host().empty();
+}
+
+std::optional<std::string> localUserPathFromUrl(const Config& config,
+                                                std::string_view url)
+{
+    const std::string prefix = config.url_root + "u/";
+    if(!url.starts_with(prefix)) return std::nullopt;
+    std::string_view username = url.substr(prefix.size());
+    if(username.empty() || username.find('/') != std::string_view::npos)
+        return std::nullopt;
+    return std::string(username);
+}
+
+std::optional<int64_t> localPostIdFromUrl(const Config& config,
+                                          std::string_view url)
+{
+    const std::string prefix = config.url_root + "p/";
+    if(!url.starts_with(prefix)) return std::nullopt;
+    return parseInt64(url.substr(prefix.size()));
+}
+
 std::optional<unspoken::Cursor>
 cursorFromRequest(const mw::HTTPServer::Request& req,
                   mw::HTTPServer::Response& res, bool allow_min)
@@ -1726,6 +1752,155 @@ void App::handleProfilePost(const Request& req, Response& res) const
 
 // ─── Search ────────────────────────────────────────────────────────────
 
+namespace
+{
+
+struct SearchResults
+{
+    nlohmann::json users = nlohmann::json::array();
+    nlohmann::json posts = nlohmann::json::array();
+};
+
+mw::E<void> appendLocalUserSearchResult(
+    SearchResults& results, const unspoken::DataSourceInterface& data,
+    const Service& svc, const std::optional<unspoken::User>& viewer,
+    const unspoken::User& user)
+{
+    auto view = svc.userView(user);
+    const bool is_self = viewer.has_value() && viewer->id == user.id;
+    view["can_follow"] = viewer.has_value() && !is_self;
+    view["following"] = false;
+    if(viewer.has_value() && !is_self)
+    {
+        ASSIGN_OR_RETURN(auto f, data.getFollow(
+            svc.actorUri(viewer->username), svc.actorUri(user.username)));
+        view["following"] = f.has_value();
+    }
+    results.users.push_back(std::move(view));
+    return {};
+}
+
+mw::E<void> appendRemoteActorSearchResult(
+    SearchResults& results, const unspoken::DataSourceInterface& data,
+    const Service& svc, const std::optional<unspoken::User>& viewer,
+    const unspoken::RemoteActor& actor)
+{
+    auto view = remoteActorView(actor);
+    view["actor_uri"] = mw::escapeHTML(actor.uri);
+    view["can_follow"] = viewer.has_value();
+    if(viewer.has_value())
+    {
+        ASSIGN_OR_RETURN(auto f, data.getFollow(
+            svc.actorUri(viewer->username), actor.uri));
+        view["following"] = f.has_value();
+    }
+    else
+    {
+        view["following"] = false;
+    }
+    results.users.push_back(std::move(view));
+    return {};
+}
+
+mw::E<void> appendPostSearchResult(
+    SearchResults& results, const Service& svc,
+    const std::optional<unspoken::User>& viewer, const unspoken::Post& post)
+{
+    ASSIGN_OR_RETURN(auto visible, svc.canViewPost(post, viewer));
+    if(!visible) return {};
+    ASSIGN_OR_RETURN(auto view, svc.postView(post, viewer));
+    results.posts.push_back(std::move(view));
+    return {};
+}
+
+mw::E<SearchResults> searchLocalUsers(
+    const unspoken::DataSourceInterface& data, const Service& svc,
+    const std::optional<unspoken::User>& viewer, std::string_view query)
+{
+    SearchResults results;
+    std::string q(query);
+    if(!q.empty() && q.front() == '@') q.erase(q.begin());
+    ASSIGN_OR_RETURN(auto users, data.searchUsers(q, 50));
+    for(const auto& user : users)
+    {
+        DO_OR_RETURN(appendLocalUserSearchResult(
+            results, data, svc, viewer, user));
+    }
+    return results;
+}
+
+mw::E<SearchResults> searchLocalUserUrl(
+    const unspoken::DataSourceInterface& data, const Service& svc,
+    const std::optional<unspoken::User>& viewer, std::string_view username)
+{
+    SearchResults results;
+    ASSIGN_OR_RETURN(auto user, data.getUserByUsername(username));
+    if(user.has_value())
+    {
+        DO_OR_RETURN(appendLocalUserSearchResult(
+            results, data, svc, viewer, *user));
+    }
+    return results;
+}
+
+mw::E<SearchResults> searchLocalPostUrl(
+    const unspoken::DataSourceInterface& data, const Service& svc,
+    const std::optional<unspoken::User>& viewer, int64_t post_id)
+{
+    SearchResults results;
+    ASSIGN_OR_RETURN(auto post, data.getPostById(post_id));
+    if(post.has_value())
+        DO_OR_RETURN(appendPostSearchResult(results, svc, viewer, *post));
+    return results;
+}
+
+mw::E<SearchResults> searchRemoteActorUrl(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    const Service& svc, mw::CryptoInterface& crypto,
+    const unspoken::SystemActor& system_actor,
+    const std::optional<unspoken::User>& viewer, std::string_view query)
+{
+    SearchResults results;
+    mw::HTTPSession http;
+    auto remote_actor = unspoken::resolveRemoteActor(
+        config, data, crypto, http, system_actor, query);
+    if(remote_actor.has_value())
+    {
+        DO_OR_RETURN(appendRemoteActorSearchResult(
+            results, data, svc, viewer, *remote_actor));
+        return results;
+    }
+
+    auto remote_post = unspoken::fetchRemotePostByUri(
+        config, data, crypto, http, system_actor, query);
+    if(remote_post.has_value())
+    {
+        DO_OR_RETURN(appendPostSearchResult(
+            results, svc, viewer, *remote_post));
+    }
+    return results;
+}
+
+mw::E<SearchResults> searchRemoteHandle(
+    const Config& config, const unspoken::DataSourceInterface& data,
+    const Service& svc, mw::CryptoInterface& crypto,
+    const unspoken::SystemActor& system_actor,
+    const std::optional<unspoken::User>& viewer, std::string_view query)
+{
+    SearchResults results;
+    mw::HTTPSession http;
+    auto remote = unspoken::resolveWebFingerActor(
+        config, data, crypto, http, system_actor, query);
+    if(remote.has_value())
+    {
+        DO_OR_RETURN(appendRemoteActorSearchResult(
+            results, data, svc, viewer, *remote));
+    }
+    return results;
+}
+
+} // namespace
+
 void App::handleSearch(const Request& req, Response& res) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
@@ -1734,57 +1909,53 @@ void App::handleSearch(const Request& req, Response& res) const
     std::string query{mw::strip(param(req, "q"))};
     auto ctx = baseContext(req, viewer);
     ctx["query"] = mw::escapeHTML(query);
-    nlohmann::json results = nlohmann::json::array();
+    SearchResults results;
     if(!query.empty())
     {
-        if(looksRemoteHandle(query, config.public_domain))
+        if(looksUrl(query))
+        {
+            if(auto username = localUserPathFromUrl(config, query);
+               username.has_value())
+            {
+                ASSIGN_OR_RESPOND_ERROR(
+                    results, searchLocalUserUrl(*ds, svc, viewer, *username),
+                    res);
+            }
+            else if(auto post_id = localPostIdFromUrl(config, query);
+                    post_id.has_value())
+            {
+                ASSIGN_OR_RESPOND_ERROR(
+                    results, searchLocalPostUrl(*ds, svc, viewer, *post_id),
+                    res);
+            }
+            else
+            {
+                ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+                ASSIGN_OR_RESPOND_ERROR(
+                    results, searchRemoteActorUrl(
+                        config, *ds, svc, crypto, system_actor, viewer,
+                        query),
+                    res);
+            }
+        }
+        else if(looksRemoteHandle(query, config.public_domain))
         {
             ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
-            mw::HTTPSession http;
-            auto remote = unspoken::resolveWebFingerActor(
-                config, *ds, crypto, http, system_actor, query);
-            if(remote.has_value())
-            {
-                auto view = remoteActorView(*remote);
-                view["actor_uri"] = mw::escapeHTML(remote->uri);
-                view["can_follow"] = viewer.has_value();
-                if(viewer.has_value())
-                {
-                    ASSIGN_OR_RESPOND_ERROR(auto f, ds->getFollow(
-                        svc.actorUri(viewer->username), remote->uri), res);
-                    view["following"] = f.has_value();
-                }
-                else
-                {
-                    view["following"] = false;
-                }
-                results.push_back(std::move(view));
-            }
+            ASSIGN_OR_RESPOND_ERROR(
+                results, searchRemoteHandle(
+                    config, *ds, svc, crypto, system_actor, viewer, query),
+                res);
         }
         else
         {
-            std::string q = query;
-            if(!q.empty() && q.front() == '@') q.erase(q.begin());
-            ASSIGN_OR_RESPOND_ERROR(auto users, ds->searchUsers(q, 50), res);
-            for(const auto& u : users)
-            {
-                auto view = svc.userView(u);
-                const bool is_self = viewer.has_value()
-                    && viewer->id == u.id;
-                view["can_follow"] = viewer.has_value() && !is_self;
-                view["following"] = false;
-                if(viewer.has_value() && !is_self)
-                {
-                    ASSIGN_OR_RESPOND_ERROR(auto f, ds->getFollow(
-                        svc.actorUri(viewer->username),
-                        svc.actorUri(u.username)), res);
-                    view["following"] = f.has_value();
-                }
-                results.push_back(std::move(view));
-            }
+            ASSIGN_OR_RESPOND_ERROR(
+                results, searchLocalUsers(*ds, svc, viewer, query), res);
         }
     }
-    ctx["results"] = results;
+    ctx["results"] = results.users;
+    ctx["post_results"] = results.posts;
+    ctx["has_no_results"] = !query.empty() && results.users.empty()
+        && results.posts.empty();
     render(res, 200, "search.html", ctx);
 }
 

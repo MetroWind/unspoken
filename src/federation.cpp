@@ -390,6 +390,7 @@ void appendAll(std::vector<std::string>& out,
 mw::E<void> handleCreateActivity(const Config& config,
                                  const DataSourceInterface& data,
                                  const Activity& activity);
+bool isLocalActorUri(const Config& config, std::string_view uri);
 
 mw::E<SigningActor> signingActorForUri(const Config& config,
                                        const DataSourceInterface& data,
@@ -521,6 +522,25 @@ mw::E<nlohmann::json> signedGetJson(
             "Remote object response is not JSON"));
     }
     return doc;
+}
+
+mw::E<void> ensureRemoteActorForObject(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, const nlohmann::json& object,
+    std::string_view fallback_actor)
+{
+    auto actor_uri = normalizeRef(object.contains("attributedTo")
+        ? object["attributedTo"] : nlohmann::json());
+    std::string uri = actor_uri.value_or(std::string(fallback_actor));
+    if(uri.empty() || isLocalActorUri(config, uri)) return {};
+
+    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(uri));
+    if(cached.has_value()) return {};
+    ASSIGN_OR_RETURN(auto actor, resolveRemoteActor(
+        config, data, crypto, http, system_actor, uri));
+    (void)actor;
+    return {};
 }
 
 mw::E<void> fetchThreadObject(
@@ -2006,6 +2026,79 @@ mw::E<RemoteActor> resolveWebFingerActor(
     }
     return resolveRemoteActor(config, data, crypto, http, system_actor,
                               *actor_uri);
+}
+
+mw::E<Post> fetchRemotePostByUri(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view post_uri)
+{
+    ASSIGN_OR_RETURN(auto existing, data.getPostByUri(post_uri));
+    if(existing.has_value()) return *existing;
+
+    ASSIGN_OR_RETURN(auto doc, signedGetJson(config, crypto, http,
+                                             system_actor, post_uri));
+    Activity activity;
+    std::string object_uri;
+
+    if(doc.is_object() && doc.value("type", std::string()) == "Note")
+    {
+        auto id = normalizeRef(doc);
+        if(!id.has_value())
+        {
+            return std::unexpected(mw::runtimeError(
+                "Remote post is missing id"));
+        }
+        auto actor = normalizeRef(doc.contains("attributedTo")
+            ? doc["attributedTo"] : nlohmann::json());
+        object_uri = *id;
+        activity.id = object_uri + "#fetch";
+        activity.type = "Create";
+        activity.actor = actor.value_or(std::string());
+        activity.object = doc;
+        activity.raw = {
+            {"id", activity.id},
+            {"type", "Create"},
+            {"actor", activity.actor},
+            {"object", doc},
+        };
+    }
+    else if(doc.is_object() && doc.value("type", std::string()) == "Create"
+            && doc.contains("object") && doc["object"].is_object()
+            && doc["object"].value("type", std::string()) == "Note")
+    {
+        ASSIGN_OR_RETURN(activity, parseActivity(doc));
+        auto id = normalizeRef(activity.object);
+        if(!id.has_value())
+        {
+            return std::unexpected(mw::runtimeError(
+                "Remote Create object is missing id"));
+        }
+        object_uri = *id;
+    }
+    else
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote URL did not resolve to a post"));
+    }
+
+    if(activity.actor.empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote post is missing an actor"));
+    }
+    DO_OR_RETURN(ensureRemoteActorForObject(
+        config, data, crypto, http, system_actor, activity.object,
+        activity.actor));
+    DO_OR_RETURN(handleCreateActivity(config, data, activity));
+
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(object_uri));
+    if(!post.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote post was not stored"));
+    }
+    return *post;
 }
 
 mw::E<VerifiedSignature> verifyHttpSignature(
