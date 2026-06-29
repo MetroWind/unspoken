@@ -76,6 +76,8 @@ struct UnicodeEmojiCategory
     std::string id;
     // Human-readable category label from Unicode emoji-test.txt.
     std::string label;
+    // First fully-qualified emoji in the category, used as the tab icon.
+    std::string representative_emoji;
     // Ordered emoji subgroups in this category.
     std::vector<UnicodeEmojiSubgroup> subgroups;
 };

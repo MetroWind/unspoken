@@ -139,6 +139,8 @@ loadUnicodeEmojiCategories(const std::string& path)
         {
             if(!c.contains("id") || !c["id"].is_string()
                || !c.contains("label") || !c["label"].is_string()
+               || !c.contains("representative_emoji")
+               || !c["representative_emoji"].is_string()
                || !c.contains("subgroups") || !c["subgroups"].is_array())
             {
                 return std::unexpected(mw::runtimeError(
@@ -148,6 +150,8 @@ loadUnicodeEmojiCategories(const std::string& path)
             UnicodeEmojiCategory category;
             category.id = c["id"].get<std::string>();
             category.label = c["label"].get<std::string>();
+            category.representative_emoji =
+                c["representative_emoji"].get<std::string>();
             for(const auto& s : c["subgroups"])
             {
                 if(!s.contains("id") || !s["id"].is_string()

@@ -107,6 +107,10 @@ def parse_emoji_test(text):
             subgroup for subgroup in category["subgroups"]
             if subgroup["emoji"]
         ]
+        if category["subgroups"]:
+            category["representative_emoji"] = (
+                category["subgroups"][0]["emoji"][0]["emoji"]
+            )
     categories = [
         category for category in categories if category["subgroups"]
     ]

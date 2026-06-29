@@ -16,7 +16,8 @@
               <button type="button" class="emoji-tab {% if length(emoji) == 0 %}{{ category.default_active_class }}{% endif %}"
                       role="tab" data-tab="{{ category.id }}"
                       aria-selected="{% if length(emoji) == 0 %}{{ category.default_selected }}{% else %}false{% endif %}"
-                      title="{{ category.label }}">{{ category.tab_label }}</button>
+                      title="{{ category.label }}"
+                      aria-label="{{ category.label }}">{{ category.representative_emoji }}</button>
 {% endfor %}
             </div>
 {% if length(emoji) > 0 %}

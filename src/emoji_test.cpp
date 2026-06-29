@@ -37,6 +37,7 @@ TEST(EmojiData, LoadsValidJsonInOrder)
     {
       "id": "smileys_emotion",
       "label": "Smileys & Emotion",
+      "representative_emoji": "😀",
       "subgroups": [
         {
           "id": "face_smiling",
@@ -59,6 +60,7 @@ TEST(EmojiData, LoadsValidJsonInOrder)
     {
       "id": "symbols",
       "label": "Symbols",
+      "representative_emoji": "❤",
       "subgroups": [
         {
           "id": "heart",
@@ -82,6 +84,7 @@ TEST(EmojiData, LoadsValidJsonInOrder)
     ASSERT_TRUE(categories.has_value()) << mw::errorMsg(categories.error());
     ASSERT_EQ(categories->size(), 2u);
     EXPECT_EQ((*categories)[0].id, "smileys_emotion");
+    EXPECT_EQ((*categories)[0].representative_emoji, "😀");
     ASSERT_EQ((*categories)[0].subgroups.size(), 1u);
     EXPECT_EQ((*categories)[0].subgroups[0].emoji[0].emoji, "😀");
     EXPECT_EQ((*categories)[0].subgroups[0].emoji[1].name, "smiling face");

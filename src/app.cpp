@@ -543,14 +543,7 @@ App::baseContext(const Request& req,
         cj["default_active_class"] = first_unicode ? "active" : "";
         cj["default_selected"] = first_unicode ? "true" : "false";
         first_unicode = false;
-        cj["tab_label"] = mw::escapeHTML(category.label);
-        if(category.label == "Smileys & Emotion") cj["tab_label"] = "Smileys";
-        else if(category.label == "People & Body") cj["tab_label"] = "People";
-        else if(category.label == "Animals & Nature") cj["tab_label"] =
-            "Nature";
-        else if(category.label == "Food & Drink") cj["tab_label"] = "Food";
-        else if(category.label == "Travel & Places") cj["tab_label"] =
-            "Places";
+        cj["representative_emoji"] = category.representative_emoji;
         cj["subgroups"] = nlohmann::json::array();
         for(const auto& subgroup : category.subgroups)
         {

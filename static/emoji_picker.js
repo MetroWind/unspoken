@@ -58,4 +58,12 @@
             });
         }
     });
+
+    document.addEventListener("click", function(event) {
+        if(event.target.closest(".emoji-picker")) return;
+        document.querySelectorAll(".emoji-picker[open]").forEach(
+            function(picker) {
+                picker.open = false;
+            });
+    });
 })();
