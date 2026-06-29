@@ -6,6 +6,10 @@
 
 #include <mw/error.hpp>
 
+#ifndef UNSPOKEN_DEFAULT_EMOJI_DATA_FILE
+#define UNSPOKEN_DEFAULT_EMOJI_DATA_FILE "data/emoji_categories.json"
+#endif
+
 // Server configuration, loaded from a YAML file at startup (design §5).
 //
 // The defaults below match the documented schema defaults. Required
@@ -44,6 +48,7 @@ struct Config
     std::string database_path = "unspoken.db";
     std::string attachment_dir = "attachments";
     std::string emoji_dir = "emoji";
+    std::string emoji_data_file = UNSPOKEN_DEFAULT_EMOJI_DATA_FILE;
     // Where Inja templates and static assets live. App-level dirs (not
     // in the PRD schema, but needed to serve the UI).
     std::string template_dir = "templates";

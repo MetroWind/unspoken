@@ -7,6 +7,7 @@ project(Unspoken LANGUAGES CXX)
 option(UNSPOKEN_BUILD_TESTS "Build unit tests" OFF)
 
 include(FetchContent)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 FetchContent_Declare(
   libmw
@@ -58,6 +59,35 @@ set(LIBMW_BUILD_CRYPTO ON)
 set(INJA_USE_EMBEDDED_JSON FALSE)
 set(INJA_BUILD_TESTS FALSE)
 FetchContent_MakeAvailable(libmw ryml spdlog cxxopts json inja macrodown)
+
+set(UNSPOKEN_UNICODE_EMOJI_VERSION "17.0.0"
+    CACHE STRING "Unicode emoji data version")
+set(UNSPOKEN_EMOJI_TEST_INPUT "" CACHE FILEPATH
+    "Optional local emoji-test.txt input")
+set(UNSPOKEN_EMOJI_DATA_FILE
+    "${CMAKE_BINARY_DIR}/data/emoji_categories.json")
+
+set(UNSPOKEN_EMOJI_GENERATOR_ARGS
+    "${CMAKE_SOURCE_DIR}/tools/generate_emoji_data.py"
+    --output "${UNSPOKEN_EMOJI_DATA_FILE}")
+if(UNSPOKEN_EMOJI_TEST_INPUT)
+  list(APPEND UNSPOKEN_EMOJI_GENERATOR_ARGS
+      --unicode-version "${UNSPOKEN_UNICODE_EMOJI_VERSION}"
+      --input "${UNSPOKEN_EMOJI_TEST_INPUT}")
+else()
+  list(APPEND UNSPOKEN_EMOJI_GENERATOR_ARGS
+      --unicode-version "${UNSPOKEN_UNICODE_EMOJI_VERSION}")
+endif()
+
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" ${UNSPOKEN_EMOJI_GENERATOR_ARGS}
+  RESULT_VARIABLE UNSPOKEN_EMOJI_DATA_RESULT
+)
+if(NOT UNSPOKEN_EMOJI_DATA_RESULT EQUAL 0)
+  message(FATAL_ERROR "Failed to generate emoji data")
+endif()
+add_compile_definitions(
+  UNSPOKEN_DEFAULT_EMOJI_DATA_FILE="${UNSPOKEN_EMOJI_DATA_FILE}")
 
 if(UNSPOKEN_BUILD_TESTS)
   FetchContent_Declare(
@@ -144,6 +174,7 @@ if(UNSPOKEN_BUILD_TESTS)
     src/auth_test.cpp
     src/service_test.cpp
     src/federation_test.cpp
+    src/emoji_test.cpp
   )
 
   # ctest --test-dir build
@@ -173,3 +204,8 @@ if(UNSPOKEN_BUILD_TESTS)
     # Need this so that the unit tests can find templates/fixtures.
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+install(TARGETS unspoken RUNTIME DESTINATION bin)
+install(DIRECTORY templates static DESTINATION share/unspoken)
+install(FILES "${UNSPOKEN_EMOJI_DATA_FILE}"
+        DESTINATION share/unspoken/data)

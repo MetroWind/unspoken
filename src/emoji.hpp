@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include <mw/error.hpp>
+
 namespace unspoken
 {
 
@@ -44,6 +46,43 @@ public:
 private:
     std::map<std::string, EmojiInfo> by_shortcode;
 };
+
+// A Unicode emoji entry loaded from generated picker data.
+struct UnicodeEmoji
+{
+    // Rendered emoji sequence inserted or submitted by the picker.
+    std::string emoji;
+    // CLDR short name used for labels and tooltips.
+    std::string name;
+    // Emoji version from Unicode emoji-test.txt.
+    std::string version;
+};
+
+// A Unicode emoji subgroup loaded from generated picker data.
+struct UnicodeEmojiSubgroup
+{
+    // Stable ASCII identifier for HTML tab state.
+    std::string id;
+    // Human-readable subgroup label from Unicode emoji-test.txt.
+    std::string label;
+    // Ordered emoji entries in this subgroup.
+    std::vector<UnicodeEmoji> emoji;
+};
+
+// A Unicode emoji category loaded from generated picker data.
+struct UnicodeEmojiCategory
+{
+    // Stable ASCII identifier for HTML tab state.
+    std::string id;
+    // Human-readable category label from Unicode emoji-test.txt.
+    std::string label;
+    // Ordered emoji subgroups in this category.
+    std::vector<UnicodeEmojiSubgroup> subgroups;
+};
+
+// Load generated Unicode emoji picker data from JSON.
+mw::E<std::vector<UnicodeEmojiCategory>>
+loadUnicodeEmojiCategories(const std::string& path);
 
 // True if `stem` is a valid emoji shortcode ([a-z0-9_]+, non-empty).
 bool isValidShortcode(std::string_view stem);

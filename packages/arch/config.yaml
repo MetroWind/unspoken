@@ -8,6 +8,7 @@ verbose: false
 database_path: "/var/lib/unspoken/unspoken.db"
 attachment_dir: "/var/lib/unspoken/attachments"
 emoji_dir: "/var/lib/unspoken/emoji"
+emoji_data_file: "/usr/share/unspoken/data/emoji_categories.json"
 template_dir: "/usr/share/unspoken/templates"
 static_dir: "/usr/share/unspoken/static"
 

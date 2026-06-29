@@ -345,8 +345,22 @@ App::App(const Config& conf)
           base_url(baseUrlFromConfig(conf)),
           server_key(generateServerKey()),
           emoji(unspoken::EmojiRegistry::scan(conf.emoji_dir, conf.url_root)),
+          unicode_emoji(),
           templates(makeEnv(conf))
-{}
+{
+    auto loaded = unspoken::loadUnicodeEmojiCategories(conf.emoji_data_file);
+    if(loaded.has_value())
+    {
+        unicode_emoji = std::move(*loaded);
+        spdlog::info("Loaded {} Unicode emoji categories from {}.",
+                     unicode_emoji.size(), conf.emoji_data_file);
+    }
+    else
+    {
+        spdlog::warn("Unicode emoji data unavailable: {}",
+                     mw::errorMsg(loaded.error()));
+    }
+}
 
 App::~App()
 {
@@ -517,6 +531,46 @@ App::baseContext(const Request& req,
         emoji_arr.push_back(std::move(ej));
     }
     ctx["emoji"] = emoji_arr;
+
+    nlohmann::json unicode_arr = nlohmann::json::array();
+    bool first_unicode = true;
+    for(const auto& category : unicode_emoji)
+    {
+        nlohmann::json cj;
+        cj["id"] = mw::escapeHTML(category.id);
+        cj["label"] = mw::escapeHTML(category.label);
+        cj["default_active"] = first_unicode;
+        cj["default_active_class"] = first_unicode ? "active" : "";
+        cj["default_selected"] = first_unicode ? "true" : "false";
+        first_unicode = false;
+        cj["tab_label"] = mw::escapeHTML(category.label);
+        if(category.label == "Smileys & Emotion") cj["tab_label"] = "Smileys";
+        else if(category.label == "People & Body") cj["tab_label"] = "People";
+        else if(category.label == "Animals & Nature") cj["tab_label"] =
+            "Nature";
+        else if(category.label == "Food & Drink") cj["tab_label"] = "Food";
+        else if(category.label == "Travel & Places") cj["tab_label"] =
+            "Places";
+        cj["subgroups"] = nlohmann::json::array();
+        for(const auto& subgroup : category.subgroups)
+        {
+            nlohmann::json sj;
+            sj["id"] = mw::escapeHTML(subgroup.id);
+            sj["label"] = mw::escapeHTML(subgroup.label);
+            sj["emoji"] = nlohmann::json::array();
+            for(const auto& e : subgroup.emoji)
+            {
+                nlohmann::json ej;
+                ej["emoji"] = e.emoji;
+                ej["name"] = mw::escapeHTML(e.name);
+                ej["version"] = mw::escapeHTML(e.version);
+                sj["emoji"].push_back(std::move(ej));
+            }
+            cj["subgroups"].push_back(std::move(sj));
+        }
+        unicode_arr.push_back(std::move(cj));
+    }
+    ctx["unicode_emoji"] = unicode_arr;
 
     if(viewer.has_value())
     {

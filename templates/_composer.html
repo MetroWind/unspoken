@@ -1,7 +1,62 @@
 <section class="composer">
   <form method="post" action="{{ site.root }}post" enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <textarea name="content" rows="4" placeholder="Write a post (Markdown)…"></textarea>
+    <div class="composer-text">
+      <textarea name="content" rows="4" placeholder="Write a post (Markdown)…"></textarea>
+      <div class="composer-tools">
+        <details class="emoji-picker" data-emoji-mode="insert">
+          <summary class="linkbtn emoji-picker-trigger" title="insert emoji" aria-label="insert emoji">☺</summary>
+          <div class="emoji-picker-panel">
+            <div class="emoji-tabs" role="tablist">
+{% if length(emoji) > 0 %}
+              <button type="button" class="emoji-tab active" role="tab"
+                      data-tab="custom" aria-selected="true">custom</button>
+{% endif %}
+{% for category in unicode_emoji %}
+              <button type="button" class="emoji-tab {% if length(emoji) == 0 %}{{ category.default_active_class }}{% endif %}"
+                      role="tab" data-tab="{{ category.id }}"
+                      aria-selected="{% if length(emoji) == 0 %}{{ category.default_selected }}{% else %}false{% endif %}"
+                      title="{{ category.label }}">{{ category.tab_label }}</button>
+{% endfor %}
+            </div>
+{% if length(emoji) > 0 %}
+            <div class="emoji-tab-panel active" role="tabpanel"
+                 data-tab-panel="custom">
+              <div class="emoji-grid">
+{% for e in emoji %}
+                <button class="emoji-choice" type="button"
+                        data-emoji-insert=":{{ e.shortcode }}:"
+                        title=":{{ e.shortcode }}:"
+                        aria-label="Insert :{{ e.shortcode }}:">
+                  <img class="emoji" src="{{ e.image_url }}" alt=":{{ e.shortcode }}:">
+                  <span class="emoji-copy">:{{ e.shortcode }}:</span>
+                </button>
+{% endfor %}
+              </div>
+            </div>
+{% endif %}
+{% for category in unicode_emoji %}
+            <div class="emoji-tab-panel {% if length(emoji) == 0 %}{{ category.default_active_class }}{% endif %}"
+                 role="tabpanel" data-tab-panel="{{ category.id }}">
+{% for subgroup in category.subgroups %}
+              <div class="emoji-subgroup">
+                <div class="emoji-subgroup-label">{{ subgroup.label }}</div>
+                <div class="emoji-grid">
+{% for e in subgroup.emoji %}
+                  <button class="emoji-choice" type="button"
+                          data-emoji-insert="{{ e.emoji }}"
+                          title="{{ e.name }}"
+                          aria-label="Insert {{ e.name }}">{{ e.emoji }}</button>
+{% endfor %}
+                </div>
+              </div>
+{% endfor %}
+            </div>
+{% endfor %}
+          </div>
+        </details>
+      </div>
+    </div>
     <div class="composer-row">
       <label>CW <input type="text" name="summary" placeholder="content warning"></label>
       <label class="cb"><input type="checkbox" name="sensitive" value="1"> sensitive</label>
@@ -18,15 +73,5 @@
       <label>attach <input type="file" name="attachments" multiple></label>
       <button type="submit">Post</button>
     </div>
-{% if length(emoji) > 0 %}
-    <details class="emoji-pick">
-      <summary>custom emoji ({{ length(emoji) }})</summary>
-      <div class="emoji-grid">
-{% for e in emoji %}
-        <span class="emoji-item" title=":{{ e.shortcode }}:"><img class="emoji" src="{{ e.image_url }}" alt=":{{ e.shortcode }}:"> :{{ e.shortcode }}:</span>
-{% endfor %}
-      </div>
-    </details>
-{% endif %}
   </form>
 </section>

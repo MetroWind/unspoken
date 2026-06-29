@@ -100,6 +100,32 @@ oidc:
     EXPECT_TRUE(config->verbose);
 }
 
+TEST(Config, FromYamlReadsEmojiDataFile)
+{
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path()
+        / "unspoken_config_emoji_data_test.yaml";
+    std::ofstream out(path);
+    out << R"(
+url_root: "https://f.mws.rocks/"
+database_path: ":memory:"
+attachment_dir: "/tmp"
+emoji_data_file: "/usr/share/unspoken/data/emoji_categories.json"
+oidc:
+  issuer: "https://kc.example/realms/main"
+  client_id: "unspoken"
+  client_secret: "secret"
+)";
+    out.close();
+
+    auto config = Config::fromYaml(path);
+    std::filesystem::remove(path);
+
+    ASSERT_TRUE(config.has_value()) << mw::errorMsg(config.error());
+    EXPECT_EQ(config->emoji_data_file,
+              "/usr/share/unspoken/data/emoji_categories.json");
+}
+
 TEST(Config, PublicDomainOverrideKept)
 {
     Config c = validBase();

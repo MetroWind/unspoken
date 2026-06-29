@@ -40,6 +40,7 @@ Common optional keys and defaults:
 - `database_path`: `unspoken.db`.
 - `attachment_dir`: `attachments`.
 - `emoji_dir`: `emoji`.
+- `emoji_data_file`: generated Unicode emoji picker data file.
 - `template_dir`: `templates`.
 - `static_dir`: `static`.
 - `posts_per_page`: `20`.
@@ -66,6 +67,7 @@ verbose: false
 database_path: /var/lib/unspoken/unspoken.db
 attachment_dir: /var/lib/unspoken/attachments
 emoji_dir: /var/lib/unspoken/emoji
+emoji_data_file: /usr/share/unspoken/data/emoji_categories.json
 template_dir: /usr/share/unspoken/templates
 static_dir: /usr/share/unspoken/static
 

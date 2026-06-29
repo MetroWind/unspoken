@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <format>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 
+#include <mw/error.hpp>
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 namespace unspoken
@@ -99,6 +104,92 @@ std::vector<EmojiInfo> EmojiRegistry::all() const
     out.reserve(by_shortcode.size());
     for(const auto& [_, info] : by_shortcode) out.push_back(info);
     return out;
+}
+
+mw::E<std::vector<UnicodeEmojiCategory>>
+loadUnicodeEmojiCategories(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if(!file)
+    {
+        return std::unexpected(mw::runtimeError(
+            std::format("Failed to open emoji data file {}", path)));
+    }
+
+    std::string text;
+    text.assign(std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+    if(file.bad())
+    {
+        return std::unexpected(mw::runtimeError(
+            std::format("Failed to read emoji data file {}", path)));
+    }
+
+    try
+    {
+        nlohmann::json root = nlohmann::json::parse(text);
+        if(!root.contains("categories") || !root["categories"].is_array())
+        {
+            return std::unexpected(mw::runtimeError(
+                "Emoji data is missing categories array"));
+        }
+
+        std::vector<UnicodeEmojiCategory> categories;
+        for(const auto& c : root["categories"])
+        {
+            if(!c.contains("id") || !c["id"].is_string()
+               || !c.contains("label") || !c["label"].is_string()
+               || !c.contains("subgroups") || !c["subgroups"].is_array())
+            {
+                return std::unexpected(mw::runtimeError(
+                    "Emoji category has invalid shape"));
+            }
+
+            UnicodeEmojiCategory category;
+            category.id = c["id"].get<std::string>();
+            category.label = c["label"].get<std::string>();
+            for(const auto& s : c["subgroups"])
+            {
+                if(!s.contains("id") || !s["id"].is_string()
+                   || !s.contains("label") || !s["label"].is_string()
+                   || !s.contains("emoji") || !s["emoji"].is_array())
+                {
+                    return std::unexpected(mw::runtimeError(
+                        "Emoji subgroup has invalid shape"));
+                }
+
+                UnicodeEmojiSubgroup subgroup;
+                subgroup.id = s["id"].get<std::string>();
+                subgroup.label = s["label"].get<std::string>();
+                for(const auto& e : s["emoji"])
+                {
+                    if(!e.contains("emoji") || !e["emoji"].is_string()
+                       || !e.contains("name") || !e["name"].is_string()
+                       || !e.contains("version")
+                       || !e["version"].is_string())
+                    {
+                        return std::unexpected(mw::runtimeError(
+                            "Emoji entry has invalid shape"));
+                    }
+                    subgroup.emoji.push_back({
+                        e["emoji"].get<std::string>(),
+                        e["name"].get<std::string>(),
+                        e["version"].get<std::string>(),
+                    });
+                }
+                category.subgroups.push_back(std::move(subgroup));
+            }
+            categories.push_back(std::move(category));
+        }
+
+        return categories;
+    }
+    catch(const std::exception& e)
+    {
+        return std::unexpected(mw::runtimeError(
+            std::format("Failed to parse emoji data file {}: {}",
+                        path, e.what())));
+    }
 }
 
 } // namespace unspoken

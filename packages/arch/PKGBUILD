@@ -55,6 +55,8 @@ package()
     install -d "$pkgdir/usr/share/unspoken"
     cp -a unspoken/templates "$pkgdir/usr/share/unspoken/"
     cp -a unspoken/static "$pkgdir/usr/share/unspoken/"
+    install -Dm644 build/data/emoji_categories.json \
+        "$pkgdir/usr/share/unspoken/data/emoji_categories.json"
 
     install -Dm644 config.yaml "$pkgdir/etc/unspoken/config.yaml"
     install -Dm644 unspoken/docs/operator.md \
