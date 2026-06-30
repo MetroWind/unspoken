@@ -27,6 +27,11 @@ Basically just standard micro blog features.
 * User can like posts (post author sees who liked their posts)
 * User can bookmark posts (Doesn’t involve federation)
 * User can react to posts with emoji (pleroma-like reactions)
+* For remote posts, displayed likes, boosts, and emoji reactions are
+  best-effort. They include activities delivered to this server and any
+  visible interaction state the server explicitly imports, but they are
+  not guaranteed to include all interactions known to other Fediverse
+  servers.
 * User can search for both remote and local users.
 * Server-wide custom emojis
 * Authentication: use a already-setup OpenID Connect server (I have a
@@ -106,6 +111,14 @@ Basically just standard micro blog features.
   accordingly. Delete/Undo activities referencing objects the server
   does not know about are accepted silently. Incoming activities are
   deduplicated by their `id` so that redelivery is idempotent.
+* Remote interaction state is partial by design. Likes, boosts, and
+  Pleroma-style emoji reactions are separate activities; fetching a
+  remote post by URL or as part of a reply thread only guarantees the
+  fetched object itself, not every interaction seen by the origin or by
+  third-party instances. The server should store interactions it
+  receives through inbox delivery, and may import visible interaction
+  collections when available, but the UI must tolerate incomplete
+  counts and missing remote reactions.
 * Local operations like Delete and Update should be federated to
   remote servers.
 * Implement inbox forwarding (ActivityPub §8.1.2): an inbound activity

@@ -232,7 +232,7 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
     color: var(--fg-dim);
     border: 1px solid transparent;
     padding: 3px 7px;
-    font-size: 0.82em;
+    font-size: 1.2em;
 }
 .emoji-tab.active {
     color: var(--fg);
