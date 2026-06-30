@@ -614,6 +614,39 @@ TEST(SSRF, HardensOutboundSession)
     EXPECT_FALSE(http.filter({mw::AddressFamily::IPV4, {127, 0, 0, 1}, 443}));
 }
 
+TEST(SSRF, DevAllowlistPermitsNamedPrivateHost)
+{
+    Config c = testConfig();
+    c.dev.allow_http_url_root = true;
+    c.dev.outbound_allow_private_hosts = {"akkoma.test"};
+
+    FakeSession http;
+    EXPECT_TRUE(mw::isExpected(hardenOutboundSession(
+        c, http, "http://akkoma.test:4000/u/bob")));
+    EXPECT_EQ(http.protocols, "http,https");
+    EXPECT_EQ(http.redirect_protocols, "http,https");
+    EXPECT_EQ(http.redirections, 0);
+    ASSERT_TRUE(http.filter);
+    EXPECT_TRUE(http.filter({
+        mw::AddressFamily::IPV4, {172, 18, 0, 10}, 4000}));
+    EXPECT_FALSE(http.filter({
+        mw::AddressFamily::IPV4, {169, 254, 169, 254}, 80}));
+}
+
+TEST(SSRF, DevAllowlistIgnoredWhenHttpDevModeOff)
+{
+    Config c = testConfig();
+    c.dev.outbound_allow_private_hosts = {"akkoma.test"};
+
+    FakeSession http;
+    EXPECT_TRUE(mw::isExpected(hardenOutboundSession(
+        c, http, "https://akkoma.test/u/bob")));
+    EXPECT_EQ(http.protocols, "https");
+    ASSERT_TRUE(http.filter);
+    EXPECT_FALSE(http.filter({
+        mw::AddressFamily::IPV4, {172, 18, 0, 10}, 443}));
+}
+
 TEST(RemoteActor, SignedGetRequestHasCavageSignatureHeaders)
 {
     mw::Crypto crypto;
@@ -1084,8 +1117,8 @@ TEST(HttpSigning, SignedPostRoundTripsThroughVerifier)
         keys.private_key,
     };
     ASSIGN_OR_FAIL(auto out, signedHttpRequest(
-        crypto, signer, "POST", "https://f.test/inbox", R"({"type":"Like"})",
-        "application/activity+json"));
+        testConfig(), crypto, signer, "POST", "https://f.test/inbox",
+        R"({"type":"Like"})", "application/activity+json"));
 
     IncomingHttpRequest in;
     in.method = "POST";

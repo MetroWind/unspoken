@@ -49,6 +49,21 @@ int main(int argc, char** argv)
     {
         spdlog::set_level(spdlog::level::debug);
     }
+    if(config->dev.allow_http_url_root)
+    {
+        spdlog::warn("HTTP url_root enabled for development");
+    }
+    if(config->dev.allow_http_url_root
+       && !config->dev.outbound_allow_private_hosts.empty())
+    {
+        std::string hosts;
+        for(const auto& host : config->dev.outbound_allow_private_hosts)
+        {
+            if(!hosts.empty()) hosts += ", ";
+            hosts += host;
+        }
+        spdlog::warn("private outbound host allowlist enabled: {}", hosts);
+    }
 
     // Initialize the database (create the schema at v1 if fresh) once at
     // startup so a misconfigured/unwritable DB is a clear fatal error

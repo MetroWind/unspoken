@@ -167,6 +167,27 @@ target_compile_options(unspoken PRIVATE
 target_include_directories(unspoken PRIVATE ${INCLUDES})
 target_link_libraries(unspoken PRIVATE ${LIBS})
 
+add_executable(fake_oidc
+  tests/interop/fake_oidc/fake_oidc.cpp
+  src/auth.cpp
+  src/auth.hpp
+  src/config.hpp
+  src/data.hpp
+  src/structs.hpp
+)
+set_property(TARGET fake_oidc PROPERTY CXX_STANDARD 23)
+set_property(TARGET fake_oidc PROPERTY CXX_EXTENSIONS FALSE)
+set_property(TARGET fake_oidc PROPERTY COMPILE_WARNING_AS_ERROR TRUE)
+target_compile_options(fake_oidc PRIVATE
+  -Wall -Wextra -Wpedantic -Wno-error=deprecated-literal-operator)
+target_include_directories(fake_oidc PRIVATE ${INCLUDES} src)
+target_link_libraries(fake_oidc PRIVATE
+  mw::mw
+  mw::url
+  mw::http-server
+  mw::crypto
+)
+
 if(UNSPOKEN_BUILD_TESTS)
   set(TEST_FILES
     src/config_test.cpp

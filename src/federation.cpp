@@ -157,6 +157,45 @@ std::string lower(std::string_view s)
     return out;
 }
 
+bool hostMatches(std::string_view host,
+                 const std::vector<std::string>& allowed_hosts)
+{
+    std::string needle = lower(host);
+    for(const auto& allowed : allowed_hosts)
+    {
+        if(needle == lower(allowed)) return true;
+    }
+    return false;
+}
+
+bool isMetadataAddress(const mw::SockAddr& addr)
+{
+    const auto& a = addr.address;
+    return addr.family == mw::AddressFamily::IPV4 && a.size() == 4
+        && a[0] == 169 && a[1] == 254 && a[2] == 169 && a[3] == 254;
+}
+
+std::string addressForLog(const mw::SockAddr& addr)
+{
+    const auto& a = addr.address;
+    if(addr.family == mw::AddressFamily::IPV4 && a.size() == 4)
+    {
+        return std::format("{}.{}.{}.{}:{}", a[0], a[1], a[2], a[3],
+                           addr.port);
+    }
+    std::ostringstream out;
+    out << "[";
+    for(size_t i = 0; i < a.size(); i += 2)
+    {
+        if(i > 0) out << ":";
+        uint16_t part = static_cast<uint16_t>(a[i]) << 8;
+        if(i + 1 < a.size()) part |= a[i + 1];
+        out << std::hex << part;
+    }
+    out << "]:" << std::dec << addr.port;
+    return out.str();
+}
+
 std::string percentEncode(std::string_view s)
 {
     constexpr char HEX[] = "0123456789ABCDEF";
@@ -451,9 +490,10 @@ mw::E<void> performDeliveryJob(const Config& config,
                                                      signer_uri));
     std::string body = payload["activity"].dump();
 
-    DO_OR_RETURN(hardenOutboundSession(http));
+    DO_OR_RETURN(hardenOutboundSession(config, http, inbox));
     ASSIGN_OR_RETURN(auto req, signedHttpRequest(
-        crypto, signer, "POST", inbox, body, "application/activity+json"));
+        config, crypto, signer, "POST", inbox, body,
+        "application/activity+json"));
     logOutgoingFederationRequest("POST", req);
     auto res_e = http.post(req);
     if(!res_e.has_value())
@@ -505,7 +545,7 @@ mw::E<nlohmann::json> signedGetJson(
     mw::HTTPSessionInterface& http, const SystemActor& system_actor,
     std::string_view uri)
 {
-    DO_OR_RETURN(hardenOutboundSession(http));
+    DO_OR_RETURN(hardenOutboundSession(config, http, uri));
     ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
                                                 uri));
     ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
@@ -1787,21 +1827,60 @@ mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http)
     return {};
 }
 
+mw::E<void> hardenOutboundSession(const Config& config,
+                                  mw::HTTPSessionInterface& http,
+                                  std::string_view target_url)
+{
+    auto parsed = mw::URL::fromStr(std::string(target_url));
+    if(!parsed.has_value() || parsed->host().empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Outbound federation URL must be absolute"));
+    }
+
+    bool dev_private_host = config.dev.allow_http_url_root
+        && hostMatches(parsed->host(),
+                       config.dev.outbound_allow_private_hosts);
+    if(dev_private_host)
+    {
+        DO_OR_RETURN(http.allowedProtocols("http,https"));
+        DO_OR_RETURN(http.allowedRedirectProtocols("http,https"));
+        DO_OR_RETURN(http.maxRedirections(0));
+        http.followRedirects(false);
+        std::string host = parsed->host();
+        http.addressFilter([host](const mw::SockAddr& addr)
+        {
+            spdlog::warn("Development private outbound host {} resolved to {}",
+                         host, addressForLog(addr));
+            return !isMetadataAddress(addr);
+        });
+        return {};
+    }
+
+    return hardenOutboundSession(http);
+}
+
 mw::E<mw::HTTPRequest> signedGetRequest(const Config& config,
                                         const SystemActor& system_actor,
                                         mw::CryptoInterface& crypto,
                                         std::string_view uri)
 {
-    return signedHttpRequest(crypto, signingActorForSystem(config,
-                                                           system_actor),
+    return signedHttpRequest(config, crypto,
+                             signingActorForSystem(config, system_actor),
                              "GET", uri);
 }
 
-mw::E<mw::HTTPRequest> webFingerRequest(std::string_view uri)
+mw::E<mw::HTTPRequest> webFingerRequest(const Config& config,
+                                        std::string_view uri)
 {
     auto parsed = mw::URL::fromStr(std::string(uri));
-    if(!parsed.has_value() || parsed->scheme() != "https"
-       || parsed->host().empty())
+    bool dev_http = config.dev.allow_http_url_root
+        && parsed.has_value()
+        && hostMatches(parsed->host(),
+                       config.dev.outbound_allow_private_hosts);
+    if(!parsed.has_value() || parsed->host().empty()
+       || (parsed->scheme() != "https"
+           && !(dev_http && parsed->scheme() == "http")))
     {
         return std::unexpected(mw::runtimeError(
             "Outbound WebFinger URL must be absolute https"));
@@ -1833,13 +1912,19 @@ SigningActor signingActorForSystem(const Config& config,
 }
 
 mw::E<mw::HTTPRequest> signedHttpRequest(
-    mw::CryptoInterface& crypto, const SigningActor& actor,
+    const Config& config, mw::CryptoInterface& crypto,
+    const SigningActor& actor,
     std::string_view method, std::string_view uri, std::string_view body,
     std::string_view content_type)
 {
     auto parsed = mw::URL::fromStr(std::string(uri));
-    if(!parsed.has_value() || parsed->scheme() != "https"
-       || parsed->host().empty())
+    bool dev_http = config.dev.allow_http_url_root
+        && parsed.has_value()
+        && hostMatches(parsed->host(),
+                       config.dev.outbound_allow_private_hosts);
+    if(!parsed.has_value() || parsed->host().empty()
+       || (parsed->scheme() != "https"
+           && !(dev_http && parsed->scheme() == "http")))
     {
         return std::unexpected(mw::runtimeError(
             "Outbound federation fetch URL must be absolute https"));
@@ -1893,7 +1978,7 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
     ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
     if(cached.has_value() && !force_refresh) return *cached;
 
-    DO_OR_RETURN(hardenOutboundSession(http));
+    DO_OR_RETURN(hardenOutboundSession(config, http, actor_uri));
     ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
                                                 actor_uri));
     ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
@@ -1976,12 +2061,15 @@ mw::E<RemoteActor> resolveWebFingerActor(
     }
 
     std::string acct = username + "@" + domain;
-    std::string uri = "https://" + domain
+    std::string scheme = config.dev.allow_http_url_root
+        && hostMatches(domain, config.dev.outbound_allow_private_hosts)
+        ? "http" : "https";
+    std::string uri = scheme + "://" + domain
         + "/.well-known/webfinger?resource="
         + percentEncode("acct:" + acct);
 
-    DO_OR_RETURN(hardenOutboundSession(http));
-    ASSIGN_OR_RETURN(auto req, webFingerRequest(uri));
+    DO_OR_RETURN(hardenOutboundSession(config, http, uri));
+    ASSIGN_OR_RETURN(auto req, webFingerRequest(config, uri));
     ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
     if(res->status < 200 || res->status >= 300)
     {

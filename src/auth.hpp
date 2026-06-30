@@ -83,6 +83,12 @@ rsaPemToJwkParams(const std::string& pem);
 mw::E<nlohmann::json> verifyRs256(std::string_view jwt, const std::string& pem,
                                   mw::CryptoInterface& crypto);
 
+// Sign a compact RS256 JWS from JSON header and payload.
+mw::E<std::string> signRs256Jwt(const nlohmann::json& header,
+                                const nlohmann::json& payload,
+                                const std::string& private_key_pem,
+                                mw::CryptoInterface& crypto);
+
 // Find the JWKS key matching the JWT header `kid` (or the sole key),
 // verify the signature, return the payload JSON.
 mw::E<nlohmann::json> verifyJwtWithJwks(std::string_view jwt,

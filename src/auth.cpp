@@ -256,6 +256,26 @@ mw::E<json> verifyRs256(std::string_view jwt, const std::string& pem,
     return decodeJwtSegment(parts[1]);
 }
 
+mw::E<std::string> signRs256Jwt(const json& header, const json& payload,
+                                const std::string& private_key_pem,
+                                mw::CryptoInterface& crypto)
+{
+    std::string header_s = header.dump();
+    std::string payload_s = payload.dump();
+    std::span<const unsigned char> header_bytes(
+        reinterpret_cast<const unsigned char*>(header_s.data()),
+        header_s.size());
+    std::span<const unsigned char> payload_bytes(
+        reinterpret_cast<const unsigned char*>(payload_s.data()),
+        payload_s.size());
+    std::string signing_input = base64UrlEncode(header_bytes) + "."
+        + base64UrlEncode(payload_bytes);
+    ASSIGN_OR_RETURN(auto sig, crypto.sign(
+        mw::SignatureAlgorithm::RSA_V1_5_SHA256, private_key_pem,
+        signing_input));
+    return signing_input + "." + base64UrlEncode(sig);
+}
+
 mw::E<json> verifyJwtWithJwks(std::string_view jwt, const json& jwks,
                               mw::CryptoInterface& crypto)
 {

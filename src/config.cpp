@@ -76,6 +76,19 @@ void readBool(const ryml::ConstNodeRef& node, bool& out)
     }
 }
 
+void readStrList(const ryml::ConstNodeRef& node, std::vector<std::string>& out)
+{
+    if(!node.readable()) return;
+    if(!node.is_seq()) return;
+    out.clear();
+    for(const auto& item : node.children())
+    {
+        std::string value;
+        readStr(item, value);
+        out.push_back(std::move(value));
+    }
+}
+
 mw::E<void> requireDirectory(const std::filesystem::path& path,
                              std::string_view config_key)
 {
@@ -121,7 +134,9 @@ mw::E<void> requireWritableDirectory(const std::filesystem::path& path,
 
 mw::E<void> Config::validateAndFinalize()
 {
-    // url_root is required and must be a valid absolute https URL.
+    // url_root is required and must be a valid absolute URL. Production
+    // accepts only https; dev.allow_http_url_root exists only for the
+    // disposable Docker interop harness.
     if(url_root.empty())
     {
         return std::unexpected(mw::runtimeError("url_root is required"));
@@ -132,7 +147,8 @@ mw::E<void> Config::validateAndFinalize()
         return std::unexpected(mw::runtimeError(
             std::format("url_root is not a valid URL: {}", url_root)));
     }
-    if(parsed->scheme() != "https")
+    if(parsed->scheme() != "https"
+       && !(dev.allow_http_url_root && parsed->scheme() == "http"))
     {
         return std::unexpected(mw::runtimeError(
             std::format("url_root must be an https URL: {}", url_root)));
@@ -154,6 +170,18 @@ mw::E<void> Config::validateAndFinalize()
     if(public_domain.empty())
     {
         public_domain = parsed->host();
+    }
+
+    for(const auto& host : dev.outbound_allow_private_hosts)
+    {
+        if(host.empty() || host.find('*') != std::string::npos
+           || host.find('/') != std::string::npos
+           || host.find(':') != std::string::npos)
+        {
+            return std::unexpected(mw::runtimeError(std::format(
+                "dev.outbound_allow_private_hosts contains invalid host: {}",
+                host)));
+        }
     }
 
     // All numeric tuning params must be positive.
@@ -270,6 +298,15 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
         readBool(child(ni, "open_registrations"),
                  config.nodeinfo.open_registrations);
         readStr(child(ni, "description"), config.nodeinfo.description);
+    }
+
+    ryml::ConstNodeRef dev = child(root, "dev");
+    if(dev.readable() && dev.is_map())
+    {
+        readBool(child(dev, "allow_http_url_root"),
+                 config.dev.allow_http_url_root);
+        readStrList(child(dev, "outbound_allow_private_hosts"),
+                    config.dev.outbound_allow_private_hosts);
     }
 
     auto valid = config.validateAndFinalize();

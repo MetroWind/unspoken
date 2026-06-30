@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include <mw/error.hpp>
 
@@ -28,6 +29,16 @@ struct NodeInfoConfig
     std::string software_name = "unspoken";
     bool open_registrations = true;
     std::string description = "";
+};
+
+struct DevConfig
+{
+    // Test-only: allow http:// url_root and omit Secure on cookies so the
+    // Docker interop harness can run without local TLS.
+    bool allow_http_url_root = false;
+    // Test-only: hosts that may resolve to private Docker-network IPs for
+    // outbound federation. Ignored unless allow_http_url_root is enabled.
+    std::vector<std::string> outbound_allow_private_hosts;
 };
 
 struct Config
@@ -75,6 +86,9 @@ struct Config
 
     // ─── NodeInfo ────────────────────────────────────────────────
     NodeInfoConfig nodeinfo;
+
+    // ─── Development / interop-test-only switches ────────────────
+    DevConfig dev;
 
     // Parse and validate a config from a YAML file. A malformed or
     // incomplete config is a fatal error (returned, not thrown).

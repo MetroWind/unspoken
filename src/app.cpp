@@ -476,16 +476,18 @@ std::optional<std::string> App::cookie(const Request& req,
 void App::setCookie(Response& res, std::string_view name,
                     std::string_view value, int64_t max_age_seconds) const
 {
+    std::string secure = config.dev.allow_http_url_root ? "" : "; Secure";
     res.set_header("Set-Cookie", std::format(
-        "{}={}; Path={}; Max-Age={}; HttpOnly; Secure; SameSite=Lax",
-        name, value, cookiePath(), max_age_seconds));
+        "{}={}; Path={}; Max-Age={}; HttpOnly{}; SameSite=Lax",
+        name, value, cookiePath(), max_age_seconds, secure));
 }
 
 void App::clearCookie(Response& res, std::string_view name) const
 {
+    std::string secure = config.dev.allow_http_url_root ? "" : "; Secure";
     res.set_header("Set-Cookie", std::format(
-        "{}=; Path={}; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
-        name, cookiePath()));
+        "{}=; Path={}; Max-Age=0; HttpOnly{}; SameSite=Lax",
+        name, cookiePath(), secure));
 }
 
 mw::E<std::optional<unspoken::User>>

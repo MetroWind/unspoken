@@ -109,6 +109,25 @@ TEST(AuthJwk, PemRoundTripVerifies)
     EXPECT_TRUE(ok);
 }
 
+TEST(AuthJwt, SignRs256JwtCanBeVerified)
+{
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto kp, crypto.generateKeyPair(mw::KeyType::RSA));
+    json header{{"typ", "JWT"}, {"alg", "RS256"}, {"kid", "k1"}};
+    json payload{{"iss", "https://kc.test/realms/main"},
+                 {"sub", "user-1"},
+                 {"aud", "unspoken"},
+                 {"exp", 1'700'003'600},
+                 {"nonce", "n-123"}};
+
+    ASSIGN_OR_FAIL(auto jwt, signRs256Jwt(header, payload, kp.private_key,
+                                          crypto));
+    ASSIGN_OR_FAIL(auto verified, verifyRs256(jwt, kp.public_key, crypto));
+
+    EXPECT_EQ(verified["sub"], "user-1");
+    EXPECT_EQ(verified["nonce"], "n-123");
+}
+
 // ─── ID-token validation ───────────────────────────────────────────────
 
 TEST(AuthIdToken, ValidTokenPasses)

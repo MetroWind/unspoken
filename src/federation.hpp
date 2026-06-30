@@ -86,6 +86,9 @@ mw::E<nlohmann::json> nodeInfoJson(const Config& config,
 
 bool isAllowedOutboundAddress(const mw::SockAddr& addr);
 mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http);
+mw::E<void> hardenOutboundSession(const Config& config,
+                                  mw::HTTPSessionInterface& http,
+                                  std::string_view target_url);
 mw::E<mw::HTTPRequest> signedGetRequest(const Config& config,
                                         const SystemActor& system_actor,
                                         mw::CryptoInterface& crypto,
@@ -94,7 +97,8 @@ SigningActor signingActorFor(const Config& config, const User& user);
 SigningActor signingActorForSystem(const Config& config,
                                    const SystemActor& system_actor);
 mw::E<mw::HTTPRequest> signedHttpRequest(
-    mw::CryptoInterface& crypto, const SigningActor& actor,
+    const Config& config, mw::CryptoInterface& crypto,
+    const SigningActor& actor,
     std::string_view method, std::string_view uri,
     std::string_view body = "", std::string_view content_type = "");
 mw::E<RemoteActor> resolveRemoteActor(const Config& config,
