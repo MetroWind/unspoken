@@ -9,3 +9,4 @@ data.db
 src/commit.hpp
 
 cmake_test_discovery_*.json
+tests/interop/.artifacts/

@@ -1,0 +1,133 @@
+name: unspoken-akkoma-interop
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: akkoma
+      POSTGRES_USER: akkoma
+      POSTGRES_PASSWORD: akkoma
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U akkoma -d akkoma"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      - feditest
+    volumes:
+      - akkoma-db:/var/lib/postgresql/data
+
+  akkoma:
+    image: akkoma:interop
+    build:
+      context: akkoma
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_NAME: akkoma
+      DB_USER: akkoma
+      MIX_ENV: prod
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:4000/api/v1/instance
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    networks:
+      feditest:
+        aliases:
+          - akkoma.test
+    ports:
+      - "14000:4000"
+    volumes:
+      - ./config/akkoma.exs:/opt/akkoma/config/prod.secret.exs:ro
+      - akkoma-uploads:/opt/akkoma/uploads
+
+  unspoken:
+    build:
+      context: ../..
+      dockerfile: tests/interop/unspoken/Dockerfile
+    depends_on:
+      fake-oidc:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - >
+        mkdir -p /data/attachments /data/emoji
+        && exec /usr/local/bin/unspoken --config /config/unspoken.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      feditest:
+        aliases:
+          - unspoken.test
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./config/unspoken.yaml:/config/unspoken.yaml:ro
+      - unspoken-data:/data
+
+  fake-oidc:
+    build:
+      context: ../..
+      dockerfile: tests/interop/fake_oidc/Dockerfile
+    environment:
+      OIDC_ISSUER: http://fake-oidc.test:9000
+      OIDC_LISTEN_HOST: 0.0.0.0
+      OIDC_LISTEN_PORT: "9000"
+      OIDC_CLIENT_ID: unspoken-interop
+      OIDC_CLIENT_SECRET: unspoken-interop-secret
+      OIDC_DEFAULT_USER: alice
+      OIDC_TOKEN_TTL_SECONDS: "3600"
+      OIDC_PRIVATE_KEY: /app/jwt_private.pem
+      OIDC_PUBLIC_JWK: /app/jwt_public.jwk
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:9000/.well-known/openid-configuration
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      feditest:
+        aliases:
+          - fake-oidc.test
+
+  interop-runner:
+    build:
+      context: runner
+    depends_on:
+      akkoma:
+        condition: service_healthy
+      fake-oidc:
+        condition: service_healthy
+      unspoken:
+        condition: service_healthy
+    environment:
+      UNSPOKEN_URL: http://unspoken.test:8080
+      AKKOMA_URL: http://akkoma.test:4000
+      FAKE_OIDC_URL: http://fake-oidc.test:9000
+      RESULTS_PATH: /artifacts/results.json
+    networks:
+      - feditest
+    profiles:
+      - test
+    volumes:
+      - ./.artifacts:/artifacts
+      - unspoken-data:/unspoken-data:ro
+
+networks:
+  feditest:
+
+volumes:
+  unspoken-data:
+  akkoma-db:
+  akkoma-uploads:
