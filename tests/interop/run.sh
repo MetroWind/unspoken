@@ -40,6 +40,7 @@ case "$cmd" in
         compose up -d --build postgres akkoma fake-oidc unspoken
         ;;
     test)
+        compose build interop-runner
         if ! compose run --rm interop-runner; then
             print_logs
             exit 1

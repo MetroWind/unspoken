@@ -13,22 +13,28 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 
 TIMEOUT_SECONDS = 120
 INTERVAL_SECONDS = 1
 AKKOMA_PASSWORD = "test-password"
 AKKOMA_SCOPES = "read write follow"
+ACTIVITY_JSON = "application/activity+json"
 
 
 class CsrfParser(html.parser.HTMLParser):
+    """Extract CSRF tokens from Unspoken HTML forms."""
+
     def __init__(self) -> None:
+        """Create a parser that records the first CSRF input value."""
         super().__init__()
         self.csrf: str | None = None
+        self.handle_starttag = self.handleStarttag
 
-    def handle_starttag(self, tag: str,
+    def handleStarttag(self, tag: str,
                         attrs: list[tuple[str, str | None]]) -> None:
+        """Handle an HTML start tag while looking for CSRF input fields."""
         if tag != "input":
             return
         values = {k: v or "" for k, v in attrs}
@@ -38,22 +44,27 @@ class CsrfParser(html.parser.HTMLParser):
 
 @dataclass
 class HttpResult:
+    """Represent an HTTP response returned by runner control helpers."""
+
     status: int
     url: str
     body: str
     headers: urllib.response.addinfourl
 
 
-def form_data(fields: dict[str, Any]) -> bytes:
+def formData(fields: dict[str, Any]) -> bytes:
+    """Encode form fields for application/x-www-form-urlencoded requests."""
     return urllib.parse.urlencode(fields).encode("utf-8")
 
 
-def json_data(fields: dict[str, Any]) -> bytes:
+def jsonData(fields: dict[str, Any]) -> bytes:
+    """Encode a JSON request body from a mapping of fields."""
     return json.dumps(fields).encode("utf-8")
 
 
-def get_url(url: str,
+def getUrl(url: str,
             headers: dict[str, str] | None = None) -> tuple[int, str]:
+    """Fetch a URL without cookies and return the status and response body."""
     request = urllib.request.Request(
         url, headers=headers or {"User-Agent": "interop"})
     try:
@@ -63,13 +74,14 @@ def get_url(url: str,
         return error.code, error.read().decode("utf-8", "replace")
 
 
-def wait_for(name: str, url: str) -> dict[str, str]:
+def waitFor(name: str, url: str) -> dict[str, str]:
+    """Wait until a service URL returns a successful readiness response."""
     deadline = time.monotonic() + TIMEOUT_SECONDS
     last_status = None
     last_body = ""
     while time.monotonic() < deadline:
         try:
-            last_status, last_body = get_url(url)
+            last_status, last_body = getUrl(url)
             if 200 <= last_status < 300:
                 print(f"{name} ready at {url}")
                 return {"name": name, "url": url, "status": "ready"}
@@ -83,7 +95,10 @@ def wait_for(name: str, url: str) -> dict[str, str]:
 
 
 class Browser:
+    """Maintain cookies while issuing HTTP requests for one test user."""
+
     def __init__(self) -> None:
+        """Create a cookie-aware opener for form and API requests."""
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cookies))
@@ -91,6 +106,7 @@ class Browser:
     def request(self, method: str, url: str,
                 data: bytes | None = None,
                 headers: dict[str, str] | None = None) -> HttpResult:
+        """Send an HTTP request and preserve non-2xx responses as results."""
         merged_headers = {"User-Agent": "interop"}
         if headers:
             merged_headers.update(headers)
@@ -107,134 +123,163 @@ class Browser:
 
     def get(self, url: str,
             headers: dict[str, str] | None = None) -> HttpResult:
+        """Send a GET request through the browser session."""
         return self.request("GET", url, headers=headers)
 
-    def post_form(self, url: str, fields: dict[str, Any]) -> HttpResult:
+    def postForm(self, url: str, fields: dict[str, Any]) -> HttpResult:
+        """POST URL-encoded form data through the browser session."""
         return self.request(
-            "POST", url, form_data(fields),
+            "POST", url, formData(fields),
             {"Content-Type": "application/x-www-form-urlencoded"})
 
-    def post_json(self, url: str, fields: dict[str, Any]) -> HttpResult:
+    def postJson(self, url: str, fields: dict[str, Any]) -> HttpResult:
+        """POST a JSON body through the browser session."""
         return self.request(
-            "POST", url, json_data(fields),
+            "POST", url, jsonData(fields),
             {"Content-Type": "application/json"})
 
 
 class UnspokenControl:
+    """Drive Unspoken through browser-visible routes during interop tests."""
+
     def __init__(self, base_url: str, oidc_url: str) -> None:
+        """Create a controller for one Unspoken instance and fake OIDC peer."""
         self.base_url = base_url.rstrip("/")
         self.oidc_url = oidc_url.rstrip("/")
         self.browsers: dict[str, Browser] = {}
 
     def browser(self, username: str) -> Browser:
+        """Return the persistent browser session for a named Unspoken user."""
         if username not in self.browsers:
             self.browsers[username] = Browser()
         return self.browsers[username]
 
     def login(self, username: str) -> HttpResult:
+        """Log in a test user through fake OIDC and complete first-run setup."""
         browser = self.browser(username)
-        selected = browser.post_json(
+        selected = browser.postJson(
             f"{self.oidc_url}/select-user", {"username": username})
-        require_status(selected, 200, "select fake OIDC user")
+        requireStatus(selected, 200, "select fake OIDC user")
         result = browser.get(f"{self.base_url}/login")
-        if path_of(result.url) == "/setup-username":
-            return self.setup_username(username, result.body)
-        require_status(result, 200, "unspoken login")
+        if pathOf(result.url) == "/setup-username":
+            return self.setupUsername(username, result.body)
+        requireStatus(result, 200, "unspoken login")
         return result
 
-    def setup_username(self, username: str, body: str | None = None
+    def setupUsername(self, username: str, body: str | None = None
                        ) -> HttpResult:
+        """Submit the Unspoken username setup form for a new local user."""
         browser = self.browser(username)
         setup = body
         if setup is None:
             result = browser.get(f"{self.base_url}/setup-username")
-            require_status(result, 200, "get username setup form")
+            requireStatus(result, 200, "get username setup form")
             setup = result.body
-        csrf = parse_csrf(setup)
-        result = browser.post_form(
+        csrf = parseCsrf(setup)
+        result = browser.postForm(
             f"{self.base_url}/setup-username",
             {"csrf": csrf, "username": username,
              "display_name": username.capitalize()})
-        require_status(result, 200, "submit username setup")
+        requireStatus(result, 200, "submit username setup")
         return result
 
-    def csrf_from(self, username: str, path: str) -> str:
+    def csrfFrom(self, username: str, path: str) -> str:
+        """Fetch an Unspoken page and return its CSRF token."""
         result = self.browser(username).get(f"{self.base_url}{path}")
-        require_status(result, 200, f"get {path}")
-        return parse_csrf(result.body)
+        requireStatus(result, 200, f"get {path}")
+        return parseCsrf(result.body)
 
-    def create_post(self, username: str, fields: dict[str, Any]) -> int:
-        csrf = self.csrf_from(username, "/")
+    def createPost(self, username: str, fields: dict[str, Any]) -> int:
+        """Create a local Unspoken post and return its numeric post id."""
+        csrf = self.csrfFrom(username, "/")
         payload = {"csrf": csrf, "content": fields["content"],
                    "visibility": fields.get("visibility", "public"),
                    "summary": fields.get("summary", "")}
         if fields.get("sensitive", False):
             payload["sensitive"] = "1"
-        result = self.browser(username).post_form(
+        result = self.browser(username).postForm(
             f"{self.base_url}/post", payload)
-        require_status(result, 200, "create unspoken post")
-        return post_id_from_url(result.url)
+        requireStatus(result, 200, "create unspoken post")
+        return postIdFromUrl(result.url)
 
     def reply(self, username: str, post_id: int,
               fields: dict[str, Any]) -> int:
-        csrf = self.csrf_from(username, f"/p/{post_id}")
-        result = self.browser(username).post_form(
+        """Create a local Unspoken reply and return its numeric post id."""
+        csrf = self.csrfFrom(username, f"/p/{post_id}")
+        result = self.browser(username).postForm(
             f"{self.base_url}/post/{post_id}/reply",
             {"csrf": csrf, "content": fields["content"],
              "visibility": fields.get("visibility", "public")})
-        require_status(result, 200, "create unspoken reply")
-        return post_id_from_url(result.url)
+        requireStatus(result, 200, "create unspoken reply")
+        return postIdFromUrl(result.url)
 
     def follow(self, username: str, actor_uri: str,
                undo: bool = False) -> HttpResult:
-        csrf = self.csrf_from(username, "/search")
+        """Submit an Unspoken follow or unfollow action for a remote actor."""
+        csrf = self.csrfFrom(username, "/search")
         fields = {"csrf": csrf, "actor_uri": actor_uri}
         if undo:
             fields["undo"] = "1"
-        result = self.browser(username).post_form(
+        result = self.browser(username).postForm(
             f"{self.base_url}/follow", fields)
-        require_status(result, 200, "submit unspoken follow form")
+        requireStatus(result, 200, "submit unspoken follow form")
         return result
 
     def like(self, username: str, post_id: int,
              undo: bool = False) -> HttpResult:
-        return self.post_action(username, post_id, "like", undo=undo)
+        """Submit a like or unlike action from an Unspoken user."""
+        return self.postAction(username, post_id, "like", undo=undo)
 
     def boost(self, username: str, post_id: int,
               undo: bool = False) -> HttpResult:
-        return self.post_action(username, post_id, "boost", undo=undo)
+        """Submit a boost or unboost action from an Unspoken user."""
+        return self.postAction(username, post_id, "boost", undo=undo)
 
     def react(self, username: str, post_id: int, emoji: str,
               undo: bool = False) -> HttpResult:
-        return self.post_action(
+        """Submit or undo an emoji reaction from an Unspoken user."""
+        return self.postAction(
             username, post_id, "react", {"emoji": emoji}, undo)
 
     def delete(self, username: str, post_id: int) -> HttpResult:
-        return self.post_action(username, post_id, "delete")
+        """Delete an Unspoken post through the post action route."""
+        return self.postAction(username, post_id, "delete")
 
-    def post_action(self, username: str, post_id: int, action: str,
+    def postAction(self, username: str, post_id: int, action: str,
                     extra: dict[str, Any] | None = None,
                     undo: bool = False) -> HttpResult:
-        csrf = self.csrf_from(username, f"/p/{post_id}")
+        """Submit a CSRF-protected action against an Unspoken post."""
+        csrf = self.csrfFrom(username, f"/p/{post_id}")
         fields = {"csrf": csrf}
         if extra:
             fields.update(extra)
         if undo:
             fields["undo"] = "1"
-        result = self.browser(username).post_form(
+        result = self.browser(username).postForm(
             f"{self.base_url}/post/{post_id}/{action}", fields)
-        require_status(result, 200, f"submit unspoken {action} form")
+        requireStatus(result, 200, f"submit unspoken {action} form")
         return result
 
     def search(self, username: str, query: str) -> HttpResult:
+        """Run an Unspoken search as a logged-in user."""
         encoded = urllib.parse.urlencode({"q": query})
         result = self.browser(username).get(f"{self.base_url}/search?{encoded}")
-        require_status(result, 200, "search unspoken")
+        requireStatus(result, 200, "search unspoken")
         return result
+
+    def activityJson(self, path: str) -> dict[str, Any]:
+        """Fetch an Unspoken route as ActivityPub JSON."""
+        result = Browser().get(
+            f"{self.base_url}{path}", {"Accept": ACTIVITY_JSON})
+        requireStatus(result, 200, f"fetch ActivityPub JSON {path}")
+        return json.loads(result.body)
 
 
 class AkkomaControl:
+    """Drive Akkoma through its Mastodon-compatible HTTP API."""
+
     def __init__(self, base_url: str) -> None:
+        """Create a controller for one Akkoma instance."""
         self.base_url = base_url.rstrip("/")
         self.client_id: str | None = None
         self.client_secret: str | None = None
@@ -242,36 +287,39 @@ class AkkomaControl:
         self.tokens: dict[str, str] = {}
         self.account_ids: dict[str, str] = {}
 
-    def ensure_app(self) -> None:
+    def ensureApp(self) -> None:
+        """Create and cache OAuth application credentials if needed."""
         if self.client_id is not None and self.client_secret is not None:
             return
-        data = form_data({
+        data = formData({
             "client_name": "unspoken-interop",
             "redirect_uris": "urn:ietf:wg:oauth:2.0:oob",
             "scopes": AKKOMA_SCOPES,
         })
-        body = self.http_json("POST", "/api/v1/apps", data=data)
+        body = self.httpJson("POST", "/api/v1/apps", data=data)
         self.client_id = body["client_id"]
         self.client_secret = body["client_secret"]
 
-    def ensure_app_token(self) -> str:
-        self.ensure_app()
+    def ensureAppToken(self) -> str:
+        """Return an application token for provisioning Akkoma users."""
+        self.ensureApp()
         if self.app_token is not None:
             return self.app_token
-        data = form_data({
+        data = formData({
             "grant_type": "client_credentials",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "scope": AKKOMA_SCOPES,
         })
-        body = self.http_json("POST", "/oauth/token", data=data)
+        body = self.httpJson("POST", "/oauth/token", data=data)
         self.app_token = body["access_token"]
         return self.app_token
 
-    def create_user(self, username: str,
+    def createUser(self, username: str,
                     password: str = AKKOMA_PASSWORD) -> None:
-        app_token = self.ensure_app_token()
-        data = form_data({
+        """Create an Akkoma test user, treating existing users as ready."""
+        app_token = self.ensureAppToken()
+        data = formData({
             "username": username,
             "email": f"{username}@akkoma.test",
             "password": password,
@@ -292,10 +340,11 @@ class AkkomaControl:
 
     def login(self, username: str,
               password: str = AKKOMA_PASSWORD) -> str:
-        self.ensure_app()
+        """Return and cache a user access token for Akkoma API calls."""
+        self.ensureApp()
         if username in self.tokens:
             return self.tokens[username]
-        data = form_data({
+        data = formData({
             "grant_type": "password",
             "username": username,
             "password": password,
@@ -303,70 +352,102 @@ class AkkomaControl:
             "client_secret": self.client_secret,
             "scope": AKKOMA_SCOPES,
         })
-        body = self.http_json("POST", "/oauth/token", data=data)
+        body = self.httpJson("POST", "/oauth/token", data=data)
         token = body["access_token"]
         self.tokens[username] = token
-        account = self.http_json(
+        account = self.httpJson(
             "GET", "/api/v1/accounts/verify_credentials", token=token)
         self.account_ids[username] = account["id"]
         return token
 
-    def create_status(self, token: str, text: str,
+    def createStatus(self, token: str, text: str,
                       in_reply_to_id: str | None = None) -> dict[str, Any]:
+        """Create a public Akkoma status, optionally as a reply."""
         fields = {"status": text, "visibility": "public"}
         if in_reply_to_id is not None:
             fields["in_reply_to_id"] = in_reply_to_id
-        return self.http_json(
-            "POST", "/api/v1/statuses", data=form_data(fields), token=token)
+        return self.httpJson(
+            "POST", "/api/v1/statuses", data=formData(fields), token=token)
 
     def follow(self, token: str, actor_uri: str) -> dict[str, Any]:
-        account = self.search_account(token, actor_uri)
-        return self.http_json(
+        """Resolve and follow an ActivityPub actor from an Akkoma account."""
+        account = self.searchAccount(token, actor_uri)
+        return self.httpJson(
             "POST", f"/api/v1/accounts/{account['id']}/follow",
             data=b"", token=token)
 
-    def search_account(self, token: str, query: str) -> dict[str, Any]:
+    def searchAccount(self, token: str, query: str) -> dict[str, Any]:
+        """Resolve an Akkoma-visible account by URI or search query."""
         encoded = urllib.parse.urlencode(
             {"q": query, "resolve": "true", "type": "accounts"})
-        body = self.http_json(
+        body = self.httpJson(
             "GET", f"/api/v2/search?{encoded}", token=token)
         accounts = body.get("accounts", [])
         if not accounts:
             raise RuntimeError(f"Akkoma could not resolve account {query}")
         return accounts[0]
 
+    def searchStatus(self, token: str, query: str) -> dict[str, Any] | None:
+        """Resolve an Akkoma-visible status by URI or search query."""
+        encoded = urllib.parse.urlencode(
+            {"q": query, "resolve": "true", "type": "statuses"})
+        body = self.httpJson(
+            "GET", f"/api/v2/search?{encoded}", token=token)
+        statuses = body.get("statuses", [])
+        if not statuses:
+            return None
+        return statuses[0]
+
+    def status(self, token: str, status_id: str) -> dict[str, Any] | None:
+        """Fetch one Akkoma status, returning None when it is missing."""
+        result = self.http(
+            "GET", f"/api/v1/statuses/{status_id}", token=token)
+        if result.status == 404:
+            return None
+        if not 200 <= result.status < 300:
+            raise RuntimeError(
+                f"GET status {status_id} failed: {result.status} "
+                f"{result.body[:500]}")
+        return json.loads(result.body)
+
     def like(self, token: str, status_id: str,
              undo: bool = False) -> dict[str, Any]:
+        """Favourite or unfavourite an Akkoma status."""
         action = "unfavourite" if undo else "favourite"
-        return self.http_json(
+        return self.httpJson(
             "POST", f"/api/v1/statuses/{status_id}/{action}",
             data=b"", token=token)
 
     def boost(self, token: str, status_id: str,
               undo: bool = False) -> dict[str, Any]:
+        """Reblog or unreblog an Akkoma status."""
         action = "unreblog" if undo else "reblog"
-        return self.http_json(
+        return self.httpJson(
             "POST", f"/api/v1/statuses/{status_id}/{action}",
             data=b"", token=token)
 
     def react(self, token: str, status_id: str, emoji: str,
               undo: bool = False) -> dict[str, Any]:
+        """Add or remove an Akkoma emoji reaction on a status."""
         quoted = urllib.parse.quote(emoji, safe="")
         method = "DELETE" if undo else "PUT"
-        return self.http_json(
+        return self.httpJson(
             method, f"/api/v1/pleroma/statuses/{status_id}/reactions/{quoted}",
             data=b"", token=token)
 
-    def delete_status(self, token: str, status_id: str) -> dict[str, Any]:
-        return self.http_json(
+    def deleteStatus(self, token: str, status_id: str) -> dict[str, Any]:
+        """Delete an Akkoma status through the API."""
+        return self.httpJson(
             "DELETE", f"/api/v1/statuses/{status_id}", token=token)
 
-    def custom_emoji(self) -> list[dict[str, Any]]:
-        return self.http_json("GET", "/api/v1/custom_emojis")
+    def customEmoji(self) -> list[dict[str, Any]]:
+        """Return Akkoma custom emoji metadata visible to anonymous clients."""
+        return self.httpJson("GET", "/api/v1/custom_emojis")
 
-    def http_json(self, method: str, path: str,
+    def httpJson(self, method: str, path: str,
                   data: bytes | None = None,
                   token: str | None = None) -> Any:
+        """Send an Akkoma API request and decode a successful JSON body."""
         result = self.http(method, path, data=data, token=token)
         if not 200 <= result.status < 300:
             raise RuntimeError(
@@ -377,6 +458,7 @@ class AkkomaControl:
     def http(self, method: str, path: str,
              data: bytes | None = None,
              token: str | None = None) -> HttpResult:
+        """Send a raw Akkoma API request and return the full HTTP result."""
         headers = {"User-Agent": "interop"}
         if data is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
@@ -396,41 +478,56 @@ class AkkomaControl:
 
 
 class UnspokenDatabase:
+    """Read Unspoken state directly from SQLite for eventual assertions."""
+
     def __init__(self, path: str) -> None:
+        """Create a read-only database helper for the given SQLite path."""
         self.path = path
 
     def connect(self) -> sqlite3.Connection:
+        """Open a read-only SQLite connection with row dictionaries enabled."""
         uri = f"file:{self.path}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
         return conn
 
     def rows(self, query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        """Run a read-only query and return rows as dictionaries."""
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(query, params)]
 
-    def post_by_uri(self, uri: str) -> dict[str, Any] | None:
+    def postByUri(self, uri: str) -> dict[str, Any] | None:
+        """Return the stored Unspoken post for an ActivityPub object URI."""
         rows = self.rows("SELECT * FROM posts WHERE uri = ?", (uri,))
         return rows[0] if rows else None
 
-    def reactions_for_post(self, uri: str) -> list[dict[str, Any]]:
+    def remoteActorByUri(self, uri: str) -> dict[str, Any] | None:
+        """Return the cached remote actor for an ActivityPub actor URI."""
+        rows = self.rows("SELECT * FROM remote_actors WHERE uri = ?", (uri,))
+        return rows[0] if rows else None
+
+    def reactionsForPost(self, uri: str) -> list[dict[str, Any]]:
+        """Return emoji reactions stored for an ActivityPub post URI."""
         return self.rows(
             "SELECT * FROM reactions WHERE post_uri = ? "
             "ORDER BY created_at ASC",
             (uri,))
 
-    def likes_for_post(self, uri: str) -> list[dict[str, Any]]:
+    def likesForPost(self, uri: str) -> list[dict[str, Any]]:
+        """Return likes stored for an ActivityPub post URI."""
         return self.rows(
             "SELECT * FROM likes WHERE post_uri = ? ORDER BY created_at ASC",
             (uri,))
 
-    def boosts_for_post(self, uri: str) -> list[dict[str, Any]]:
+    def boostsForPost(self, uri: str) -> list[dict[str, Any]]:
+        """Return boosts stored for an ActivityPub post URI."""
         return self.rows(
             "SELECT * FROM boosts WHERE post_uri = ? ORDER BY created_at ASC",
             (uri,))
 
     def follow(self, follower_uri: str,
                followee_uri: str) -> dict[str, Any] | None:
+        """Return the stored follow row for a follower/followee pair."""
         rows = self.rows(
             "SELECT * FROM follows WHERE follower_uri = ? "
             "AND followee_uri = ?",
@@ -438,20 +535,42 @@ class UnspokenDatabase:
         return rows[0] if rows else None
 
     def jobs(self, kind: str, state: str) -> list[dict[str, Any]]:
+        """Return queued jobs matching a kind and state."""
         return self.rows(
             "SELECT * FROM jobs WHERE kind = ? AND state = ? "
             "ORDER BY created_at ASC",
             (kind, state))
 
 
-def require_status(result: HttpResult, expected: int, action: str) -> None:
+def waitUntil(name: str, probe: Callable[[], Any]) -> Any:
+    """Poll a probe until it returns a truthy value or times out."""
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    last_error: Exception | None = None
+    last_value: Any = None
+    while time.monotonic() < deadline:
+        try:
+            value = probe()
+            if value:
+                return value
+            last_value = value
+        except Exception as error:
+            last_error = error
+        time.sleep(INTERVAL_SECONDS)
+    if last_error is not None:
+        raise RuntimeError(f"Timed out waiting for {name}: {last_error}")
+    raise RuntimeError(f"Timed out waiting for {name}: last={last_value!r}")
+
+
+def requireStatus(result: HttpResult, expected: int, action: str) -> None:
+    """Raise a diagnostic error when an HTTP result has the wrong status."""
     if result.status != expected:
         raise RuntimeError(
             f"{action} failed: {result.status} {result.url} "
             f"{result.body[:500]}")
 
 
-def parse_csrf(body: str) -> str:
+def parseCsrf(body: str) -> str:
+    """Parse a CSRF token from an HTML response body."""
     parser = CsrfParser()
     parser.feed(body)
     if not parser.csrf:
@@ -459,19 +578,22 @@ def parse_csrf(body: str) -> str:
     return parser.csrf
 
 
-def path_of(url: str) -> str:
+def pathOf(url: str) -> str:
+    """Return only the path component of a URL."""
     return urllib.parse.urlparse(url).path
 
 
-def post_id_from_url(url: str) -> int:
+def postIdFromUrl(url: str) -> int:
+    """Extract an Unspoken numeric post id from a post URL."""
     match = re.search(r"/p/([0-9]+)(?:$|[?#])", url)
     if not match:
         raise RuntimeError(f"Could not find post id in {url}")
     return int(match.group(1))
 
 
-def run_phase_3(unspoken_url: str, akkoma_url: str,
+def runPhase3(unspoken_url: str, akkoma_url: str,
                 fake_oidc_url: str, db_path: str) -> dict[str, Any]:
+    """Exercise phase 3 control helpers against live interop services."""
     stamp = str(int(time.time()))
     alice = "alice"
     bob = "bob"
@@ -479,16 +601,16 @@ def run_phase_3(unspoken_url: str, akkoma_url: str,
     akkoma = AkkomaControl(akkoma_url)
     db = UnspokenDatabase(db_path)
 
-    akkoma.create_user(bob)
+    akkoma.createUser(bob)
     bob_token = akkoma.login(bob)
     unspoken.login(alice)
 
-    emojis = akkoma.custom_emoji()
+    emojis = akkoma.customEmoji()
     emoji_names = {item.get("shortcode") for item in emojis}
     if "interop_blob" not in emoji_names:
         raise RuntimeError("Akkoma custom emoji :interop_blob: not available")
 
-    post_id = unspoken.create_post(
+    post_id = unspoken.createPost(
         alice, {"content": f"phase 3 post {stamp}"})
     reply_id = unspoken.reply(
         alice, post_id, {"content": f"phase 3 reply {stamp}"})
@@ -504,7 +626,7 @@ def run_phase_3(unspoken_url: str, akkoma_url: str,
     akkoma.follow(bob_token, actor_uri)
     unspoken.follow(alice, f"{akkoma_url.rstrip('/')}/users/{bob}")
 
-    status = akkoma.create_status(bob_token, f"phase 3 status {stamp}")
+    status = akkoma.createStatus(bob_token, f"phase 3 status {stamp}")
     status_id = status["id"]
     akkoma.like(bob_token, status_id)
     akkoma.like(bob_token, status_id, undo=True)
@@ -512,10 +634,10 @@ def run_phase_3(unspoken_url: str, akkoma_url: str,
     akkoma.boost(bob_token, status_id, undo=True)
     akkoma.react(bob_token, status_id, ":interop_blob:")
     akkoma.react(bob_token, status_id, ":interop_blob:", undo=True)
-    akkoma.delete_status(bob_token, status_id)
+    akkoma.deleteStatus(bob_token, status_id)
 
     post_uri = f"{unspoken_url.rstrip('/')}/p/{post_id}"
-    stored = db.post_by_uri(post_uri)
+    stored = db.postByUri(post_uri)
     if stored is None:
         raise RuntimeError(f"Unspoken post {post_uri} was not stored")
     if db.follow(actor_uri, f"{akkoma_url.rstrip('/')}/users/{bob}") is None:
@@ -543,8 +665,290 @@ def run_phase_3(unspoken_url: str, akkoma_url: str,
     }
 
 
-def write_results(path: str, status: str, tests: list[dict[str, Any]],
+class Phase4Context:
+    """Share phase 4 service clients, users, and state lookup helpers."""
+
+    def __init__(self, unspoken_url: str, akkoma_url: str,
+                 fake_oidc_url: str, db_path: str) -> None:
+        """Create reusable phase 4 test context for one runner invocation."""
+        self.unspoken_url = unspoken_url.rstrip("/")
+        self.akkoma_url = akkoma_url.rstrip("/")
+        self.stamp = str(int(time.time()))
+        self.alice = "alice"
+        self.bob = "bob"
+        self.unspoken = UnspokenControl(unspoken_url, fake_oidc_url)
+        self.akkoma = AkkomaControl(akkoma_url)
+        self.db = UnspokenDatabase(db_path)
+        self.bob_token = ""
+
+    @property
+    def aliceActor(self) -> str:
+        """Return Alice's Unspoken ActivityPub actor URI."""
+        return f"{self.unspoken_url}/u/{self.alice}"
+
+    @property
+    def bobActor(self) -> str:
+        """Return Bob's Akkoma ActivityPub actor URI."""
+        return f"{self.akkoma_url}/users/{self.bob}"
+
+    def setup(self) -> None:
+        """Provision the phase 4 users and log in both peers."""
+        self.akkoma.createUser(self.bob)
+        self.bob_token = self.akkoma.login(self.bob)
+        self.unspoken.login(self.alice)
+
+    def ensureFollowBothDirections(self) -> None:
+        """Ensure Alice and Bob have accepted follows in both directions."""
+        incoming = self.db.follow(self.bobActor, self.aliceActor)
+        if incoming is None or incoming.get("state") != "accepted":
+            self.akkoma.follow(self.bob_token, self.aliceActor)
+        waitUntil("Akkoma follow stored in unspoken", lambda: self.db.follow(
+            self.bobActor, self.aliceActor))
+        outgoing = self.db.follow(self.aliceActor, self.bobActor)
+        if outgoing is None:
+            self.unspoken.follow(self.alice, self.bobActor)
+        waitUntil("Unspoken follow accepted by Akkoma",
+                   self.acceptedOutgoingFollow)
+
+    def acceptedOutgoingFollow(self) -> dict[str, Any] | None:
+        """Return Alice's outgoing follow once Akkoma has accepted it."""
+        follow = self.db.follow(self.aliceActor, self.bobActor)
+        if follow is not None and follow.get("state") == "accepted":
+            return follow
+        return None
+
+    def createAlicePostSeenByAkkoma(self, label: str
+                                         ) -> tuple[int, str, dict[str, Any]]:
+        """Create an Alice post and wait until Akkoma can resolve it."""
+        content = f"phase 4 {label} alice {self.stamp}"
+        post_id = self.unspoken.createPost(
+            self.alice, {"content": content})
+        post_uri = f"{self.unspoken_url}/p/{post_id}"
+        status = waitUntil(
+            f"Akkoma receives {post_uri}",
+            lambda: self.akkoma.searchStatus(self.bob_token, post_uri))
+        return post_id, post_uri, status
+
+    def createBobPostSeenByUnspoken(self, label: str
+                                         ) -> tuple[dict[str, Any],
+                                                    dict[str, Any]]:
+        """Create a Bob status and wait until Unspoken stores it."""
+        status = self.akkoma.createStatus(
+            self.bob_token, f"phase 4 {label} bob {self.stamp}")
+        post = waitUntil(
+            f"Unspoken receives {status['uri']}",
+            lambda: self.db.postByUri(status["uri"]))
+        return status, post
+
+
+def testActorAndWebfinger(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify actor JSON, WebFinger discovery, and remote actor caching."""
+    actor_json = ctx.unspoken.activityJson(f"/u/{ctx.alice}")
+    if actor_json.get("id") != ctx.aliceActor:
+        raise RuntimeError("Unspoken actor JSON id does not match actor URL")
+    if "publicKey" not in actor_json:
+        raise RuntimeError("Unspoken actor JSON did not include publicKey")
+
+    webfinger_url = (
+        f"{ctx.unspoken_url}/.well-known/webfinger?"
+        + urllib.parse.urlencode({"resource": f"acct:alice@unspoken.test"}))
+    status, body = getUrl(webfinger_url)
+    if status != 200:
+        raise RuntimeError(f"WebFinger failed: {status} {body[:500]}")
+    webfinger = json.loads(body)
+    self_links = [
+        item for item in webfinger.get("links", [])
+        if item.get("rel") == "self"
+        and item.get("type") == ACTIVITY_JSON
+    ]
+    if not self_links or self_links[0].get("href") != ctx.aliceActor:
+        raise RuntimeError("WebFinger self link did not point at Alice actor")
+
+    account = ctx.akkoma.searchAccount(ctx.bob_token, ctx.aliceActor)
+    remote = waitUntil(
+        "Unspoken caches Akkoma actor",
+        lambda: ctx.db.remoteActorByUri(ctx.bobActor))
+    return {
+        "name": "phase_4_actor_fetch_and_webfinger",
+        "status": "passed",
+        "objects": {
+            "alice_actor": ctx.aliceActor,
+            "akkoma_account_id": account["id"],
+            "bob_actor": remote["uri"],
+        },
+    }
+
+
+def testFollowBothDirections(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify follow acceptance from Unspoken to Akkoma and back."""
+    ctx.ensureFollowBothDirections()
+    incoming = ctx.db.follow(ctx.bobActor, ctx.aliceActor)
+    outgoing = ctx.db.follow(ctx.aliceActor, ctx.bobActor)
+    if incoming is None or incoming.get("state") != "accepted":
+        raise RuntimeError("Inbound Akkoma follow was not accepted")
+    if outgoing is None or outgoing.get("state") != "accepted":
+        raise RuntimeError("Outbound Unspoken follow was not accepted")
+    return {
+        "name": "phase_4_follow_accept_both_directions",
+        "status": "passed",
+        "objects": {
+            "incoming_follow": incoming.get("follow_activity_uri"),
+            "outgoing_follow": outgoing.get("follow_activity_uri"),
+        },
+    }
+
+
+def testPublicPostDeliveryBothDirections(ctx: Phase4Context
+                                              ) -> dict[str, Any]:
+    """Verify public post delivery from each peer to the other."""
+    ctx.ensureFollowBothDirections()
+    alice_id, alice_uri, akkoma_status = (
+        ctx.createAlicePostSeenByAkkoma("post-delivery"))
+    bob_status, bob_post = ctx.createBobPostSeenByUnspoken(
+        "post-delivery")
+    html = ctx.unspoken.browser(ctx.alice).get(f"{ctx.unspoken_url}/")
+    requireStatus(html, 200, "fetch Unspoken timeline")
+    if "phase 4 post-delivery bob" not in html.body:
+        raise RuntimeError("Bob post did not appear in Unspoken timeline HTML")
+    return {
+        "name": "phase_4_public_post_delivery_both_directions",
+        "status": "passed",
+        "objects": {
+            "alice_post_id": alice_id,
+            "alice_post_uri": alice_uri,
+            "akkoma_status_id": akkoma_status["id"],
+            "bob_status_id": bob_status["id"],
+            "bob_post_uri": bob_post["uri"],
+        },
+    }
+
+
+def testReplyBothDirections(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify replies are delivered and threaded in both directions."""
+    ctx.ensureFollowBothDirections()
+    alice_id, alice_uri, akkoma_status = (
+        ctx.createAlicePostSeenByAkkoma("reply-root"))
+    bob_reply = ctx.akkoma.createStatus(
+        ctx.bob_token, f"phase 4 bob reply {ctx.stamp}",
+        in_reply_to_id=akkoma_status["id"])
+    stored_bob_reply = waitUntil(
+        f"Unspoken receives Bob reply {bob_reply['uri']}",
+        lambda: ctx.db.postByUri(bob_reply["uri"]))
+    if stored_bob_reply.get("in_reply_to_uri") != alice_uri:
+        raise RuntimeError("Inbound reply did not preserve in_reply_to_uri")
+
+    bob_status, bob_post = ctx.createBobPostSeenByUnspoken(
+        "reply-target")
+    alice_reply_id = ctx.unspoken.reply(
+        ctx.alice, int(bob_post["id"]),
+        {"content": f"phase 4 alice reply {ctx.stamp}"})
+    alice_reply_uri = f"{ctx.unspoken_url}/p/{alice_reply_id}"
+    akkoma_reply = waitUntil(
+        f"Akkoma receives Alice reply {alice_reply_uri}",
+        lambda: ctx.akkoma.searchStatus(ctx.bob_token, alice_reply_uri))
+    return {
+        "name": "phase_4_reply_delivery_both_directions",
+        "status": "passed",
+        "objects": {
+            "alice_root_id": alice_id,
+            "alice_root_uri": alice_uri,
+            "bob_reply_uri": bob_reply["uri"],
+            "bob_target_uri": bob_status["uri"],
+            "alice_reply_uri": alice_reply_uri,
+            "akkoma_reply_id": akkoma_reply["id"],
+        },
+    }
+
+
+def testInboundLikeBoostReactAndUndo(ctx: Phase4Context
+                                           ) -> dict[str, Any]:
+    """Verify inbound likes, boosts, reactions, and undo handling."""
+    ctx.ensureFollowBothDirections()
+    _, post_uri, status = ctx.createAlicePostSeenByAkkoma(
+        "interactions")
+    status_id = status["id"]
+
+    ctx.akkoma.like(ctx.bob_token, status_id)
+    waitUntil("Unspoken receives inbound Like",
+               lambda: ctx.db.likesForPost(post_uri))
+    ctx.akkoma.like(ctx.bob_token, status_id, undo=True)
+    waitUntil("Unspoken receives inbound Undo Like",
+               lambda: [] if ctx.db.likesForPost(post_uri) else True)
+
+    ctx.akkoma.boost(ctx.bob_token, status_id)
+    waitUntil("Unspoken receives inbound Announce",
+               lambda: ctx.db.boostsForPost(post_uri))
+    ctx.akkoma.boost(ctx.bob_token, status_id, undo=True)
+    waitUntil("Unspoken receives inbound Undo Announce",
+               lambda: [] if ctx.db.boostsForPost(post_uri) else True)
+
+    ctx.akkoma.react(ctx.bob_token, status_id, ":interop_blob:")
+    custom = waitUntil(
+        "Unspoken receives inbound custom EmojiReact",
+        lambda: next((r for r in ctx.db.reactionsForPost(post_uri)
+                      if r.get("emoji") == ":interop_blob:"), None))
+    if not custom.get("remote_emoji_url"):
+        raise RuntimeError("Custom emoji reaction did not store image URL")
+    if not custom.get("remote_emoji_media_type"):
+        raise RuntimeError("Custom emoji reaction did not store media type")
+
+    ctx.akkoma.react(ctx.bob_token, status_id, "👍")
+    unicode_reaction = waitUntil(
+        "Unspoken receives inbound Unicode EmojiReact",
+        lambda: next((r for r in ctx.db.reactionsForPost(post_uri)
+                      if r.get("emoji") == "👍"), None))
+    post_html = ctx.unspoken.browser(ctx.alice).get(post_uri)
+    requireStatus(post_html, 200, "fetch post HTML for reactions")
+    if 'class="emoji"' not in post_html.body:
+        raise RuntimeError("Custom emoji reaction did not render as image")
+    return {
+        "name": "phase_4_inbound_like_boost_react_and_undo",
+        "status": "passed",
+        "objects": {
+            "post_uri": post_uri,
+            "akkoma_status_id": status_id,
+            "custom_reaction_activity": custom.get("activity_uri"),
+            "unicode_reaction_activity": unicode_reaction.get("activity_uri"),
+        },
+    }
+
+
+def testInboundDelete(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify inbound Delete removes a remote Akkoma post from Unspoken."""
+    ctx.ensureFollowBothDirections()
+    status, post = ctx.createBobPostSeenByUnspoken("delete")
+    ctx.akkoma.deleteStatus(ctx.bob_token, status["id"])
+    waitUntil("Unspoken removes deleted remote post",
+               lambda: True if ctx.db.postByUri(status["uri"]) is None
+               else None)
+    return {
+        "name": "phase_4_inbound_delete",
+        "status": "passed",
+        "objects": {
+            "akkoma_status_id": status["id"],
+            "deleted_post_uri": post["uri"],
+        },
+    }
+
+
+def runPhase4(unspoken_url: str, akkoma_url: str,
+                fake_oidc_url: str, db_path: str) -> list[dict[str, Any]]:
+    """Run all phase 4 Akkoma interoperability checks."""
+    ctx = Phase4Context(unspoken_url, akkoma_url, fake_oidc_url, db_path)
+    ctx.setup()
+    return [
+        testActorAndWebfinger(ctx),
+        testFollowBothDirections(ctx),
+        testPublicPostDeliveryBothDirections(ctx),
+        testReplyBothDirections(ctx),
+        testInboundLikeBoostReactAndUndo(ctx),
+        testInboundDelete(ctx),
+    ]
+
+
+def writeResults(path: str, status: str, tests: list[dict[str, Any]],
                   error: str | None = None) -> None:
+    """Write the interop runner result artifact as JSON."""
     result = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "peer": {"name": "akkoma"},
@@ -560,6 +964,7 @@ def write_results(path: str, status: str, tests: list[dict[str, Any]],
 
 
 def main() -> int:
+    """Run the interop suite configured by environment variables."""
     unspoken_url = os.environ.get("UNSPOKEN_URL", "http://unspoken.test:8080")
     akkoma_url = os.environ.get("AKKOMA_URL", "http://akkoma.test:4000")
     fake_oidc_url = os.environ.get(
@@ -575,20 +980,22 @@ def main() -> int:
     tests = [readiness]
     try:
         readiness["checks"].append(
-            wait_for("unspoken", f"{unspoken_url}/health"))
+            waitFor("unspoken", f"{unspoken_url}/health"))
         readiness["checks"].append(
-            wait_for("akkoma", f"{akkoma_url}/api/v1/instance"))
-        readiness["checks"].append(wait_for(
+            waitFor("akkoma", f"{akkoma_url}/api/v1/instance"))
+        readiness["checks"].append(waitFor(
             "fake-oidc",
             f"{fake_oidc_url}/.well-known/openid-configuration"))
-        tests.append(run_phase_3(
+        tests.append(runPhase3(
+            unspoken_url, akkoma_url, fake_oidc_url, db_path))
+        tests.extend(runPhase4(
             unspoken_url, akkoma_url, fake_oidc_url, db_path))
     except Exception as error:
-        write_results(results_path, "failed", tests, str(error))
+        writeResults(results_path, "failed", tests, str(error))
         print(error, file=sys.stderr)
         return 1
 
-    write_results(results_path, "passed", tests)
+    writeResults(results_path, "passed", tests)
     return 0
 
 

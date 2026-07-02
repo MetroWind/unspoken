@@ -1614,6 +1614,48 @@ TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
     EXPECT_EQ(stable_atts.size(), 1u);
 }
 
+TEST(InboxDispatch, CreateWithObjectUriFetchesAndStoresRemoteNote)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, nlohmann::json({
+        {"id", "https://remote.test/o/uri-create"},
+        {"type", "Note"},
+        {"attributedTo", remote.uri},
+        {"content", "<p>uri object</p>"},
+        {"sensitive", nullptr},
+        {"to", std::string(AS_PUBLIC)},
+    }).dump());
+
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/create/uri-object"},
+        {"type", "Create"},
+        {"actor", remote.uri},
+        {"object", "https://remote.test/o/uri-create"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, remote.uri, activity, 100, &crypto, &http, &system));
+    EXPECT_FALSE(result.duplicate);
+
+    ASSIGN_OR_FAIL(auto post,
+                   db->getPostByUri("https://remote.test/o/uri-create"));
+    ASSERT_TRUE(post.has_value());
+    EXPECT_EQ(post->content_html, "<p>uri object</p>");
+    EXPECT_FALSE(post->sensitive);
+    ASSERT_EQ(http.get_urls.size(), 1u);
+    EXPECT_EQ(http.get_urls[0], "https://remote.test/o/uri-create");
+}
+
 TEST(InboxDispatch, CreateClassifiesRemoteDirectAndFollowersPosts)
 {
     Config c = testConfig();
@@ -1880,11 +1922,11 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
         {"tag", nlohmann::json::array({
             {
                 {"type", "Emoji"},
-                {"name", ":blobcat:"},
+                {"name", "blobcat"},
                 {"icon", {
                     {"type", "Image"},
                     {"mediaType", "image/png"},
-                    {"url", "https://remote.test/e/blobcat.png"},
+                    {"url", "http://remote.test/e/blobcat.png"},
                 }},
             },
         })},
@@ -1896,7 +1938,7 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
     ASSERT_EQ(reactions.size(), 1);
     EXPECT_EQ(reactions[0].emoji, ":blobcat:");
     EXPECT_EQ(reactions[0].remote_emoji_url.value_or(""),
-              "https://remote.test/e/blobcat.png");
+              "http://remote.test/e/blobcat.png");
 
     nlohmann::json undo_raw = {
         {"id", "https://remote.test/a/undo/1"},

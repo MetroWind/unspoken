@@ -426,6 +426,13 @@ void appendAll(std::vector<std::string>& out,
     out.insert(out.end(), in.begin(), in.end());
 }
 
+bool boolField(const nlohmann::json& object, std::string_view key)
+{
+    if(!object.is_object()) return false;
+    auto it = object.find(std::string(key));
+    return it != object.end() && it->is_boolean() && it->get<bool>();
+}
+
 mw::E<void> handleCreateActivity(const Config& config,
                                  const DataSourceInterface& data,
                                  const Activity& activity);
@@ -932,16 +939,19 @@ std::map<std::string, EmojiInfo> emojiTagsForObject(
     {
         if(!tag.is_object() || tag.value("type", std::string()) != "Emoji")
             continue;
-        std::string name = tag.value("name", std::string());
-        if(name.size() < 3 || name.front() != ':' || name.back() != ':')
-            continue;
-        std::string shortcode = name.substr(1, name.size() - 2);
+        std::string shortcode = tag.value("name", std::string());
+        if(shortcode.size() >= 3 && shortcode.front() == ':'
+           && shortcode.back() == ':')
+        {
+            shortcode = shortcode.substr(1, shortcode.size() - 2);
+        }
         if(!isValidShortcode(shortcode)) continue;
         if(!tag.contains("icon") || !tag["icon"].is_object()) continue;
         const auto& icon = tag["icon"];
         if(!icon.contains("url") || !icon["url"].is_string()) continue;
         std::string url = icon["url"].get<std::string>();
-        if(!url.starts_with("https://")) continue;
+        if(!url.starts_with("https://") && !url.starts_with("http://"))
+            continue;
 
         EmojiInfo info;
         info.shortcode = shortcode;
@@ -1125,8 +1135,8 @@ mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
         a.sha256 = "";
         a.media_type = item.value("mediaType", std::string());
         a.original_name = item.value("name", *url);
-        a.sensitive = object.value("sensitive", false)
-            || item.value("sensitive", false);
+        a.sensitive = boolField(object, "sensitive")
+            || boolField(item, "sensitive");
         a.remote_url = *url;
         std::string type = item.value("type", std::string());
         a.is_image = type == "Image" || a.media_type.starts_with("image/");
@@ -1165,7 +1175,7 @@ mw::E<NewPost> remoteNotePostFromActivity(
         ? std::optional<std::string>(sanitizeRemoteHtml(
               activity.object["summary"].get<std::string>()))
         : std::nullopt;
-    np.sensitive = activity.object.value("sensitive", false);
+    np.sensitive = boolField(activity.object, "sensitive");
     np.visibility = visibilityForActivityObject(activity.object);
     np.in_reply_to_uri = normalizeRef(
         activity.object.contains("inReplyTo")
@@ -2443,7 +2453,23 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
 
     if(activity.type == "Create")
     {
-        DO_OR_RETURN(handleCreateActivity(config, data, activity));
+        if(activity.object.is_object())
+        {
+            DO_OR_RETURN(handleCreateActivity(config, data, activity));
+        }
+        else if(auto object_uri = normalizeRef(activity.object);
+                object_uri.has_value() && !isLocalActorUri(config,
+                                                           *object_uri))
+        {
+            if(crypto == nullptr || http == nullptr || system_actor == nullptr)
+            {
+                return std::unexpected(mw::runtimeError(
+                    "Create object fetch requires federation clients"));
+            }
+            ASSIGN_OR_RETURN(auto post, fetchRemotePostByUri(
+                config, data, *crypto, *http, *system_actor, *object_uri));
+            (void)post;
+        }
     }
     else if(activity.type == "Follow")
     {
