@@ -15,6 +15,7 @@ RUN mkdir -p /app/data
 
 COPY build/unspoken /usr/local/bin/unspoken
 COPY build/data/emoji_categories.json /app/data/emoji_categories.json
+COPY tests/interop/akkoma/interop_blob.png.b64 /app/interop_blob.png.b64
 COPY templates /app/templates
 COPY static /app/static
 

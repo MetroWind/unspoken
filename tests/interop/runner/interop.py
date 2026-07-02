@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -54,12 +55,51 @@ class HttpResult:
 
 def formData(fields: dict[str, Any]) -> bytes:
     """Encode form fields for application/x-www-form-urlencoded requests."""
-    return urllib.parse.urlencode(fields).encode("utf-8")
+    return urllib.parse.urlencode(fields, doseq=True).encode("utf-8")
 
 
 def jsonData(fields: dict[str, Any]) -> bytes:
     """Encode a JSON request body from a mapping of fields."""
     return json.dumps(fields).encode("utf-8")
+
+
+def multipartData(fields: dict[str, Any],
+                  files: list[dict[str, Any]]) -> tuple[bytes, str]:
+    """Build a multipart/form-data body from simple fields and files."""
+    boundary = f"----unspoken-interop-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            chunks.append(f"--{boundary}\r\n".encode("ascii"))
+            chunks.append(
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                .encode("utf-8"))
+            chunks.append(str(item).encode("utf-8"))
+            chunks.append(b"\r\n")
+    for file in files:
+        name = file["name"]
+        filename = file["filename"]
+        content_type = file.get("content_type", "application/octet-stream")
+        content = file["content"]
+        chunks.append(f"--{boundary}\r\n".encode("ascii"))
+        chunks.append(
+            f'Content-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"\r\n'.encode("utf-8"))
+        chunks.append(f"Content-Type: {content_type}\r\n\r\n"
+                      .encode("ascii"))
+        chunks.append(content)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def fixturePng() -> bytes:
+    """Return a tiny deterministic PNG used for media interop tests."""
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001"
+        "08060000001f15c4890000000a49444154789c636000000200"
+        "0100ffff03000006000557bfab0000000049454e44ae426082")
 
 
 def getUrl(url: str,
@@ -138,6 +178,13 @@ class Browser:
             "POST", url, jsonData(fields),
             {"Content-Type": "application/json"})
 
+    def postMultipart(self, url: str, fields: dict[str, Any],
+                      files: list[dict[str, Any]]) -> HttpResult:
+        """POST multipart/form-data through the browser session."""
+        body, content_type = multipartData(fields, files)
+        return self.request(
+            "POST", url, body, {"Content-Type": content_type})
+
 
 class UnspokenControl:
     """Drive Unspoken through browser-visible routes during interop tests."""
@@ -200,6 +247,26 @@ class UnspokenControl:
         result = self.browser(username).postForm(
             f"{self.base_url}/post", payload)
         requireStatus(result, 200, "create unspoken post")
+        return postIdFromUrl(result.url)
+
+    def createPostWithAttachment(self, username: str, fields: dict[str, Any],
+                                 filename: str, content: bytes,
+                                 content_type: str) -> int:
+        """Create an Unspoken post with one uploaded attachment."""
+        csrf = self.csrfFrom(username, "/")
+        payload = {"csrf": csrf, "content": fields.get("content", ""),
+                   "visibility": fields.get("visibility", "public"),
+                   "summary": fields.get("summary", "")}
+        if fields.get("sensitive", False):
+            payload["sensitive"] = "1"
+        result = self.browser(username).postMultipart(
+            f"{self.base_url}/post", payload, [{
+                "name": "attachments",
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+            }])
+        requireStatus(result, 200, "create unspoken attachment post")
         return postIdFromUrl(result.url)
 
     def reply(self, username: str, post_id: int,
@@ -361,13 +428,50 @@ class AkkomaControl:
         return token
 
     def createStatus(self, token: str, text: str,
-                      in_reply_to_id: str | None = None) -> dict[str, Any]:
+                      in_reply_to_id: str | None = None,
+                      visibility: str = "public",
+                      spoiler_text: str = "",
+                      sensitive: bool = False,
+                      media_ids: list[str] | None = None
+                      ) -> dict[str, Any]:
         """Create a public Akkoma status, optionally as a reply."""
-        fields = {"status": text, "visibility": "public"}
+        fields: dict[str, Any] = {"status": text, "visibility": visibility}
         if in_reply_to_id is not None:
             fields["in_reply_to_id"] = in_reply_to_id
+        if spoiler_text:
+            fields["spoiler_text"] = spoiler_text
+        if sensitive:
+            fields["sensitive"] = "true"
+        if media_ids:
+            fields["media_ids[]"] = media_ids
         return self.httpJson(
             "POST", "/api/v1/statuses", data=formData(fields), token=token)
+
+    def updateStatus(self, token: str, status_id: str,
+                     text: str, spoiler_text: str = "",
+                     sensitive: bool = False) -> dict[str, Any]:
+        """Edit an Akkoma status through the Mastodon-compatible API."""
+        fields: dict[str, Any] = {"status": text}
+        if spoiler_text:
+            fields["spoiler_text"] = spoiler_text
+        if sensitive:
+            fields["sensitive"] = "true"
+        return self.httpJson(
+            "PUT", f"/api/v1/statuses/{status_id}",
+            data=formData(fields), token=token)
+
+    def uploadMedia(self, token: str, filename: str, content: bytes,
+                    content_type: str) -> dict[str, Any]:
+        """Upload one media attachment to Akkoma and return its metadata."""
+        body, multipart_type = multipartData({}, [{
+            "name": "file",
+            "filename": filename,
+            "content": content,
+            "content_type": content_type,
+        }])
+        return self.httpJson(
+            "POST", "/api/v2/media", data=body, token=token,
+            content_type=multipart_type)
 
     def follow(self, token: str, actor_uri: str) -> dict[str, Any]:
         """Resolve and follow an ActivityPub actor from an Akkoma account."""
@@ -446,9 +550,12 @@ class AkkomaControl:
 
     def httpJson(self, method: str, path: str,
                   data: bytes | None = None,
-                  token: str | None = None) -> Any:
+                  token: str | None = None,
+                  content_type: str = "application/x-www-form-urlencoded"
+                  ) -> Any:
         """Send an Akkoma API request and decode a successful JSON body."""
-        result = self.http(method, path, data=data, token=token)
+        result = self.http(method, path, data=data, token=token,
+                           content_type=content_type)
         if not 200 <= result.status < 300:
             raise RuntimeError(
                 f"{method} {path} failed: {result.status} "
@@ -457,11 +564,13 @@ class AkkomaControl:
 
     def http(self, method: str, path: str,
              data: bytes | None = None,
-             token: str | None = None) -> HttpResult:
+             token: str | None = None,
+             content_type: str = "application/x-www-form-urlencoded"
+             ) -> HttpResult:
         """Send a raw Akkoma API request and return the full HTTP result."""
         headers = {"User-Agent": "interop"}
         if data is not None:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["Content-Type"] = content_type
         if token is not None:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
@@ -496,9 +605,20 @@ class UnspokenDatabase:
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(query, params)]
 
+    def scalar(self, query: str, params: tuple[Any, ...]) -> Any:
+        """Run a read-only scalar query and return the first column."""
+        with self.connect() as conn:
+            row = conn.execute(query, params).fetchone()
+            return None if row is None else row[0]
+
     def postByUri(self, uri: str) -> dict[str, Any] | None:
         """Return the stored Unspoken post for an ActivityPub object URI."""
         rows = self.rows("SELECT * FROM posts WHERE uri = ?", (uri,))
+        return rows[0] if rows else None
+
+    def postById(self, post_id: int) -> dict[str, Any] | None:
+        """Return the stored Unspoken post with the given numeric ID."""
+        rows = self.rows("SELECT * FROM posts WHERE id = ?", (post_id,))
         return rows[0] if rows else None
 
     def remoteActorByUri(self, uri: str) -> dict[str, Any] | None:
@@ -525,6 +645,19 @@ class UnspokenDatabase:
             "SELECT * FROM boosts WHERE post_uri = ? ORDER BY created_at ASC",
             (uri,))
 
+    def attachmentsForPost(self, post_id: int) -> list[dict[str, Any]]:
+        """Return attachment rows associated with a stored post."""
+        return self.rows(
+            "SELECT * FROM attachments WHERE post_id = ? ORDER BY id ASC",
+            (post_id,))
+
+    def countSeenActivity(self, activity_uri: str) -> int:
+        """Return how many dedupe rows exist for one activity URI."""
+        value = self.scalar(
+            "SELECT COUNT(*) FROM seen_activities WHERE activity_uri = ?",
+            (activity_uri,))
+        return int(value or 0)
+
     def follow(self, follower_uri: str,
                followee_uri: str) -> dict[str, Any] | None:
         """Return the stored follow row for a follower/followee pair."""
@@ -540,6 +673,31 @@ class UnspokenDatabase:
             "SELECT * FROM jobs WHERE kind = ? AND state = ? "
             "ORDER BY created_at ASC",
             (kind, state))
+
+    def jobsByState(self, state: str) -> list[dict[str, Any]]:
+        """Return all queued jobs in a given state."""
+        return self.rows(
+            "SELECT * FROM jobs WHERE state = ? ORDER BY created_at ASC",
+            (state,))
+
+    def jobsContaining(self, kind: str, text: str) -> list[dict[str, Any]]:
+        """Return jobs of a kind whose JSON payload contains given text."""
+        return self.rows(
+            "SELECT * FROM jobs WHERE kind = ? AND payload_json LIKE ? "
+            "ORDER BY created_at ASC",
+            (kind, f"%{text}%"))
+
+    def jobsSince(self, kind: str, min_created_at: int) -> list[dict[str, Any]]:
+        """Return jobs of a kind created no earlier than a timestamp."""
+        return self.rows(
+            "SELECT * FROM jobs WHERE kind = ? AND created_at >= ? "
+            "ORDER BY id ASC",
+            (kind, min_created_at))
+
+    def jobById(self, job_id: int) -> dict[str, Any] | None:
+        """Return one queued job by ID."""
+        rows = self.rows("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        return rows[0] if rows else None
 
 
 def waitUntil(name: str, probe: Callable[[], Any]) -> Any:
@@ -946,6 +1104,244 @@ def runPhase4(unspoken_url: str, akkoma_url: str,
     ]
 
 
+def testInboundUpdate(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify an Akkoma Update edits a post already known to Unspoken."""
+    ctx.ensureFollowBothDirections()
+    status, post = ctx.createBobPostSeenByUnspoken("update")
+    updated_text = f"phase 5 updated bob {ctx.stamp}"
+    ctx.akkoma.updateStatus(ctx.bob_token, status["id"], updated_text)
+    updated_post = waitUntil(
+        "Unspoken receives inbound Update",
+        lambda: (
+            post if (post := ctx.db.postByUri(status["uri"]))
+            and updated_text in post.get("content_html", "")
+            else None
+        ))
+    return {
+        "name": "phase_5_inbound_update",
+        "status": "passed",
+        "objects": {
+            "akkoma_status_id": status["id"],
+            "post_uri": post["uri"],
+        },
+    }
+
+
+def testAttachmentsWarningsAndSensitiveMedia(ctx: Phase4Context
+                                             ) -> dict[str, Any]:
+    """Verify media, content warnings, and sensitive flags interoperate."""
+    ctx.ensureFollowBothDirections()
+    media = ctx.akkoma.uploadMedia(
+        ctx.bob_token, "interop.png", fixturePng(), "image/png")
+    inbound_text = f"phase 5 inbound media {ctx.stamp}"
+    inbound_summary = f"phase 5 inbound cw {ctx.stamp}"
+    status = ctx.akkoma.createStatus(
+        ctx.bob_token, inbound_text, spoiler_text=inbound_summary,
+        sensitive=True, media_ids=[media["id"]])
+    post = waitUntil(
+        "Unspoken stores inbound media post",
+        lambda: ctx.db.postByUri(status["uri"]))
+    attachments = waitUntil(
+        "Unspoken stores inbound attachment",
+        lambda: ctx.db.attachmentsForPost(int(post["id"])))
+    if post.get("summary") != inbound_summary or not post.get("sensitive"):
+        raise RuntimeError("Inbound CW or sensitive flag was not stored")
+    attachment = attachments[0]
+    if not attachment.get("remote_url") or not attachment.get("is_image"):
+        raise RuntimeError("Inbound remote image attachment was not stored")
+    post_html = ctx.unspoken.browser(ctx.alice).get(
+        f"{ctx.unspoken_url}/p/{post['id']}")
+    requireStatus(post_html, 200, "fetch inbound media post HTML")
+    if "sensitive image" not in post_html.body or inbound_summary not in (
+            post_html.body):
+        raise RuntimeError("Inbound CW/sensitive state did not render")
+
+    outbound_summary = f"phase 5 outbound cw {ctx.stamp}"
+    alice_id = ctx.unspoken.createPostWithAttachment(
+        ctx.alice,
+        {"content": f"phase 5 outbound media {ctx.stamp}",
+         "summary": outbound_summary, "sensitive": True},
+        "unspoken.png", fixturePng(), "image/png")
+    alice_uri = f"{ctx.unspoken_url}/p/{alice_id}"
+    akkoma_status = waitUntil(
+        f"Akkoma receives outbound media post {alice_uri}",
+        lambda: ctx.akkoma.searchStatus(ctx.bob_token, alice_uri))
+    if not akkoma_status.get("sensitive"):
+        raise RuntimeError("Outbound sensitive flag was not visible in Akkoma")
+    if akkoma_status.get("spoiler_text") != outbound_summary:
+        raise RuntimeError("Outbound content warning was not visible")
+    if not akkoma_status.get("media_attachments"):
+        raise RuntimeError("Outbound attachment was not visible in Akkoma")
+    return {
+        "name": "phase_5_attachments_cw_sensitive_media",
+        "status": "passed",
+        "objects": {
+            "inbound_status_uri": status["uri"],
+            "outbound_post_uri": alice_uri,
+            "outbound_status_id": akkoma_status["id"],
+        },
+    }
+
+
+def testFollowersOnlyAuthorization(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify followers-only delivery and unsigned fetch hiding."""
+    ctx.ensureFollowBothDirections()
+    post_id = ctx.unspoken.createPost(
+        ctx.alice,
+        {"content": f"phase 5 followers only {ctx.stamp}",
+         "visibility": "followers"})
+    post_uri = f"{ctx.unspoken_url}/p/{post_id}"
+    akkoma_status = waitUntil(
+        "Akkoma receives followers-only post",
+        lambda: ctx.akkoma.searchStatus(ctx.bob_token, post_uri))
+    anonymous = Browser().get(post_uri, {"Accept": ACTIVITY_JSON})
+    if anonymous.status != 404:
+        raise RuntimeError(
+            f"Unsigned fetch of private post returned {anonymous.status}")
+    return {
+        "name": "phase_5_followers_only_authorization",
+        "status": "passed",
+        "objects": {
+            "post_uri": post_uri,
+            "akkoma_status_id": akkoma_status["id"],
+        },
+    }
+
+
+def testDuplicateInteractionIdempotency(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify repeated inbound interaction state is idempotent."""
+    ctx.ensureFollowBothDirections()
+    _, post_uri, status = ctx.createAlicePostSeenByAkkoma(
+        "duplicate-reaction")
+    ctx.akkoma.react(ctx.bob_token, status["id"], "👍")
+    ctx.akkoma.react(ctx.bob_token, status["id"], "👍")
+    reactions = waitUntil(
+        "Unspoken receives duplicate reaction attempts",
+        lambda: [r for r in ctx.db.reactionsForPost(post_uri)
+                 if r.get("emoji") == "👍"])
+    if len(reactions) != 1:
+        raise RuntimeError(
+            f"Duplicate EmojiReact created {len(reactions)} rows")
+    activity_uri = reactions[0].get("activity_uri")
+    if activity_uri and ctx.db.countSeenActivity(activity_uri) > 1:
+        raise RuntimeError("Duplicate activity dedupe table contains rows")
+    return {
+        "name": "phase_5_duplicate_interaction_idempotency",
+        "status": "passed",
+        "objects": {
+            "post_uri": post_uri,
+            "reaction_activity": activity_uri,
+        },
+    }
+
+
+def testOutboundCustomEmojiReaction(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify Unspoken sends custom EmojiReact metadata to Akkoma."""
+    ctx.ensureFollowBothDirections()
+    status, post = ctx.createBobPostSeenByUnspoken(
+        "outbound-custom-reaction")
+    ctx.unspoken.react(ctx.alice, int(post["id"]), ":interop_blob:")
+
+    def probe() -> dict[str, Any] | None:
+        latest = ctx.akkoma.status(ctx.bob_token, status["id"])
+        if latest is None:
+            return None
+        reactions = list(latest.get("emoji_reactions", []))
+        reactions.extend(latest.get("pleroma", {}).get(
+            "emoji_reactions", []))
+        for reaction in reactions:
+            name = reaction.get("name")
+            if name in (":interop_blob:", "interop_blob",
+                        "interop_blob@unspoken.test"):
+                return reaction
+        return None
+
+    reaction = waitUntil("Akkoma receives outbound custom EmojiReact", probe)
+    return {
+        "name": "phase_5_outbound_custom_emoji_reaction",
+        "status": "passed",
+        "objects": {
+            "akkoma_status_id": status["id"],
+            "reaction": reaction,
+        },
+    }
+
+
+def runPhase5(unspoken_url: str, akkoma_url: str,
+              fake_oidc_url: str, db_path: str) -> list[dict[str, Any]]:
+    """Run extended phase 5 Akkoma interoperability checks."""
+    ctx = Phase4Context(unspoken_url, akkoma_url, fake_oidc_url, db_path)
+    ctx.setup()
+    return [
+        testInboundUpdate(ctx),
+        testAttachmentsWarningsAndSensitiveMedia(ctx),
+        testFollowersOnlyAuthorization(ctx),
+        testDuplicateInteractionIdempotency(ctx),
+        testOutboundCustomEmojiReaction(ctx),
+    ]
+
+
+def runRetryPrepare(unspoken_url: str, fake_oidc_url: str,
+                    db_path: str) -> dict[str, Any]:
+    """Create a post while Akkoma is down and wait for a retry state."""
+    stamp = str(int(time.time()))
+    unspoken = UnspokenControl(unspoken_url, fake_oidc_url)
+    db = UnspokenDatabase(db_path)
+    unspoken.login("alice")
+    min_created_at = int(time.time())
+    post_id = unspoken.createPost(
+        "alice", {"content": f"phase 5 retry recovery {stamp}"})
+    post_uri = f"{unspoken_url.rstrip('/')}/p/{post_id}"
+
+    def retried() -> dict[str, Any] | None:
+        jobs = db.jobsSince("deliver", min_created_at)
+        for job in jobs:
+            if job.get("state") == "pending" and job.get("attempts", 0):
+                return job
+        return None
+
+    retry_job = waitUntil("Unspoken delivery job retries", retried)
+    return {
+        "name": "phase_5_job_retry_prepare",
+        "status": "passed",
+        "objects": {
+            "post_uri": post_uri,
+            "post_id": post_id,
+            "retried_job_id": retry_job["id"],
+            "attempts": retry_job["attempts"],
+        },
+    }
+
+
+def runRetryRecover(akkoma_url: str, db_path: str,
+                    post_uri: str, retry_job_id: int) -> dict[str, Any]:
+    """Verify a retried delivery succeeds after Akkoma is restarted."""
+    akkoma = AkkomaControl(akkoma_url)
+    db = UnspokenDatabase(db_path)
+    akkoma.createUser("bob")
+    bob_token = akkoma.login("bob")
+    akkoma_status = waitUntil(
+        "Akkoma receives retried delivery",
+        lambda: akkoma.searchStatus(bob_token, post_uri))
+
+    def recovered() -> list[dict[str, Any]] | None:
+        job = db.jobById(retry_job_id)
+        if job and job.get("state") == "done":
+            return [job]
+        return None
+
+    jobs = waitUntil("Retried delivery jobs complete", recovered)
+    return {
+        "name": "phase_5_job_retry_recovery",
+        "status": "passed",
+        "objects": {
+            "post_uri": post_uri,
+            "delivered_status_id": akkoma_status["id"],
+            "completed_jobs": [job["id"] for job in jobs],
+        },
+    }
+
+
 def writeResults(path: str, status: str, tests: list[dict[str, Any]],
                   error: str | None = None) -> None:
     """Write the interop runner result artifact as JSON."""
@@ -971,6 +1367,7 @@ def main() -> int:
         "FAKE_OIDC_URL", "http://fake-oidc.test:9000")
     results_path = os.environ.get("RESULTS_PATH", "/artifacts/results.json")
     db_path = os.environ.get("UNSPOKEN_DB", "/unspoken-data/unspoken.db")
+    only = os.environ.get("INTEROP_ONLY", "")
 
     readiness = {
         "name": "phase_2_readiness",
@@ -979,6 +1376,29 @@ def main() -> int:
     }
     tests = [readiness]
     try:
+        if only == "retry_prepare":
+            readiness["checks"].append(
+                waitFor("unspoken", f"{unspoken_url}/health"))
+            readiness["checks"].append(waitFor(
+                "fake-oidc",
+                f"{fake_oidc_url}/.well-known/openid-configuration"))
+            tests.append(runRetryPrepare(
+                unspoken_url, fake_oidc_url, db_path))
+            writeResults(results_path, "passed", tests)
+            return 0
+        if only == "retry_recover":
+            post_uri = os.environ.get("RETRY_POST_URI", "")
+            retry_job_id = int(os.environ.get("RETRY_JOB_ID", "0"))
+            if not post_uri:
+                raise RuntimeError("RETRY_POST_URI is required")
+            if retry_job_id <= 0:
+                raise RuntimeError("RETRY_JOB_ID is required")
+            readiness["checks"].append(
+                waitFor("akkoma", f"{akkoma_url}/api/v1/instance"))
+            tests.append(runRetryRecover(
+                akkoma_url, db_path, post_uri, retry_job_id))
+            writeResults(results_path, "passed", tests)
+            return 0
         readiness["checks"].append(
             waitFor("unspoken", f"{unspoken_url}/health"))
         readiness["checks"].append(
@@ -989,6 +1409,8 @@ def main() -> int:
         tests.append(runPhase3(
             unspoken_url, akkoma_url, fake_oidc_url, db_path))
         tests.extend(runPhase4(
+            unspoken_url, akkoma_url, fake_oidc_url, db_path))
+        tests.extend(runPhase5(
             unspoken_url, akkoma_url, fake_oidc_url, db_path))
     except Exception as error:
         writeResults(results_path, "failed", tests, str(error))

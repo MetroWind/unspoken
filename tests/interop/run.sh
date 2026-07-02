@@ -29,6 +29,28 @@ print_logs()
     compose logs --tail=200 postgres akkoma fake-oidc unspoken
 }
 
+retry_post_uri()
+{
+    retry_artifact post_uri
+}
+
+retry_job_id()
+{
+    retry_artifact retried_job_id
+}
+
+retry_artifact()
+{
+    RESULT_FILE="$SCRIPT_DIR/.artifacts/retry_prepare.json" \
+        FIELD="$1" python3 - <<'PY'
+import json
+import os
+with open(os.environ["RESULT_FILE"], encoding="utf-8") as f:
+    result = json.load(f)
+print(result["tests"][-1]["objects"][os.environ["FIELD"]])
+PY
+}
+
 cmd="${1:-}"
 case "$cmd" in
     build)
@@ -42,6 +64,27 @@ case "$cmd" in
     test)
         compose build interop-runner
         if ! compose run --rm interop-runner; then
+            print_logs
+            exit 1
+        fi
+        compose stop akkoma
+        if ! compose run --no-deps --rm \
+            -e INTEROP_ONLY=retry_prepare \
+            -e RESULTS_PATH=/artifacts/retry_prepare.json \
+            interop-runner; then
+            compose start akkoma
+            print_logs
+            exit 1
+        fi
+        post_uri=$(retry_post_uri)
+        retry_job=$(retry_job_id)
+        compose start akkoma
+        if ! compose run --no-deps --rm \
+            -e INTEROP_ONLY=retry_recover \
+            -e RETRY_POST_URI="$post_uri" \
+            -e RETRY_JOB_ID="$retry_job" \
+            -e RESULTS_PATH=/artifacts/retry_recover.json \
+            interop-runner; then
             print_logs
             exit 1
         fi

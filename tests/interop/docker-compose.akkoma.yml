@@ -59,6 +59,8 @@ services:
       - -c
       - >
         mkdir -p /data/attachments /data/emoji
+        && base64 -d /app/interop_blob.png.b64
+        > /data/emoji/interop_blob.png
         && exec /usr/local/bin/unspoken --config /config/unspoken.yaml
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health"]
