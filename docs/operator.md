@@ -122,6 +122,38 @@ Before exposing the service to the internet, confirm:
 
 ## Interop Notes
 
+The repository includes a disposable Docker-based Akkoma interop harness
+under `tests/interop/`. It is intended for development and release checks,
+not for production deployment. See
+[tests/interop/README.md](../tests/interop/README.md) for commands,
+runtime expectations, logs, artifacts, and state-inspection examples.
+
+The main local command is:
+
+```sh
+tests/interop/run.sh all
+```
+
+This starts PostgreSQL, Akkoma, fake OIDC, and `unspoken` in Docker,
+drives local actions through the real OIDC and HTML form paths, and writes
+machine-readable results under `tests/interop/.artifacts/`. On failure the
+stack is left running so service logs and SQLite state can be inspected.
+Use `tests/interop/run.sh reset` to remove all interop volumes before a
+clean rerun.
+
+The harness config enables test-only development settings:
+
+```yaml
+dev:
+  allow_http_url_root: true
+  outbound_allow_private_hosts:
+    - akkoma.test
+```
+
+Do not copy those settings into production configs. Production deployments
+must keep HTTPS `url_root` enforcement and the default empty private-host
+outbound allowlist.
+
 Verify federation against at least Mastodon, Akkoma or Pleroma, and
 Misskey before declaring a deployment production ready. Exercise actor
 fetch, WebFinger, follow/accept, public post delivery, replies, likes,
