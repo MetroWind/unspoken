@@ -16,6 +16,7 @@
 #include <mw/error.hpp>
 #include <mw/utils.hpp>
 
+#include "attachments.hpp"
 #include "data.hpp"
 #include "structs.hpp"
 
@@ -24,6 +25,8 @@ namespace unspoken
 
 namespace
 {
+
+constexpr int64_t CURRENT_SCHEMA_VERSION = 2;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -80,6 +83,130 @@ mw::E<void> internalBindAt(const mw::SQLiteStatement& st, int i,
     return mw::internal::bindOne(st, i, v);
 }
 
+struct AttachmentV1
+{
+    int64_t id = 0;
+    std::string sha256;
+    std::string media_type;
+    std::string original_name;
+    bool is_image = false;
+    std::optional<std::string> remote_url;
+};
+
+mw::E<std::optional<int64_t>> findAttachmentByRemoteUrl(
+    mw::SQLite& db, const std::string& remote_url)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "SELECT id FROM attachments_new WHERE remote_url = ?;"));
+    DO_OR_RETURN(st.bind<std::string>(remote_url));
+    ASSIGN_OR_RETURN(auto rows, db.eval<int64_t>(std::move(st)));
+    if(rows.empty()) return std::optional<int64_t>{};
+    return std::optional<int64_t>{std::get<0>(rows[0])};
+}
+
+mw::E<std::optional<int64_t>> findAttachmentByLocalFile(
+    mw::SQLite& db, const std::string& sha256,
+    const std::string& extension)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "SELECT id FROM attachments_new WHERE sha256 = ? "
+        "AND extension = ? AND remote_url IS NULL;"));
+    DO_OR_RETURN((st.bind<std::string, std::string>(sha256, extension)));
+    ASSIGN_OR_RETURN(auto rows, db.eval<int64_t>(std::move(st)));
+    if(rows.empty()) return std::optional<int64_t>{};
+    return std::optional<int64_t>{std::get<0>(rows[0])};
+}
+
+mw::E<int64_t> insertMigratedRemoteAttachment(
+    mw::SQLite& db, const AttachmentV1& attachment, int64_t created)
+{
+    if(!attachment.remote_url.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote attachment migration needs remote_url"));
+    }
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT INTO attachments_new "
+        "(sha256, extension, media_type, original_name, is_image, "
+        "remote_url, created_at) "
+        "VALUES (NULL, NULL, ?, ?, ?, ?, ?);"));
+    DO_OR_RETURN((st.bind<std::string, std::string, int64_t,
+        std::string, int64_t>(
+        attachment.media_type, attachment.original_name,
+        attachment.is_image ? 1 : 0, *attachment.remote_url, created)));
+    DO_OR_RETURN(db.execute(std::move(st)));
+    return db.lastInsertRowID();
+}
+
+mw::E<int64_t> insertMigratedLocalAttachment(
+    mw::SQLite& db, const AttachmentV1& attachment,
+    const std::string& extension, int64_t created)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT INTO attachments_new "
+        "(sha256, extension, media_type, original_name, is_image, "
+        "remote_url, created_at) "
+        "VALUES (?, ?, ?, ?, ?, NULL, ?);"));
+    DO_OR_RETURN((st.bind<std::string, std::string, std::string,
+        std::string, int64_t, int64_t>(
+        attachment.sha256, extension, attachment.media_type,
+        attachment.original_name, attachment.is_image ? 1 : 0, created)));
+    DO_OR_RETURN(db.execute(std::move(st)));
+    return db.lastInsertRowID();
+}
+
+mw::E<int64_t> migratedAttachmentId(
+    mw::SQLite& db, const AttachmentV1& attachment, int64_t created)
+{
+    if(attachment.remote_url.has_value() && !attachment.remote_url->empty())
+    {
+        ASSIGN_OR_RETURN(auto found, findAttachmentByRemoteUrl(
+            db, *attachment.remote_url));
+        if(found.has_value()) return *found;
+        return insertMigratedRemoteAttachment(db, attachment, created);
+    }
+
+    std::string extension = extensionOf(attachment.original_name);
+    ASSIGN_OR_RETURN(auto found, findAttachmentByLocalFile(
+        db, attachment.sha256, extension));
+    if(found.has_value()) return *found;
+    return insertMigratedLocalAttachment(db, attachment, extension, created);
+}
+
+mw::E<void> mapAttachmentV1(
+    mw::SQLite& db, const AttachmentV1& attachment, int64_t created)
+{
+    ASSIGN_OR_RETURN(int64_t new_id, migratedAttachmentId(
+        db, attachment, created));
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT INTO old_attachment_map (old_id, new_id) VALUES (?, ?);"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t>(attachment.id, new_id)));
+    return db.execute(std::move(st));
+}
+
+mw::E<void> mapAttachmentsV1(mw::SQLite& db, int64_t created)
+{
+    ASSIGN_OR_RETURN(auto rows, (db.eval<int64_t, std::optional<int64_t>,
+        std::string, std::string, std::string, int64_t, int64_t,
+        std::optional<std::string>>(
+        "SELECT id, post_id, sha256, media_type, original_name, is_image, "
+        "sensitive, remote_url FROM attachments ORDER BY id ASC;")));
+
+    for(const auto& row : rows)
+    {
+        AttachmentV1 attachment;
+        attachment.id = std::get<0>(row);
+        attachment.sha256 = std::get<2>(row);
+        attachment.media_type = std::get<3>(row);
+        attachment.original_name = std::get<4>(row);
+        attachment.is_image = std::get<5>(row) != 0;
+        attachment.remote_url = std::get<7>(row);
+
+        DO_OR_RETURN(mapAttachmentV1(db, attachment, created));
+    }
+    return {};
+}
+
 } // namespace
 
 bool isRetryableSqlError(const mw::Error& e)
@@ -128,6 +255,10 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         " username TEXT NOT NULL UNIQUE,"
         " display_name TEXT NOT NULL DEFAULT '',"
         " bio TEXT NOT NULL DEFAULT '',"
+        " avatar_attachment_id INTEGER REFERENCES attachments(id) "
+        "ON DELETE SET NULL,"
+        " banner_attachment_id INTEGER REFERENCES attachments(id) "
+        "ON DELETE SET NULL,"
         " oidc_iss TEXT NOT NULL,"
         " oidc_sub TEXT NOT NULL,"
         " private_key_pem TEXT NOT NULL,"
@@ -136,6 +267,12 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
     DO_OR_RETURN(db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc "
         "ON users(oidc_iss, oidc_sub);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_avatar_attachment "
+        "ON users(avatar_attachment_id);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_banner_attachment "
+        "ON users(banner_attachment_id);"));
 
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS system_actor ("
@@ -196,16 +333,52 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS attachments ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " post_id INTEGER,"
-        " sha256 TEXT NOT NULL,"
+        " sha256 TEXT,"
+        " extension TEXT,"
         " media_type TEXT NOT NULL,"
-        " original_name TEXT NOT NULL,"
+        " original_name TEXT NOT NULL DEFAULT '',"
         " is_image INTEGER NOT NULL DEFAULT 0,"
-        " sensitive INTEGER NOT NULL DEFAULT 0,"
-        " remote_url TEXT);"));
+        " remote_url TEXT,"
+        " created_at INTEGER NOT NULL,"
+        " CHECK ("
+        "  (remote_url IS NULL AND sha256 IS NOT NULL "
+        "   AND extension IS NOT NULL)"
+        "  OR (remote_url IS NOT NULL AND sha256 IS NULL "
+        "      AND extension IS NULL)"
+        " ));"));
     DO_OR_RETURN(db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_attachments_post "
-        "ON attachments(post_id);"));
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_local_file "
+        "ON attachments(sha256, extension) WHERE remote_url IS NULL;"));
+    DO_OR_RETURN(db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_remote_url "
+        "ON attachments(remote_url) WHERE remote_url IS NOT NULL;"));
+
+    DO_OR_RETURN(db.execute(
+        "CREATE TABLE IF NOT EXISTS post_attachments ("
+        " post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,"
+        " attachment_id INTEGER NOT NULL REFERENCES attachments(id) "
+        "ON DELETE CASCADE,"
+        " sensitive INTEGER NOT NULL DEFAULT 0,"
+        " sort_order INTEGER NOT NULL DEFAULT 0,"
+        " created_at INTEGER NOT NULL,"
+        " PRIMARY KEY (post_id, attachment_id));"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_attachments_attachment "
+        "ON post_attachments(attachment_id);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_post_attachments_post "
+        "ON post_attachments(post_id, sort_order, attachment_id);"));
+
+    DO_OR_RETURN(db.execute(
+        "CREATE TABLE IF NOT EXISTS user_profile_fields ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+        " label TEXT NOT NULL,"
+        " value TEXT NOT NULL,"
+        " sort_order INTEGER NOT NULL);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_profile_fields_user "
+        "ON user_profile_fields(user_id, sort_order, id);"));
 
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS follows ("
@@ -312,20 +485,32 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
     auto data_source = std::make_unique<DataSourceSQLite>(std::move(conn));
 
     ASSIGN_OR_RETURN(int64_t version, data_source->getSchemaVersion());
-    // user_version dispatch: 0 = fresh DB. Future migrations slot in as
-    // additional cases (design §7.1).
-    switch(version)
+    // user_version dispatch: 0 = fresh DB. Existing DBs migrate one
+    // version at a time so each step can stay transactional.
+    if(version == 0)
     {
-    case 0:
         DO_OR_RETURN(createSchema(*data_source->db));
-        DO_OR_RETURN(data_source->setSchemaVersion(1));
-        break;
-    case 1:
-        break;
-    default:
+        DO_OR_RETURN(data_source->setSchemaVersion(CURRENT_SCHEMA_VERSION));
+    }
+    else if(version > CURRENT_SCHEMA_VERSION)
+    {
         return std::unexpected(mw::runtimeError(std::format(
-            "Database schema version {} is newer than supported (1)",
-            version)));
+            "Database schema version {} is newer than supported ({})",
+            version, CURRENT_SCHEMA_VERSION)));
+    }
+    else
+    {
+        while(version < CURRENT_SCHEMA_VERSION)
+        {
+            if(version == 1)
+            {
+                DO_OR_RETURN(data_source->migrate1To2());
+                version = 2;
+                continue;
+            }
+            return std::unexpected(mw::runtimeError(std::format(
+                "No migration from schema version {}", version)));
+        }
     }
     return data_source;
 }
@@ -344,6 +529,118 @@ mw::E<void> DataSourceSQLite::setSchemaVersion(int64_t v) const
 {
     // PRAGMA does not accept bound parameters.
     return db->execute(std::format("PRAGMA user_version = {};", v));
+}
+
+mw::E<void> DataSourceSQLite::migrate1To2() const
+{
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        auto step = [&](std::string_view sql) -> mw::E<void> {
+            auto r = db->execute(std::string(sql));
+            if(!r.has_value()) return rollback(r.error());
+            return {};
+        };
+
+        int64_t created = now();
+        if(auto r = step(
+            "CREATE TABLE attachments_new ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " sha256 TEXT,"
+            " extension TEXT,"
+            " media_type TEXT NOT NULL,"
+            " original_name TEXT NOT NULL DEFAULT '',"
+            " is_image INTEGER NOT NULL DEFAULT 0,"
+            " remote_url TEXT,"
+            " created_at INTEGER NOT NULL,"
+            " CHECK ("
+            "  (remote_url IS NULL AND sha256 IS NOT NULL "
+            "   AND extension IS NOT NULL)"
+            "  OR (remote_url IS NOT NULL AND sha256 IS NULL "
+            "      AND extension IS NULL)"
+            " ));"); !r.has_value()) return r;
+
+        if(auto r = step(
+            "CREATE TEMP TABLE old_attachment_map ("
+            " old_id INTEGER PRIMARY KEY,"
+            " new_id INTEGER NOT NULL);"); !r.has_value()) return r;
+        if(auto r = mapAttachmentsV1(*db, created); !r.has_value())
+            return rollback(r.error());
+
+        if(auto r = step(
+            "CREATE TABLE post_attachments ("
+            " post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,"
+            " attachment_id INTEGER NOT NULL REFERENCES attachments_new(id) "
+            "ON DELETE CASCADE,"
+            " sensitive INTEGER NOT NULL DEFAULT 0,"
+            " sort_order INTEGER NOT NULL DEFAULT 0,"
+            " created_at INTEGER NOT NULL,"
+            " PRIMARY KEY (post_id, attachment_id));"); !r.has_value())
+            return r;
+        if(auto r = step(std::format(
+            "INSERT OR IGNORE INTO post_attachments "
+            "(post_id, attachment_id, sensitive, sort_order, created_at) "
+            "SELECT old.post_id, new.id, old.sensitive, old.id, {} "
+            "FROM attachments old "
+            "JOIN old_attachment_map map ON map.old_id = old.id "
+            "JOIN attachments_new new ON new.id = map.new_id "
+            "WHERE old.post_id IS NOT NULL;", created)); !r.has_value())
+            return r;
+
+        if(auto r = step("DROP TABLE attachments;"); !r.has_value()) return r;
+        if(auto r = step("ALTER TABLE attachments_new RENAME TO attachments;");
+           !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE UNIQUE INDEX idx_attachments_local_file "
+            "ON attachments(sha256, extension) WHERE remote_url IS NULL;");
+           !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE UNIQUE INDEX idx_attachments_remote_url "
+            "ON attachments(remote_url) WHERE remote_url IS NOT NULL;");
+           !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_post_attachments_attachment "
+            "ON post_attachments(attachment_id);"); !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_post_attachments_post "
+            "ON post_attachments(post_id, sort_order, attachment_id);");
+           !r.has_value()) return r;
+
+        if(auto r = step(
+            "ALTER TABLE users ADD COLUMN avatar_attachment_id INTEGER "
+            "REFERENCES attachments(id) ON DELETE SET NULL;"); !r.has_value())
+            return r;
+        if(auto r = step(
+            "ALTER TABLE users ADD COLUMN banner_attachment_id INTEGER "
+            "REFERENCES attachments(id) ON DELETE SET NULL;"); !r.has_value())
+            return r;
+        if(auto r = step(
+            "CREATE INDEX idx_users_avatar_attachment "
+            "ON users(avatar_attachment_id);"); !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_users_banner_attachment "
+            "ON users(banner_attachment_id);"); !r.has_value()) return r;
+
+        if(auto r = step(
+            "CREATE TABLE user_profile_fields ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+            " label TEXT NOT NULL,"
+            " value TEXT NOT NULL,"
+            " sort_order INTEGER NOT NULL);"); !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_user_profile_fields_user "
+            "ON user_profile_fields(user_id, sort_order, id);");
+           !r.has_value()) return r;
+
+        if(auto r = setSchemaVersion(2); !r.has_value())
+            return rollback(r.error());
+        return db->execute("COMMIT;");
+    };
+    return withWriteRetry(txn);
 }
 
 // ─── Users ─────────────────────────────────────────────────────────
@@ -382,6 +679,7 @@ namespace
 {
 
 using UserRow = std::tuple<int64_t, std::string, std::string, std::string,
+                           std::optional<int64_t>, std::optional<int64_t>,
                            std::string, std::string, std::string, std::string,
                            int64_t>;
 
@@ -392,16 +690,19 @@ User rowToUser(const UserRow& row)
     u.username = std::get<1>(row);
     u.display_name = std::get<2>(row);
     u.bio = std::get<3>(row);
-    u.oidc_iss = std::get<4>(row);
-    u.oidc_sub = std::get<5>(row);
-    u.private_key_pem = std::get<6>(row);
-    u.public_key_pem = std::get<7>(row);
-    u.created_at = std::get<8>(row);
+    u.avatar_attachment_id = std::get<4>(row);
+    u.banner_attachment_id = std::get<5>(row);
+    u.oidc_iss = std::get<6>(row);
+    u.oidc_sub = std::get<7>(row);
+    u.private_key_pem = std::get<8>(row);
+    u.public_key_pem = std::get<9>(row);
+    u.created_at = std::get<10>(row);
     return u;
 }
 
 constexpr const char* USER_COLS =
-    "id, username, display_name, bio, oidc_iss, oidc_sub, private_key_pem, "
+    "id, username, display_name, bio, avatar_attachment_id, "
+    "banner_attachment_id, oidc_iss, oidc_sub, private_key_pem, "
     "public_key_pem, created_at";
 
 } // namespace
@@ -412,8 +713,9 @@ mw::E<std::optional<User>> DataSourceSQLite::getUserById(int64_t id) const
         "SELECT {} FROM users WHERE id = ?;", USER_COLS)));
     DO_OR_RETURN(st.bind<int64_t>(id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::string, std::string,
-        int64_t>(std::move(st))));
+        std::string, std::optional<int64_t>, std::optional<int64_t>,
+        std::string, std::string, std::string, std::string, int64_t>(
+            std::move(st))));
     if(rows.empty()) return std::optional<User>{};
     return std::optional<User>{rowToUser(rows[0])};
 }
@@ -425,8 +727,9 @@ DataSourceSQLite::getUserByUsername(std::string_view username) const
         "SELECT {} FROM users WHERE username = ?;", USER_COLS)));
     DO_OR_RETURN(st.bind<std::string>(std::string(username)));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::string, std::string,
-        int64_t>(std::move(st))));
+        std::string, std::optional<int64_t>, std::optional<int64_t>,
+        std::string, std::string, std::string, std::string, int64_t>(
+            std::move(st))));
     if(rows.empty()) return std::optional<User>{};
     return std::optional<User>{rowToUser(rows[0])};
 }
@@ -441,8 +744,9 @@ DataSourceSQLite::getUserByOidcSub(std::string_view iss,
     DO_OR_RETURN((st.bind<std::string, std::string>(
         std::string(iss), std::string(sub))));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::string, std::string,
-        int64_t>(std::move(st))));
+        std::string, std::optional<int64_t>, std::optional<int64_t>,
+        std::string, std::string, std::string, std::string, int64_t>(
+            std::move(st))));
     if(rows.empty()) return std::optional<User>{};
     return std::optional<User>{rowToUser(rows[0])};
 }
@@ -457,6 +761,137 @@ DataSourceSQLite::updateUserProfile(int64_t id, std::string_view display_name,
         DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
             std::string(display_name), std::string(bio), id)));
         return db->execute(std::move(st));
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<void> DataSourceSQLite::updateProfileMedia(
+    int64_t user_id, std::optional<int64_t> avatar_attachment_id,
+    std::optional<int64_t> banner_attachment_id) const
+{
+    auto txn = [&]() -> mw::E<void> {
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "UPDATE users SET avatar_attachment_id = ?, "
+            "banner_attachment_id = ? WHERE id = ?;"));
+        DO_OR_RETURN((st.bind<std::optional<int64_t>,
+            std::optional<int64_t>, int64_t>(
+            avatar_attachment_id, banner_attachment_id, user_id)));
+        return db->execute(std::move(st));
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<std::vector<UserProfileField>>
+DataSourceSQLite::profileFieldsForUser(int64_t user_id) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT id, user_id, label, value, sort_order "
+        "FROM user_profile_fields WHERE user_id = ? "
+        "ORDER BY sort_order ASC, id ASC;"));
+    DO_OR_RETURN(st.bind<int64_t>(user_id));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, int64_t, std::string,
+        std::string, int64_t>(std::move(st))));
+    std::vector<UserProfileField> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        out.push_back(UserProfileField{
+            std::get<0>(r),
+            std::get<1>(r),
+            std::get<2>(r),
+            std::get<3>(r),
+            static_cast<int>(std::get<4>(r)),
+        });
+    }
+    return out;
+}
+
+mw::E<void> DataSourceSQLite::replaceProfileFields(
+    int64_t user_id, const std::vector<UserProfileField>& fields) const
+{
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        {
+            auto st_e = db->statementFromStr(
+                "DELETE FROM user_profile_fields WHERE user_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(user_id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        int sort = 0;
+        for(const auto& field : fields)
+        {
+            auto st_e = db->statementFromStr(
+                "INSERT INTO user_profile_fields "
+                "(user_id, label, value, sort_order) VALUES (?, ?, ?, ?);");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t, std::string, std::string, int64_t>(
+                user_id, field.label, field.value,
+                field.sort_order == 0 ? sort : field.sort_order);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+            ++sort;
+        }
+        return db->execute("COMMIT;");
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<void> DataSourceSQLite::replaceUserProfile(
+    const UserProfileUpdate& update, int64_t user_id) const
+{
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        {
+            auto st_e = db->statementFromStr(
+                "UPDATE users SET display_name = ?, bio = ?, "
+                "avatar_attachment_id = ?, banner_attachment_id = ? "
+                "WHERE id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<std::string, std::string,
+                std::optional<int64_t>, std::optional<int64_t>, int64_t>(
+                update.display_name, update.bio, update.avatar_attachment_id,
+                update.banner_attachment_id, user_id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        {
+            auto st_e = db->statementFromStr(
+                "DELETE FROM user_profile_fields WHERE user_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(user_id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        int sort = 0;
+        for(const auto& field : update.fields)
+        {
+            auto st_e = db->statementFromStr(
+                "INSERT INTO user_profile_fields "
+                "(user_id, label, value, sort_order) VALUES (?, ?, ?, ?);");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            int order = field.sort_order == 0 ? sort : field.sort_order;
+            auto b = st_e->bind<int64_t, std::string, std::string, int64_t>(
+                user_id, field.label, field.value, order);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+            ++sort;
+        }
+        return db->execute("COMMIT;");
     };
     return withWriteRetry(txn);
 }
@@ -480,8 +915,9 @@ DataSourceSQLite::searchUsers(std::string_view query, int limit) const
     DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
         pattern, pattern, static_cast<int64_t>(limit))));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::string, std::string,
-        int64_t>(std::move(st))));
+        std::string, std::optional<int64_t>, std::optional<int64_t>,
+        std::string, std::string, std::string, std::string, int64_t>(
+            std::move(st))));
     std::vector<User> out;
     out.reserve(rows.size());
     for(const auto& r : rows) out.push_back(rowToUser(r));
@@ -782,7 +1218,7 @@ mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
         }
         {
             auto st_e = db->statementFromStr(
-                "DELETE FROM attachments WHERE post_id = ?;");
+                "DELETE FROM post_attachments WHERE post_id = ?;");
             if(!st_e.has_value()) return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
             if(!b.has_value()) return rollback(b.error());
@@ -847,7 +1283,7 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
         }
         {
             auto st_e = db->statementFromStr(
-                "DELETE FROM attachments WHERE post_id = ?;");
+                "DELETE FROM post_attachments WHERE post_id = ?;");
             if(!st_e.has_value()) return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
             if(!b.has_value()) return rollback(b.error());
@@ -1566,30 +2002,166 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
 
 // ─── Attachments ───────────────────────────────────────────────────
 
+namespace
+{
+
+mw::E<int64_t> insertOrGetRemoteAttachment(
+    mw::SQLite& db, const Attachment& a, int64_t created)
+{
+    if(!a.remote_url.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote attachment insert needs remote_url"));
+    }
+
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT OR IGNORE INTO attachments "
+        "(sha256, extension, media_type, original_name, is_image, "
+        "remote_url, created_at) VALUES (NULL, NULL, ?, ?, ?, ?, ?);"));
+    DO_OR_RETURN((st.bind<std::string, std::string, int64_t,
+        std::string, int64_t>(
+        a.media_type, a.original_name, a.is_image ? 1 : 0, *a.remote_url,
+        created)));
+    DO_OR_RETURN(db.execute(std::move(st)));
+
+    ASSIGN_OR_RETURN(auto sel, db.statementFromStr(
+        "SELECT id FROM attachments WHERE remote_url = ?;"));
+    DO_OR_RETURN(sel.bind<std::string>(*a.remote_url));
+    ASSIGN_OR_RETURN(auto rows, db.eval<int64_t>(std::move(sel)));
+    if(rows.empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote attachment vanished after insert"));
+    }
+    return std::get<0>(rows[0]);
+}
+
+mw::E<int64_t> insertOrGetLocalAttachment(
+    mw::SQLite& db, const Attachment& a, int64_t created)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT OR IGNORE INTO attachments "
+        "(sha256, extension, media_type, original_name, is_image, "
+        "remote_url, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?);"));
+    DO_OR_RETURN((st.bind<std::string, std::string, std::string,
+        std::string, int64_t, int64_t>(
+        a.sha256, a.extension, a.media_type, a.original_name,
+        a.is_image ? 1 : 0, created)));
+    DO_OR_RETURN(db.execute(std::move(st)));
+
+    ASSIGN_OR_RETURN(auto sel, db.statementFromStr(
+        "SELECT id FROM attachments WHERE sha256 = ? "
+        "AND extension = ? AND remote_url IS NULL;"));
+    DO_OR_RETURN((sel.bind<std::string, std::string>(
+        a.sha256, a.extension)));
+    ASSIGN_OR_RETURN(auto rows, db.eval<int64_t>(std::move(sel)));
+    if(rows.empty())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Local attachment vanished after insert"));
+    }
+    return std::get<0>(rows[0]);
+}
+
+mw::E<void> insertPostAttachmentRelation(
+    mw::SQLite& db, const Attachment& a, int64_t attachment_id,
+    int64_t created)
+{
+    if(!a.post_id.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Post attachment relation insert needs post_id"));
+    }
+
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "INSERT INTO post_attachments "
+        "(post_id, attachment_id, sensitive, sort_order, created_at) "
+        "VALUES (?, ?, ?, "
+        "COALESCE((SELECT MAX(sort_order) + 1 FROM post_attachments "
+        "WHERE post_id = ?), 0), ?) "
+        "ON CONFLICT(post_id, attachment_id) DO UPDATE SET "
+        "sensitive = excluded.sensitive;"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
+        *a.post_id, attachment_id, a.sensitive ? 1 : 0, *a.post_id,
+        created)));
+    return db.execute(std::move(st));
+}
+
+} // namespace
+
 mw::E<int64_t> DataSourceSQLite::insertAttachment(const Attachment& a) const
 {
+    int64_t created = now();
+    int64_t attachment_id = 0;
     auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO attachments (post_id, sha256, media_type, "
-            "original_name, is_image, sensitive, remote_url) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?);"));
-        DO_OR_RETURN((st.bind<std::optional<int64_t>, std::string, std::string,
-            std::string, int64_t, int64_t, std::optional<std::string>>(
-            a.post_id, a.sha256, a.media_type, a.original_name,
-            a.is_image ? 1 : 0, a.sensitive ? 1 : 0, a.remote_url)));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+
+        if(a.remote_url.has_value())
+        {
+            auto id = insertOrGetRemoteAttachment(*db, a, created);
+            if(!id.has_value()) return rollback(id.error());
+            attachment_id = *id;
+        }
+        else
+        {
+            auto id = insertOrGetLocalAttachment(*db, a, created);
+            if(!id.has_value()) return rollback(id.error());
+            attachment_id = *id;
+        }
+
+        if(a.post_id.has_value())
+        {
+            auto rel = insertPostAttachmentRelation(
+                *db, a, attachment_id, created);
+            if(!rel.has_value()) return rollback(rel.error());
+        }
+        return db->execute("COMMIT;");
     };
     DO_OR_RETURN(withWriteRetry(txn));
-    return db->lastInsertRowID();
+    return attachment_id;
+}
+
+mw::E<std::optional<Attachment>>
+DataSourceSQLite::getAttachmentById(int64_t attachment_id) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT id, sha256, extension, media_type, original_name, "
+        "is_image, remote_url FROM attachments WHERE id = ?;"));
+    DO_OR_RETURN(st.bind<int64_t>(attachment_id));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t,
+        std::optional<std::string>, std::optional<std::string>, std::string,
+        std::string, int64_t, std::optional<std::string>>(std::move(st))));
+    if(rows.empty()) return std::optional<Attachment>{};
+    Attachment a;
+    a.id = std::get<0>(rows[0]);
+    a.sha256 = std::get<1>(rows[0]).value_or("");
+    a.extension = std::get<2>(rows[0]).value_or("");
+    a.media_type = std::get<3>(rows[0]);
+    a.original_name = std::get<4>(rows[0]);
+    a.is_image = std::get<5>(rows[0]) != 0;
+    a.remote_url = std::get<6>(rows[0]);
+    return std::optional<Attachment>{std::move(a)};
 }
 
 mw::E<void> DataSourceSQLite::attachToPost(int64_t attachment_id,
                                            int64_t post_id) const
 {
+    int64_t created = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "UPDATE attachments SET post_id = ? WHERE id = ?;"));
-        DO_OR_RETURN((st.bind<int64_t, int64_t>(post_id, attachment_id)));
+            "INSERT INTO post_attachments "
+            "(post_id, attachment_id, sensitive, sort_order, created_at) "
+            "VALUES (?, ?, COALESCE((SELECT sensitive FROM posts "
+            "WHERE id = ?), 0), "
+            "COALESCE((SELECT MAX(sort_order) + 1 FROM post_attachments "
+            "WHERE post_id = ?), 0), ?) "
+            "ON CONFLICT(post_id, attachment_id) DO NOTHING;"));
+        DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
+            post_id, attachment_id, post_id, post_id, created)));
         return db->execute(std::move(st));
     };
     return withWriteRetry(txn);
@@ -1599,12 +2171,16 @@ mw::E<std::vector<Attachment>>
 DataSourceSQLite::attachmentsForPost(int64_t post_id) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, post_id, sha256, media_type, original_name, is_image, "
-        "sensitive, remote_url FROM attachments WHERE post_id = ? "
-        "ORDER BY id ASC;"));
+        "SELECT a.id, pa.post_id, a.sha256, a.extension, a.media_type, "
+        "a.original_name, a.is_image, pa.sensitive, a.remote_url "
+        "FROM post_attachments pa "
+        "JOIN attachments a ON a.id = pa.attachment_id "
+        "WHERE pa.post_id = ? "
+        "ORDER BY pa.sort_order ASC, a.id ASC;"));
     DO_OR_RETURN(st.bind<int64_t>(post_id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::optional<int64_t>,
-        std::string, std::string, std::string, int64_t, int64_t,
+        std::optional<std::string>, std::optional<std::string>, std::string,
+        std::string, int64_t, int64_t,
         std::optional<std::string>>(std::move(st))));
     std::vector<Attachment> out;
     out.reserve(rows.size());
@@ -1613,15 +2189,79 @@ DataSourceSQLite::attachmentsForPost(int64_t post_id) const
         Attachment a;
         a.id = std::get<0>(r);
         a.post_id = std::get<1>(r);
-        a.sha256 = std::get<2>(r);
-        a.media_type = std::get<3>(r);
-        a.original_name = std::get<4>(r);
-        a.is_image = std::get<5>(r) != 0;
-        a.sensitive = std::get<6>(r) != 0;
-        a.remote_url = std::get<7>(r);
+        a.sha256 = std::get<2>(r).value_or("");
+        a.extension = std::get<3>(r).value_or("");
+        a.media_type = std::get<4>(r);
+        a.original_name = std::get<5>(r);
+        a.is_image = std::get<6>(r) != 0;
+        a.sensitive = std::get<7>(r) != 0;
+        a.remote_url = std::get<8>(r);
         out.push_back(std::move(a));
     }
     return out;
+}
+
+mw::E<void> DataSourceSQLite::replacePostAttachments(
+    int64_t post_id, const std::vector<int64_t>& attachment_ids) const
+{
+    int64_t created = now();
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        {
+            auto st_e = db->statementFromStr(
+                "DELETE FROM post_attachments WHERE post_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(post_id);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+        }
+        int sort = 0;
+        for(int64_t attachment_id : attachment_ids)
+        {
+            auto st_e = db->statementFromStr(
+                "INSERT INTO post_attachments "
+                "(post_id, attachment_id, sensitive, sort_order, created_at) "
+                "VALUES (?, ?, COALESCE((SELECT sensitive FROM posts "
+                "WHERE id = ?), 0), ?, ?);");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
+                post_id, attachment_id, post_id, sort, created);
+            if(!b.has_value()) return rollback(b.error());
+            auto ex = db->execute(std::move(*st_e));
+            if(!ex.has_value()) return rollback(ex.error());
+            ++sort;
+        }
+        return db->execute("COMMIT;");
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<void> DataSourceSQLite::deleteUnreferencedAttachments(
+    const std::vector<int64_t>& attachment_ids) const
+{
+    if(attachment_ids.empty()) return {};
+    auto txn = [&]() -> mw::E<void> {
+        for(int64_t attachment_id : attachment_ids)
+        {
+            ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+                "DELETE FROM attachments WHERE id = ? "
+                "AND NOT EXISTS (SELECT 1 FROM post_attachments "
+                "WHERE attachment_id = ?) "
+                "AND NOT EXISTS (SELECT 1 FROM users "
+                "WHERE avatar_attachment_id = ? "
+                "OR banner_attachment_id = ?);"));
+            DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t>(
+                attachment_id, attachment_id, attachment_id, attachment_id)));
+            DO_OR_RETURN(db->execute(std::move(st)));
+        }
+        return mw::E<void>{};
+    };
+    return withWriteRetry(txn);
 }
 
 // ─── Sessions ──────────────────────────────────────────────────────

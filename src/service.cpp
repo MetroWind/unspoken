@@ -474,7 +474,8 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
         }
         else
         {
-            std::string ext = extensionOf(a.original_name);
+            std::string ext = a.extension.empty()
+                ? extensionOf(a.original_name) : a.extension;
             std::string filename = ext.empty() ? a.sha256
                 : (a.sha256 + "." + ext);
             aj["url"] = esc(std::format("{}media/{}/{}", config.url_root,

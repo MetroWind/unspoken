@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -50,11 +51,67 @@ Post insertLocalPost(const DataSourceSQLite& db, int64_t author_id,
 
 } // namespace
 
-TEST(Data, SchemaVersionIsOne)
+TEST(Data, SchemaVersionIsTwo)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 1);
+    EXPECT_EQ(v, 2);
+}
+
+TEST(Data, OpensAndMigratesVersionOneDatabase)
+{
+    namespace fs = std::filesystem;
+    fs::path fixture = "tests/fixtures/db/v1.sqlite";
+    fs::path path = fs::temp_directory_path()
+        / "unspoken_v1_migration_test.sqlite";
+
+    auto removeTempDb = [&]() {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+        fs::remove(path.string() + "-wal", ignored);
+        fs::remove(path.string() + "-shm", ignored);
+    };
+
+    ASSERT_TRUE(fs::exists(fixture));
+    removeTempDb();
+    std::error_code ec;
+    fs::copy_file(fixture, path, fs::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
+    ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
+    EXPECT_EQ(version, 2);
+    ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
+    ASSERT_TRUE(user.has_value());
+    EXPECT_FALSE(user->avatar_attachment_id.has_value());
+    ASSIGN_OR_FAIL(auto attachments, db->attachmentsForPost(20));
+    ASSERT_THAT(attachments, SizeIs(2));
+    EXPECT_TRUE(attachments[0].remote_url.has_value());
+    EXPECT_TRUE(attachments[1].remote_url.has_value());
+    ASSIGN_OR_FAIL(auto local_attachments, db->attachmentsForPost(17));
+    ASSERT_THAT(local_attachments, SizeIs(1));
+    EXPECT_FALSE(local_attachments[0].remote_url.has_value());
+    EXPECT_EQ(local_attachments[0].sha256,
+              "4ce55f868061b887f63d165c109c551e"
+              "ca1a030215f8fad897ed6e827f78f939");
+    EXPECT_EQ(local_attachments[0].extension, "webp");
+    ASSIGN_OR_FAIL(auto sessions, db->getSessionUser(
+        "placeholder-session-token-1", 0));
+    ASSERT_TRUE(sessions.has_value());
+    EXPECT_EQ(*sessions, user->id);
+    ASSIGN_OR_FAIL(auto nonce, db->takePendingLogin(
+        "placeholder-login-state"));
+    ASSERT_TRUE(nonce.has_value());
+    EXPECT_EQ(*nonce, "placeholder-login-nonce");
+
+    ASSIGN_OR_FAIL(auto post21_attachments, db->attachmentsForPost(21));
+    ASSERT_THAT(post21_attachments, SizeIs(1));
+    EXPECT_TRUE(post21_attachments[0].remote_url.has_value());
+    ASSIGN_OR_FAIL(auto post17_attachments, db->attachmentsForPost(17));
+    ASSERT_THAT(post17_attachments, SizeIs(1));
+    EXPECT_FALSE(post17_attachments[0].sensitive);
+
+    removeTempDb();
 }
 
 TEST(Data, UserRoundTrip)
@@ -347,6 +404,125 @@ TEST(Data, Bookmarks)
     EXPECT_TRUE(mw::isExpected(db->removeBookmark(u.id, p.id)));
     ASSIGN_OR_FAIL(auto bms2, db->bookmarksFor(u.id, Cursor{}, 20));
     EXPECT_THAT(bms2, IsEmpty());
+}
+
+TEST(Data, AttachmentDeduplicatesAndPostRelationsCarrySensitivity)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User u, db->createUser(sampleUser("alice")));
+
+    NewPost np;
+    np.local_author_id = u.id;
+    np.content_html = "with media";
+    np.sensitive = true;
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post p, db->insertPost(np, {}, "https://f.test/p/"));
+
+    Attachment a;
+    a.sha256 = "abcdef";
+    a.extension = "png";
+    a.media_type = "image/png";
+    a.original_name = "first.png";
+    a.is_image = true;
+    ASSIGN_OR_FAIL(int64_t first_id, db->insertAttachment(a));
+
+    a.original_name = "second.png";
+    ASSIGN_OR_FAIL(int64_t second_id, db->insertAttachment(a));
+    EXPECT_EQ(second_id, first_id);
+
+    EXPECT_TRUE(mw::isExpected(db->attachToPost(first_id, p.id)));
+    ASSIGN_OR_FAIL(auto atts, db->attachmentsForPost(p.id));
+    ASSERT_THAT(atts, SizeIs(1));
+    EXPECT_EQ(atts[0].id, first_id);
+    EXPECT_EQ(atts[0].extension, "png");
+    EXPECT_EQ(atts[0].original_name, "first.png");
+    EXPECT_TRUE(atts[0].sensitive);
+}
+
+TEST(Data, RemoteAttachmentDeduplicatesByUrl)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Attachment a;
+    a.media_type = "image/jpeg";
+    a.original_name = "remote.jpg";
+    a.is_image = true;
+    a.remote_url = "https://remote.test/media/1.jpg";
+
+    ASSIGN_OR_FAIL(int64_t first_id, db->insertAttachment(a));
+    a.original_name = "renamed.jpg";
+    ASSIGN_OR_FAIL(int64_t second_id, db->insertAttachment(a));
+    EXPECT_EQ(second_id, first_id);
+}
+
+TEST(Data, ProfileMediaAndFieldsRoundTrip)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User u, db->createUser(sampleUser("alice")));
+
+    Attachment avatar;
+    avatar.sha256 = "abc001";
+    avatar.extension = "png";
+    avatar.media_type = "image/png";
+    avatar.original_name = "avatar.png";
+    avatar.is_image = true;
+    ASSIGN_OR_FAIL(int64_t avatar_id, db->insertAttachment(avatar));
+
+    UserProfileUpdate update;
+    update.display_name = "Alice Updated";
+    update.bio = "new bio";
+    update.avatar_attachment_id = avatar_id;
+    update.fields = {
+        {0, u.id, "Blog", "https://example.test", 10},
+        {0, u.id, "Matrix", "@alice:example.test", 20},
+    };
+    EXPECT_TRUE(mw::isExpected(db->replaceUserProfile(update, u.id)));
+
+    ASSIGN_OR_FAIL(auto stored, db->getUserById(u.id));
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->display_name, "Alice Updated");
+    ASSERT_TRUE(stored->avatar_attachment_id.has_value());
+    EXPECT_EQ(*stored->avatar_attachment_id, avatar_id);
+    EXPECT_FALSE(stored->banner_attachment_id.has_value());
+
+    ASSIGN_OR_FAIL(auto fields, db->profileFieldsForUser(u.id));
+    ASSERT_THAT(fields, SizeIs(2));
+    EXPECT_EQ(fields[0].label, "Blog");
+    EXPECT_EQ(fields[1].label, "Matrix");
+    EXPECT_EQ(fields[0].sort_order, 10);
+}
+
+TEST(Data, DeleteUnreferencedAttachmentsHonorsReferences)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User u, db->createUser(sampleUser("alice")));
+    Post p = insertLocalPost(*db, u.id, "with relation");
+
+    Attachment kept;
+    kept.sha256 = "aaa111";
+    kept.extension = "png";
+    kept.media_type = "image/png";
+    kept.original_name = "kept.png";
+    kept.is_image = true;
+    ASSIGN_OR_FAIL(int64_t kept_id, db->insertAttachment(kept));
+    EXPECT_TRUE(mw::isExpected(db->attachToPost(kept_id, p.id)));
+
+    Attachment removed = kept;
+    removed.sha256 = "bbb222";
+    removed.original_name = "removed.png";
+    ASSIGN_OR_FAIL(int64_t removed_id, db->insertAttachment(removed));
+
+    EXPECT_TRUE(mw::isExpected(db->deleteUnreferencedAttachments(
+        {kept_id, removed_id})));
+    ASSIGN_OR_FAIL(auto kept_after, db->getAttachmentById(kept_id));
+    EXPECT_TRUE(kept_after.has_value());
+    ASSIGN_OR_FAIL(auto removed_after, db->getAttachmentById(removed_id));
+    EXPECT_FALSE(removed_after.has_value());
+
+    EXPECT_TRUE(mw::isExpected(db->updateProfileMedia(u.id, kept_id, {})));
+    EXPECT_TRUE(mw::isExpected(db->deletePost(p.id)));
+    EXPECT_TRUE(mw::isExpected(db->deleteUnreferencedAttachments({kept_id})));
+    ASSIGN_OR_FAIL(auto profile_kept, db->getAttachmentById(kept_id));
+    EXPECT_TRUE(profile_kept.has_value());
 }
 
 TEST(Data, SessionLifecycle)

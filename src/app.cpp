@@ -1128,6 +1128,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
                 res);
             unspoken::Attachment a;
             a.sha256 = stored.sha256;
+            a.extension = unspoken::extensionOf(stored.filename);
             a.media_type = stored.media_type;
             a.original_name = file.filename;
             a.is_image = stored.is_image;

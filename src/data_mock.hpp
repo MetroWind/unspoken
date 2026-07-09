@@ -23,6 +23,7 @@ class DataSourceMock : public DataSourceInterface
 {
 public:
     MOCK_METHOD(mw::E<int64_t>, getSchemaVersion, (), (const, override));
+    MOCK_METHOD(mw::E<void>, migrate1To2, (), (const, override));
 
     MOCK_METHOD(mw::E<User>, createUser, (const NewUser&), (const, override));
     MOCK_METHOD(mw::E<std::optional<User>>, getUserById, (int64_t),
@@ -34,6 +35,16 @@ public:
     MOCK_METHOD(mw::E<void>, updateUserProfile,
                 (int64_t, std::string_view, std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<void>, updateProfileMedia,
+                (int64_t, std::optional<int64_t>, std::optional<int64_t>),
+                (const, override));
+    MOCK_METHOD(mw::E<std::vector<UserProfileField>>, profileFieldsForUser,
+                (int64_t), (const, override));
+    MOCK_METHOD(mw::E<void>, replaceProfileFields,
+                (int64_t, (const std::vector<UserProfileField>&)),
+                (const, override));
+    MOCK_METHOD(mw::E<void>, replaceUserProfile,
+                (const UserProfileUpdate&, int64_t), (const, override));
     MOCK_METHOD(mw::E<std::vector<User>>, searchUsers,
                 (std::string_view, int), (const, override));
     MOCK_METHOD(mw::E<int64_t>, countUsers, (), (const, override));
@@ -127,10 +138,16 @@ public:
 
     MOCK_METHOD(mw::E<int64_t>, insertAttachment, (const Attachment&),
                 (const, override));
+    MOCK_METHOD(mw::E<std::optional<Attachment>>, getAttachmentById,
+                (int64_t), (const, override));
     MOCK_METHOD(mw::E<void>, attachToPost, (int64_t, int64_t),
                 (const, override));
     MOCK_METHOD(mw::E<std::vector<Attachment>>, attachmentsForPost,
                 (int64_t), (const, override));
+    MOCK_METHOD(mw::E<void>, replacePostAttachments,
+                (int64_t, (const std::vector<int64_t>&)), (const, override));
+    MOCK_METHOD(mw::E<void>, deleteUnreferencedAttachments,
+                ((const std::vector<int64_t>&)), (const, override));
 
     MOCK_METHOD(mw::E<void>, createSession,
                 (std::string_view, int64_t, int64_t), (const, override));

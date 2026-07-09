@@ -38,6 +38,7 @@ public:
     virtual ~DataSourceInterface() = default;
 
     virtual mw::E<int64_t> getSchemaVersion() const = 0;
+    virtual mw::E<void> migrate1To2() const = 0;
 
     // ── Users ───────────────────────────────────────────────────
     virtual mw::E<User> createUser(const NewUser& nu) const = 0;
@@ -50,6 +51,18 @@ public:
     virtual mw::E<void>
     updateUserProfile(int64_t id, std::string_view display_name,
                       std::string_view bio) const = 0;
+    virtual mw::E<void>
+    updateProfileMedia(int64_t user_id,
+                       std::optional<int64_t> avatar_attachment_id,
+                       std::optional<int64_t> banner_attachment_id) const = 0;
+    virtual mw::E<std::vector<UserProfileField>>
+    profileFieldsForUser(int64_t user_id) const = 0;
+    virtual mw::E<void>
+    replaceProfileFields(int64_t user_id,
+                         const std::vector<UserProfileField>& fields) const = 0;
+    virtual mw::E<void>
+    replaceUserProfile(const UserProfileUpdate& update, int64_t user_id) const
+        = 0;
     // Local user search by username / display-name substring (case-
     // insensitive), for the search page (§16.9). Remote (WebFinger)
     // search is Phase 6.
@@ -170,10 +183,18 @@ public:
 
     // ── Attachments ─────────────────────────────────────────────
     virtual mw::E<int64_t> insertAttachment(const Attachment& a) const = 0;
+    virtual mw::E<std::optional<Attachment>>
+    getAttachmentById(int64_t attachment_id) const = 0;
     virtual mw::E<void>
     attachToPost(int64_t attachment_id, int64_t post_id) const = 0;
     virtual mw::E<std::vector<Attachment>>
     attachmentsForPost(int64_t post_id) const = 0;
+    virtual mw::E<void>
+    replacePostAttachments(
+        int64_t post_id, const std::vector<int64_t>& attachment_ids) const = 0;
+    virtual mw::E<void>
+    deleteUnreferencedAttachments(
+        const std::vector<int64_t>& attachment_ids) const = 0;
 
     // ── Sessions ────────────────────────────────────────────────
     virtual mw::E<void>
@@ -234,6 +255,7 @@ public:
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
 
     mw::E<int64_t> getSchemaVersion() const override;
+    mw::E<void> migrate1To2() const override;
 
     mw::E<User> createUser(const NewUser& nu) const override;
     mw::E<std::optional<User>> getUserById(int64_t id) const override;
@@ -243,6 +265,20 @@ public:
     getUserByOidcSub(std::string_view iss, std::string_view sub) const override;
     mw::E<void> updateUserProfile(int64_t id, std::string_view display_name,
                                   std::string_view bio) const override;
+    mw::E<void>
+    updateProfileMedia(int64_t user_id,
+                       std::optional<int64_t> avatar_attachment_id,
+                       std::optional<int64_t> banner_attachment_id)
+        const override;
+    mw::E<std::vector<UserProfileField>>
+    profileFieldsForUser(int64_t user_id) const override;
+    mw::E<void>
+    replaceProfileFields(
+        int64_t user_id,
+        const std::vector<UserProfileField>& fields) const override;
+    mw::E<void>
+    replaceUserProfile(const UserProfileUpdate& update,
+                       int64_t user_id) const override;
     mw::E<std::vector<User>>
     searchUsers(std::string_view query, int limit) const override;
     mw::E<int64_t> countUsers() const override;
@@ -329,10 +365,19 @@ public:
     bookmarksFor(int64_t user_id, const Cursor& c, int limit) const override;
 
     mw::E<int64_t> insertAttachment(const Attachment& a) const override;
+    mw::E<std::optional<Attachment>>
+    getAttachmentById(int64_t attachment_id) const override;
     mw::E<void> attachToPost(int64_t attachment_id,
                              int64_t post_id) const override;
     mw::E<std::vector<Attachment>>
     attachmentsForPost(int64_t post_id) const override;
+    mw::E<void>
+    replacePostAttachments(
+        int64_t post_id, const std::vector<int64_t>& attachment_ids)
+        const override;
+    mw::E<void>
+    deleteUnreferencedAttachments(
+        const std::vector<int64_t>& attachment_ids) const override;
 
     mw::E<void> createSession(std::string_view token, int64_t user_id,
                               int64_t expires_at) const override;

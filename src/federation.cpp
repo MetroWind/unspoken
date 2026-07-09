@@ -1579,7 +1579,8 @@ nlohmann::json noteJson(const Config& config, const Post& post,
         }
         else
         {
-            std::string ext = extensionOf(a.original_name);
+            std::string ext = a.extension.empty()
+                ? extensionOf(a.original_name) : a.extension;
             std::string filename = ext.empty() ? a.sha256
                 : (a.sha256 + "." + ext);
             url = std::format("{}media/{}/{}", config.url_root,

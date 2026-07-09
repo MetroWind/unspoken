@@ -85,6 +85,8 @@ struct User
     std::string username;       // immutable once set
     std::string display_name;
     std::string bio;            // markdown source
+    std::optional<int64_t> avatar_attachment_id;
+    std::optional<int64_t> banner_attachment_id;
     std::string oidc_iss;
     std::string oidc_sub;
     std::string private_key_pem;
@@ -174,13 +176,36 @@ struct PostRecipient
 struct Attachment
 {
     int64_t id = 0;
+    // Relation metadata populated for post attachment views.
     std::optional<int64_t> post_id;
     std::string sha256;         // lowercase hex
+    std::string extension;      // lowercase, no dot; local attachments only
     std::string media_type;     // MIME
     std::string original_name;
     bool is_image = false;
+    // Relation metadata populated for post attachment views.
     bool sensitive = false;
     std::optional<std::string> remote_url; // set for remote attachments
+};
+
+// One local profile metadata row owned by a user.
+struct UserProfileField
+{
+    int64_t id = 0;
+    int64_t user_id = 0;
+    std::string label;
+    std::string value;
+    int sort_order = 0;
+};
+
+// Editable profile data submitted as a complete profile state.
+struct UserProfileUpdate
+{
+    std::string display_name;
+    std::string bio;
+    std::optional<int64_t> avatar_attachment_id;
+    std::optional<int64_t> banner_attachment_id;
+    std::vector<UserProfileField> fields;
 };
 
 // A follow relationship. Stores actor URIs so it uniformly covers local
