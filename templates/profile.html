@@ -1,24 +1,51 @@
 {% include "_header.html" %}
-<section class="profile-head">
-  <h1>{{ profile.display_name }}</h1>
-  <p class="handle">{{ profile.handle }}</p>
-  <div class="bio">{{ profile.bio_html }}</div>
+<section class="profile-head
+{% if length(profile.banner_url) > 0 %}has-banner{% endif %}
+{% if length(profile.avatar_url) > 0 %}has-avatar{% endif %}">
+{% if length(profile.banner_url) > 0 %}
+  <div class="profile-banner">
+    <img src="{{ profile.banner_url }}" alt="{{ profile.banner_alt }}">
+  </div>
+{% endif %}
+  <div class="profile-main">
+{% if length(profile.avatar_url) > 0 %}
+    <a class="profile-avatar-link" href="{{ profile.avatar_url }}">
+      <img class="profile-avatar" src="{{ profile.avatar_url }}"
+           alt="{{ profile.avatar_alt }}">
+    </a>
+{% endif %}
+    <div class="profile-title">
+      <h1>{{ profile.display_name }}</h1>
+      <p class="handle">{{ profile.handle }}</p>
+    </div>
+    <div class="bio">{{ profile.bio_html }}</div>
+{% if length(profile.fields) > 0 %}
+    <dl class="profile-fields">
+{% for field in profile.fields %}
+      <div class="profile-field">
+        <dt>{{ field.label }}</dt>
+        <dd>{{ field.value_html }}</dd>
+      </div>
+{% endfor %}
+    </dl>
+{% endif %}
 {% if logged_in %}
 {% if is_self %}
-  <p><a class="linkbtn" href="{{ site.root }}profile">edit profile</a></p>
+    <p><a class="linkbtn" href="{{ site.root }}profile">edit profile</a></p>
 {% else %}
-  <form class="inline" method="post" action="{{ site.root }}follow">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <input type="hidden" name="username" value="{{ profile.username }}">
+    <form class="inline" method="post" action="{{ site.root }}follow">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="username" value="{{ profile.username }}">
 {% if following %}
-    <input type="hidden" name="undo" value="1">
-    <button type="submit" class="linkbtn on">following — unfollow</button>
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on">following — unfollow</button>
 {% else %}
-    <button type="submit" class="linkbtn">follow</button>
+      <button type="submit" class="linkbtn">follow</button>
 {% endif %}
-  </form>
+    </form>
 {% endif %}
 {% endif %}
+  </div>
 </section>
 
 <div class="timeline">

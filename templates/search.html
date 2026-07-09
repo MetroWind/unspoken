@@ -19,6 +19,10 @@
   <div class="result">
     <div class="result-head">
       <a class="author" href="{{ u.profile_url }}">
+{% if length(u.avatar_url) > 0 %}
+        <img class="result-avatar" src="{{ u.avatar_url }}"
+             alt="{{ u.avatar_alt }}">
+{% endif %}
         <span class="dname">{{ u.display_name }}</span>
         <span class="handle">{{ u.handle }}</span>
       </a>
@@ -40,6 +44,16 @@
 {% endif %}
     </div>
     <div class="bio">{{ u.bio_html }}</div>
+{% if length(u.fields) > 0 %}
+    <dl class="profile-fields compact">
+{% for field in u.fields %}
+      <div class="profile-field">
+        <dt>{{ field.label }}</dt>
+        <dd>{{ field.value_html }}</dd>
+      </div>
+{% endfor %}
+    </dl>
+{% endif %}
   </div>
 {% endfor %}
 </div>

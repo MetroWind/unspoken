@@ -1028,7 +1028,18 @@ nlohmann::json remoteActorView(const unspoken::RemoteActor& actor)
     j["handle"] = mw::escapeHTML(std::format("@{}@{}", actor.username,
                                              actor.domain));
     j["profile_url"] = mw::escapeHTML(actor.uri);
+    j["avatar_url"] = "";
+    j["avatar_alt"] = mw::escapeHTML(std::format("{} avatar",
+                                                 actor.display_name.empty()
+                                                 ? actor.username
+                                                 : actor.display_name));
+    j["banner_url"] = "";
+    j["banner_alt"] = mw::escapeHTML(std::format("{} banner",
+                                                 actor.display_name.empty()
+                                                 ? actor.username
+                                                 : actor.display_name));
     j["bio_html"] = "";
+    j["fields"] = nlohmann::json::array();
     nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
                                                false);
     if(doc.is_object() && doc.contains("summary")
