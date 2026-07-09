@@ -2,7 +2,8 @@
 <section class="narrow">
   <h1>Edit profile</h1>
   <p class="handle">{{ profile.handle }}</p>
-  <form method="post" action="{{ site.root }}profile">
+  <form method="post" action="{{ site.root }}profile"
+        enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Display name
       <input name="display_name" value="{{ profile.display_name }}">
@@ -10,6 +11,47 @@
     <label>Bio (Markdown)
       <textarea name="bio" rows="5">{{ profile.bio_source }}</textarea>
     </label>
+    <section class="profile-edit-media">
+      <div class="profile-edit-media-item">
+        <div class="form-label">Avatar</div>
+{% if length(profile.avatar_url) > 0 %}
+        <img class="profile-edit-avatar" src="{{ profile.avatar_url }}"
+             alt="{{ profile.avatar_alt }}">
+        <label class="cb">
+          <input type="checkbox" name="remove_avatar" value="1">
+          remove current avatar
+        </label>
+{% endif %}
+        <input type="file" name="avatar" accept="image/*">
+      </div>
+      <div class="profile-edit-media-item">
+        <div class="form-label">Banner</div>
+{% if length(profile.banner_url) > 0 %}
+        <img class="profile-edit-banner" src="{{ profile.banner_url }}"
+             alt="{{ profile.banner_alt }}">
+        <label class="cb">
+          <input type="checkbox" name="remove_banner" value="1">
+          remove current banner
+        </label>
+{% endif %}
+        <input type="file" name="banner" accept="image/*">
+      </div>
+    </section>
+    <section class="profile-edit-fields">
+      <h2>Profile fields</h2>
+{% for field in edit_fields %}
+      <div class="profile-edit-field">
+        <label>Label
+          <input name="field_label_{{ field.index }}"
+                 value="{{ field.label }}" maxlength="40">
+        </label>
+        <label>Value (Markdown)
+          <input name="field_value_{{ field.index }}"
+                 value="{{ field.value }}" maxlength="250">
+        </label>
+      </div>
+{% endfor %}
+    </section>
     <button type="submit">Save</button>
   </form>
 </section>

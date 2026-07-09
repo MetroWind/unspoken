@@ -452,7 +452,7 @@ mw::E<void> Service::updateProfile(const User& user,
             return std::unexpected(mw::httpError(
                 400, "Profile field value is too long."));
         }
-        if(fields.size() >= 8)
+        if(fields.size() >= static_cast<size_t>(MAX_PROFILE_FIELDS))
         {
             return std::unexpected(mw::httpError(
                 400, "Too many profile fields."));
@@ -535,12 +535,17 @@ mw::E<nlohmann::json> Service::userView(const User& u) const
         }
     }
 
+    ASSIGN_OR_RETURN(auto source_fields, data.profileFieldsForUser(u.id));
     ASSIGN_OR_RETURN(auto rendered_fields, renderedProfileFields(u));
     nlohmann::json fields = nlohmann::json::array();
-    for(const auto& field : rendered_fields)
+    for(size_t i = 0; i < rendered_fields.size(); ++i)
     {
+        const auto& field = rendered_fields[i];
+        std::string source_value;
+        if(i < source_fields.size()) source_value = source_fields[i].value;
         fields.push_back({
             {"label", esc(field.label)},
+            {"value_source", esc(source_value)},
             {"value_html", field.value_html},
         });
     }

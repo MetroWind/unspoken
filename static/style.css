@@ -99,6 +99,7 @@ textarea { width: 100%; resize: vertical; font-family: var(--mono); }
 label { display: inline-flex; gap: 6px; align-items: center; margin: 4px 0; }
 .narrow label, .composer label { display: flex; flex-direction: column; align-items: stretch; }
 .narrow label { margin-bottom: 10px; }
+.form-label { color: var(--fg-dim); font-size: 0.9em; margin-bottom: 4px; }
 
 button {
     background: var(--accent);
@@ -370,6 +371,51 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
 .profile-field dd p:first-child { margin-top: 0; }
 .profile-field dd p:last-child { margin-bottom: 0; }
 
+.profile-edit-media {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 12px 0;
+}
+.profile-edit-media-item {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+.profile-edit-avatar {
+    display: block;
+    width: 92px;
+    height: 92px;
+    object-fit: cover;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+.profile-edit-banner {
+    display: block;
+    width: 100%;
+    aspect-ratio: 3 / 1;
+    object-fit: cover;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+.profile-edit-fields {
+    border-top: 1px solid var(--border);
+    margin: 14px 0 12px;
+    padding-top: 10px;
+}
+.profile-edit-fields h2 {
+    color: var(--fg-dim);
+    font-size: 0.95rem;
+    margin: 0 0 8px;
+}
+.profile-edit-field {
+    display: grid;
+    grid-template-columns: minmax(110px, 0.4fr) minmax(0, 1fr);
+    gap: 8px;
+}
+.profile-edit-field input { width: 100%; }
+
 .result {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -422,5 +468,9 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
     .profile-field {
         grid-template-columns: 1fr;
         gap: 2px;
+    }
+    .profile-edit-media,
+    .profile-edit-field {
+        grid-template-columns: 1fr;
     }
 }

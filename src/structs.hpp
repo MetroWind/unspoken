@@ -188,6 +188,9 @@ struct Attachment
     std::optional<std::string> remote_url; // set for remote attachments
 };
 
+// Maximum number of metadata rows a local profile may contain.
+inline constexpr int MAX_PROFILE_FIELDS = 8;
+
 // One local profile metadata row owned by a user.
 struct UserProfileField
 {

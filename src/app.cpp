@@ -1799,7 +1799,29 @@ void App::handleProfileGet(const Request& req, Response& res) const
     Service svc(config, *ds, emoji);
     auto ctx = baseContext(req, viewer);
     ASSIGN_OR_RESPOND_ERROR(auto profile_view, svc.userView(*viewer), res);
+    ASSIGN_OR_RESPOND_ERROR(auto profile_fields,
+                            ds->profileFieldsForUser(viewer->id), res);
+    nlohmann::json edit_fields = nlohmann::json::array();
+    const size_t max_profile_fields =
+        static_cast<size_t>(unspoken::MAX_PROFILE_FIELDS);
+    for(size_t i = 0; i < max_profile_fields; ++i)
+    {
+        nlohmann::json field;
+        if(i < profile_fields.size())
+        {
+            field["label"] = mw::escapeHTML(profile_fields[i].label);
+            field["value"] = mw::escapeHTML(profile_fields[i].value);
+        }
+        else
+        {
+            field["label"] = "";
+            field["value"] = "";
+        }
+        field["index"] = i;
+        edit_fields.push_back(std::move(field));
+    }
     ctx["profile"] = std::move(profile_view);
+    ctx["edit_fields"] = std::move(edit_fields);
     render(res, 200, "profile_edit.html", ctx);
 }
 
@@ -1816,15 +1838,107 @@ void App::handleProfilePost(const Request& req, Response& res) const
     Service svc(config, *ds, emoji);
     std::string display_name = param(req, "display_name");
     std::string bio = param(req, "bio");
-    ASSIGN_OR_RESPOND_ERROR(auto fields,
-                            ds->profileFieldsForUser(viewer->id), res);
+
+    auto store_profile_image =
+        [&](const char* field_name) -> mw::E<std::optional<int64_t>> {
+        if(!req.is_multipart_form_data()) return std::nullopt;
+        auto files = req.get_file_values(field_name);
+        if(files.empty() || files.front().content.empty())
+            return std::nullopt;
+        const auto& file = files.front();
+        if(static_cast<int64_t>(file.content.size())
+           > config.max_upload_bytes)
+        {
+            return std::unexpected(mw::httpError(
+                413, "Attachment too large"));
+        }
+        ASSIGN_OR_RETURN(auto stored,
+                         unspoken::storeAttachment(
+                             config.attachment_dir, file.content,
+                             file.filename, file.content_type));
+        if(!stored.is_image)
+        {
+            return std::unexpected(mw::httpError(
+                400, "Profile media must be an image."));
+        }
+        unspoken::Attachment a;
+        a.sha256 = stored.sha256;
+        a.extension = unspoken::extensionOf(stored.filename);
+        a.media_type = stored.media_type;
+        a.original_name = file.filename;
+        a.is_image = stored.is_image;
+        ASSIGN_OR_RETURN(int64_t id, ds->insertAttachment(a));
+        return id;
+    };
+
     unspoken::UserProfileUpdate update;
     update.display_name = std::move(display_name);
     update.bio = std::move(bio);
     update.avatar_attachment_id = viewer->avatar_attachment_id;
     update.banner_attachment_id = viewer->banner_attachment_id;
-    update.fields = std::move(fields);
-    if(respondIfError(svc.updateProfile(*viewer, update), res)) return;
+    std::vector<int64_t> detached_attachment_ids;
+    std::vector<int64_t> new_attachment_ids;
+
+    if(hasParam(req, "remove_avatar"))
+    {
+        if(update.avatar_attachment_id.has_value())
+            detached_attachment_ids.push_back(*update.avatar_attachment_id);
+        update.avatar_attachment_id = std::nullopt;
+    }
+    if(hasParam(req, "remove_banner"))
+    {
+        if(update.banner_attachment_id.has_value())
+            detached_attachment_ids.push_back(*update.banner_attachment_id);
+        update.banner_attachment_id = std::nullopt;
+    }
+
+    ASSIGN_OR_RESPOND_ERROR(auto uploaded_avatar,
+                            store_profile_image("avatar"), res);
+    if(uploaded_avatar.has_value())
+    {
+        new_attachment_ids.push_back(*uploaded_avatar);
+        if(update.avatar_attachment_id.has_value()
+           && *update.avatar_attachment_id != *uploaded_avatar)
+        {
+            detached_attachment_ids.push_back(*update.avatar_attachment_id);
+        }
+        update.avatar_attachment_id = uploaded_avatar;
+    }
+
+    ASSIGN_OR_RESPOND_ERROR(auto uploaded_banner,
+                            store_profile_image("banner"), res);
+    if(uploaded_banner.has_value())
+    {
+        new_attachment_ids.push_back(*uploaded_banner);
+        if(update.banner_attachment_id.has_value()
+           && *update.banner_attachment_id != *uploaded_banner)
+        {
+            detached_attachment_ids.push_back(*update.banner_attachment_id);
+        }
+        update.banner_attachment_id = uploaded_banner;
+    }
+
+    for(int i = 0; i < unspoken::MAX_PROFILE_FIELDS; ++i)
+    {
+        std::string label_name = std::format("field_label_{}", i);
+        std::string value_name = std::format("field_value_{}", i);
+        std::string label = param(req, label_name.c_str());
+        std::string value = param(req, value_name.c_str());
+        if(label.empty() && value.empty()) continue;
+        update.fields.push_back(unspoken::UserProfileField{
+            0, viewer->id, std::move(label), std::move(value),
+            static_cast<int>(update.fields.size()),
+        });
+    }
+
+    auto update_result = svc.updateProfile(*viewer, update);
+    if(!update_result.has_value())
+    {
+        (void)ds->deleteUnreferencedAttachments(new_attachment_ids);
+        respondError(update_result.error(), res);
+        return;
+    }
+    (void)ds->deleteUnreferencedAttachments(detached_attachment_ids);
     ASSIGN_OR_RESPOND_ERROR(auto updated, ds->getUserById(viewer->id), res);
     if(updated.has_value())
     {
