@@ -554,6 +554,104 @@ mw::E<nlohmann::json> Service::userView(const User& u) const
     return j;
 }
 
+nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
+{
+    auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
+    auto display_name = actor.display_name.empty()
+        ? actor.username : actor.display_name;
+
+    nlohmann::json j;
+    j["id"] = actor.id;
+    j["username"] = esc(actor.username);
+    j["display_name"] = esc(display_name);
+    j["handle"] = esc(std::format("@{}@{}", actor.username, actor.domain));
+    j["profile_url"] = esc(actor.uri);
+    j["bio_html"] = "";
+    j["avatar_url"] = "";
+    j["avatar_alt"] = esc(std::format("{} avatar", display_name));
+    j["banner_url"] = "";
+    j["banner_alt"] = esc(std::format("{} banner", display_name));
+    j["fields"] = nlohmann::json::array();
+    j["is_local"] = false;
+
+    nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
+                                               false);
+    if(!doc.is_object()) return j;
+
+    if(auto it = doc.find("summary"); it != doc.end() && it->is_string())
+    {
+        j["bio_html"] = sanitizeRemoteHtml(it->get<std::string>());
+    }
+
+    auto image_url = [](const nlohmann::json& value) -> std::string {
+        auto object_url = [](const nlohmann::json& object) -> std::string {
+            if(!object.is_object()) return "";
+            if(auto it = object.find("url");
+               it != object.end() && it->is_string())
+            {
+                return it->get<std::string>();
+            }
+            if(auto it = object.find("href");
+               it != object.end() && it->is_string())
+            {
+                return it->get<std::string>();
+            }
+            return "";
+        };
+
+        if(value.is_object()) return object_url(value);
+        if(value.is_array())
+        {
+            for(const auto& item : value)
+            {
+                std::string url = object_url(item);
+                if(!url.empty()) return url;
+            }
+        }
+        return "";
+    };
+
+    if(auto it = doc.find("icon"); it != doc.end())
+    {
+        j["avatar_url"] = esc(image_url(*it));
+    }
+    if(auto it = doc.find("image"); it != doc.end())
+    {
+        j["banner_url"] = esc(image_url(*it));
+    }
+
+    auto add_field = [&](const nlohmann::json& item) {
+        if(!item.is_object()) return;
+        if(item.value("type", std::string()) != "PropertyValue") return;
+        auto label_it = item.find("name");
+        auto value_it = item.find("value");
+        if(label_it == item.end() || value_it == item.end()
+           || !label_it->is_string() || !value_it->is_string())
+        {
+            return;
+        }
+
+        std::string label(mw::strip(label_it->get<std::string>()));
+        std::string value = value_it->get<std::string>();
+        if(label.empty() || value.empty()) return;
+        j["fields"].push_back({
+            {"label", esc(label)},
+            {"value_html", sanitizeRemoteHtml(value)},
+        });
+    };
+
+    if(auto it = doc.find("attachment"); it != doc.end())
+    {
+        if(it->is_object()) add_field(*it);
+        else if(it->is_array())
+        {
+            for(const auto& item : *it) add_field(item);
+        }
+    }
+
+    return j;
+}
+
 mw::E<nlohmann::json>
 Service::postView(const Post& p, const std::optional<User>& viewer) const
 {

@@ -191,6 +191,119 @@ TEST(ServiceProfile, RejectsRemoteAvatarAndInvalidField)
     EXPECT_FALSE(svc.updateProfile(alice, update).has_value());
 }
 
+TEST(ServiceProfile, RemoteActorViewParsesRichProfileFields)
+{
+    Config c = testConfig();
+    DataSourceMock data;
+    EmojiRegistry emoji;
+    Service svc(c, data, emoji);
+
+    RemoteActor actor;
+    actor.id = 42;
+    actor.uri = "https://remote.test/users/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.display_name = "Bob <Remote>";
+    actor.actor_json = R"({
+        "summary": "<p>Hello <script>bad()</script><b>world</b></p>",
+        "icon": {"type": "Image", "url": "https://cdn.test/avatar.png"},
+        "image": {"type": "Image", "href": "https://cdn.test/banner.jpg"},
+        "attachment": [
+            {
+                "type": "PropertyValue",
+                "name": "Blog <site>",
+                "value": "<a href=\"https://example.test\">site</a>"
+            },
+            {
+                "type": "PropertyValue",
+                "name": "Unsafe",
+                "value": "<a href=\"javascript:alert(1)\">bad</a>"
+            },
+            {"type": "Link", "name": "ignored", "value": "ignored"},
+            {"type": "PropertyValue", "name": "", "value": "ignored"}
+        ]
+    })";
+
+    auto view = svc.remoteActorView(actor);
+    EXPECT_EQ(view["id"], 42);
+    EXPECT_EQ(view["username"], "bob");
+    EXPECT_EQ(view["display_name"], "Bob &lt;Remote&gt;");
+    EXPECT_EQ(view["handle"], "@bob@remote.test");
+    EXPECT_EQ(view["profile_url"], actor.uri);
+    EXPECT_EQ(view["avatar_url"], "https://cdn.test/avatar.png");
+    EXPECT_EQ(view["banner_url"], "https://cdn.test/banner.jpg");
+    EXPECT_FALSE(view["is_local"]);
+
+    std::string bio = view["bio_html"];
+    EXPECT_EQ(bio.find("script"), std::string::npos);
+    EXPECT_NE(bio.find("<b>world</b>"), std::string::npos);
+
+    ASSERT_EQ(view["fields"].size(), 2u);
+    EXPECT_EQ(view["fields"][0]["label"], "Blog &lt;site&gt;");
+    EXPECT_NE(view["fields"][0]["value_html"].get<std::string>().find(
+                  "https://example.test"),
+              std::string::npos);
+    EXPECT_EQ(view["fields"][1]["label"], "Unsafe");
+    EXPECT_EQ(view["fields"][1]["value_html"], "bad");
+}
+
+TEST(ServiceProfile, RemoteActorViewAcceptsArraysAndObjectAttachment)
+{
+    Config c = testConfig();
+    DataSourceMock data;
+    EmojiRegistry emoji;
+    Service svc(c, data, emoji);
+
+    RemoteActor actor;
+    actor.uri = "https://remote.test/users/carol";
+    actor.username = "carol";
+    actor.domain = "remote.test";
+    actor.actor_json = R"({
+        "icon": [
+            "ignored",
+            {"type": "Image"},
+            {"type": "Image", "url": "https://cdn.test/carol.png"}
+        ],
+        "image": [
+            {"type": "Image", "href": "https://cdn.test/carol.jpg"}
+        ],
+        "attachment": {
+            "type": "PropertyValue",
+            "name": "Plain",
+            "value": "plain text < ok"
+        }
+    })";
+
+    auto view = svc.remoteActorView(actor);
+    EXPECT_EQ(view["display_name"], "carol");
+    EXPECT_EQ(view["avatar_url"], "https://cdn.test/carol.png");
+    EXPECT_EQ(view["banner_url"], "https://cdn.test/carol.jpg");
+    ASSERT_EQ(view["fields"].size(), 1u);
+    EXPECT_EQ(view["fields"][0]["label"], "Plain");
+    EXPECT_EQ(view["fields"][0]["value_html"], "plain text &lt; ok");
+}
+
+TEST(ServiceProfile, RemoteActorViewToleratesMalformedActorJson)
+{
+    Config c = testConfig();
+    DataSourceMock data;
+    EmojiRegistry emoji;
+    Service svc(c, data, emoji);
+
+    RemoteActor actor;
+    actor.uri = "https://remote.test/users/dave";
+    actor.username = "dave";
+    actor.domain = "remote.test";
+    actor.actor_json = "{";
+
+    auto view = svc.remoteActorView(actor);
+    EXPECT_EQ(view["username"], "dave");
+    EXPECT_EQ(view["bio_html"], "");
+    EXPECT_EQ(view["avatar_url"], "");
+    EXPECT_EQ(view["banner_url"], "");
+    EXPECT_EQ(view["fields"].size(), 0u);
+}
+
 TEST(ServiceFollow, CanFollowRemoteActorUri)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

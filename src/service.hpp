@@ -97,6 +97,8 @@ public:
                               const UserProfileUpdate& update) const;
     // A user profile view (header fields, profile media, and rendered bio).
     mw::E<nlohmann::json> userView(const User& u) const;
+    // A remote actor profile view built from cached actor JSON.
+    nlohmann::json remoteActorView(const RemoteActor& actor) const;
     // Render local profile metadata rows for ActivityPub output.
     mw::E<std::vector<RenderedProfileField>>
     renderedProfileFields(const User& user) const;

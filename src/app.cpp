@@ -1018,39 +1018,6 @@ unspoken::Visibility visibilityParam(const std::string& v)
     return parsed.value_or(unspoken::Visibility::PUBLIC);
 }
 
-nlohmann::json remoteActorView(const unspoken::RemoteActor& actor)
-{
-    nlohmann::json j;
-    j["id"] = actor.id;
-    j["username"] = mw::escapeHTML(actor.username);
-    j["display_name"] = mw::escapeHTML(
-        actor.display_name.empty() ? actor.username : actor.display_name);
-    j["handle"] = mw::escapeHTML(std::format("@{}@{}", actor.username,
-                                             actor.domain));
-    j["profile_url"] = mw::escapeHTML(actor.uri);
-    j["avatar_url"] = "";
-    j["avatar_alt"] = mw::escapeHTML(std::format("{} avatar",
-                                                 actor.display_name.empty()
-                                                 ? actor.username
-                                                 : actor.display_name));
-    j["banner_url"] = "";
-    j["banner_alt"] = mw::escapeHTML(std::format("{} banner",
-                                                 actor.display_name.empty()
-                                                 ? actor.username
-                                                 : actor.display_name));
-    j["bio_html"] = "";
-    j["fields"] = nlohmann::json::array();
-    nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
-                                               false);
-    if(doc.is_object() && doc.contains("summary")
-       && doc["summary"].is_string())
-    {
-        j["bio_html"] = unspoken::sanitizeRemoteHtml(
-            doc["summary"].get<std::string>());
-    }
-    return j;
-}
-
 bool looksRemoteHandle(std::string_view query,
                        std::string_view public_domain)
 {
@@ -2008,7 +1975,7 @@ mw::E<void> appendRemoteActorSearchResult(
     const Service& svc, const std::optional<unspoken::User>& viewer,
     const unspoken::RemoteActor& actor)
 {
-    auto view = remoteActorView(actor);
+    auto view = svc.remoteActorView(actor);
     view["actor_uri"] = mw::escapeHTML(actor.uri);
     view["can_follow"] = viewer.has_value();
     if(viewer.has_value())
