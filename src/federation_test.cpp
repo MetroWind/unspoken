@@ -321,6 +321,39 @@ TEST(ActivityStreams, ActorJsonShape)
     EXPECT_EQ(j["publicKey"]["publicKeyPem"], "PUB");
 }
 
+TEST(ActivityStreams, ActorJsonIncludesRichProfileFields)
+{
+    Attachment avatar;
+    avatar.sha256 = "abc001";
+    avatar.extension = "png";
+    avatar.media_type = "image/png";
+    avatar.original_name = "avatar.png";
+    avatar.is_image = true;
+    Attachment banner;
+    banner.sha256 = "def002";
+    banner.extension = "jpg";
+    banner.media_type = "image/jpeg";
+    banner.original_name = "banner.jpg";
+    banner.is_image = true;
+    std::vector<RenderedProfileField> fields = {
+        {"Blog", "<p><a href=\"https://example.test\">site</a></p>"},
+        {"Matrix", "<p>@alice:example.test</p>"},
+    };
+
+    auto j = actorJson(testConfig(), testUser(), "<p>bio</p>", avatar,
+                       banner, fields);
+    EXPECT_EQ(j["icon"]["type"], "Image");
+    EXPECT_EQ(j["icon"]["mediaType"], "image/png");
+    EXPECT_EQ(j["icon"]["url"], "https://f.test/media/a/abc001.png");
+    EXPECT_EQ(j["image"]["url"], "https://f.test/media/d/def002.jpg");
+    ASSERT_EQ(j["attachment"].size(), 2u);
+    EXPECT_EQ(j["attachment"][0]["type"], "PropertyValue");
+    EXPECT_EQ(j["attachment"][0]["name"], "Blog");
+    EXPECT_EQ(j["attachment"][0]["value"],
+              "<p><a href=\"https://example.test\">site</a></p>");
+    EXPECT_EQ(j["attachment"][1]["name"], "Matrix");
+}
+
 TEST(ActivityStreams, NoteJsonUsesFullPublicIriOnOutput)
 {
     Post p;
@@ -529,6 +562,30 @@ TEST(ActivityStreams, ActorUpdateWrapsActorDocument)
     EXPECT_EQ(j["object"]["type"], "Person");
     EXPECT_EQ(j["object"]["summary"], "<p>bio</p>");
     EXPECT_EQ(j["to"][0], "https://f.test/u/alice/followers");
+}
+
+TEST(ActivityStreams, ActorUpdateWrapsRichActorDocument)
+{
+    User user = testUser();
+    Attachment avatar;
+    avatar.sha256 = "abc001";
+    avatar.extension = "png";
+    avatar.media_type = "image/png";
+    avatar.original_name = "avatar.png";
+    avatar.is_image = true;
+    std::vector<RenderedProfileField> fields = {
+        {"Blog", "<p>site</p>"},
+    };
+    std::vector<PostRecipient> recipients = {
+        {0, "https://f.test/u/alice/followers", "to"},
+    };
+    auto j = actorUpdateActivityJson(
+        testConfig(), "https://f.test/a/update/1", user, "<p>bio</p>",
+        avatar, std::nullopt, fields, recipients);
+    EXPECT_EQ(j["type"], "Update");
+    EXPECT_EQ(j["object"]["icon"]["url"], "https://f.test/media/a/abc001.png");
+    ASSERT_EQ(j["object"]["attachment"].size(), 1u);
+    EXPECT_EQ(j["object"]["attachment"][0]["name"], "Blog");
 }
 
 TEST(Discovery, WebFingerCanonicalSubject)

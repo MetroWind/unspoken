@@ -824,9 +824,27 @@ void App::handleUserProfile(const Request& req, Response& res) const
 
     if(unspoken::wantsActivityJson(headerValue(req, "Accept")))
     {
-        setJson(res, unspoken::actorJson(config, *user,
-                                         unspoken::renderPostContent(
-                                             user->bio, emoji)));
+        std::optional<unspoken::Attachment> avatar;
+        std::optional<unspoken::Attachment> banner;
+        if(user->avatar_attachment_id.has_value())
+        {
+            ASSIGN_OR_RESPOND_ERROR(
+                auto found,
+                ds->getAttachmentById(*user->avatar_attachment_id), res);
+            if(found.has_value()) avatar = std::move(*found);
+        }
+        if(user->banner_attachment_id.has_value())
+        {
+            ASSIGN_OR_RESPOND_ERROR(
+                auto found,
+                ds->getAttachmentById(*user->banner_attachment_id), res);
+            if(found.has_value()) banner = std::move(*found);
+        }
+        ASSIGN_OR_RESPOND_ERROR(auto fields,
+                                svc.renderedProfileFields(*user), res);
+        setJson(res, unspoken::actorJson(
+            config, *user, unspoken::renderPostContent(user->bio, emoji),
+            avatar, banner, fields));
         return;
     }
 
@@ -848,7 +866,8 @@ void App::handleUserProfile(const Request& req, Response& res) const
                             res);
 
     auto ctx = baseContext(req, viewer);
-    ctx["profile"] = svc.userView(*user);
+    ASSIGN_OR_RESPOND_ERROR(auto profile_view, svc.userView(*user), res);
+    ctx["profile"] = std::move(profile_view);
     ctx["posts"] = post_views;
     bool is_self = viewer.has_value() && viewer->id == user->id;
     ctx["is_self"] = is_self;
@@ -1768,7 +1787,8 @@ void App::handleProfileGet(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     Service svc(config, *ds, emoji);
     auto ctx = baseContext(req, viewer);
-    ctx["profile"] = svc.userView(*viewer);
+    ASSIGN_OR_RESPOND_ERROR(auto profile_view, svc.userView(*viewer), res);
+    ctx["profile"] = std::move(profile_view);
     render(res, 200, "profile_edit.html", ctx);
 }
 
@@ -1782,18 +1802,46 @@ void App::handleProfilePost(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    Service svc(config, *ds, emoji);
     std::string display_name = param(req, "display_name");
     std::string bio = param(req, "bio");
-    if(respondIfError(ds->updateUserProfile(viewer->id, display_name, bio), res)) return;
+    ASSIGN_OR_RESPOND_ERROR(auto fields,
+                            ds->profileFieldsForUser(viewer->id), res);
+    unspoken::UserProfileUpdate update;
+    update.display_name = std::move(display_name);
+    update.bio = std::move(bio);
+    update.avatar_attachment_id = viewer->avatar_attachment_id;
+    update.banner_attachment_id = viewer->banner_attachment_id;
+    update.fields = std::move(fields);
+    if(respondIfError(svc.updateProfile(*viewer, update), res)) return;
     ASSIGN_OR_RESPOND_ERROR(auto updated, ds->getUserById(viewer->id), res);
     if(updated.has_value())
     {
+        std::optional<unspoken::Attachment> avatar;
+        std::optional<unspoken::Attachment> banner;
+        if(updated->avatar_attachment_id.has_value())
+        {
+            ASSIGN_OR_RESPOND_ERROR(
+                auto found,
+                ds->getAttachmentById(*updated->avatar_attachment_id), res);
+            if(found.has_value()) avatar = std::move(*found);
+        }
+        if(updated->banner_attachment_id.has_value())
+        {
+            ASSIGN_OR_RESPOND_ERROR(
+                auto found,
+                ds->getAttachmentById(*updated->banner_attachment_id), res);
+            if(found.has_value()) banner = std::move(*found);
+        }
+        ASSIGN_OR_RESPOND_ERROR(auto rendered_fields,
+                                svc.renderedProfileFields(*updated), res);
         int64_t now = mw::timeToSeconds(mw::Clock::now());
         ASSIGN_OR_RESPOND_ERROR(auto jobs,
                                 unspoken::enqueueActorUpdateDelivery(
                                     config, *ds, *updated,
                                     unspoken::renderPostContent(
                                         updated->bio, emoji),
+                                    avatar, banner, rendered_fields,
                                     now), res);
         (void)jobs;
     }
@@ -1816,7 +1864,7 @@ mw::E<void> appendLocalUserSearchResult(
     const Service& svc, const std::optional<unspoken::User>& viewer,
     const unspoken::User& user)
 {
-    auto view = svc.userView(user);
+    ASSIGN_OR_RETURN(auto view, svc.userView(user));
     const bool is_self = viewer.has_value() && viewer->id == user.id;
     view["can_follow"] = viewer.has_value() && !is_self;
     view["following"] = false;

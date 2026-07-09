@@ -208,6 +208,13 @@ struct UserProfileUpdate
     std::vector<UserProfileField> fields;
 };
 
+// One profile metadata row after Markdown rendering for ActivityPub output.
+struct RenderedProfileField
+{
+    std::string label;
+    std::string value_html;
+};
+
 // A follow relationship. Stores actor URIs so it uniformly covers local
 // and remote on both sides.
 struct Follow

@@ -120,6 +120,77 @@ TEST(ServiceUri, ActorAndHandle)
     EXPECT_EQ(svc.handleFor("alice"), "@alice@f.test");
 }
 
+TEST(ServiceProfile, LocalRichProfileViewRendersMediaAndFields)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "hello **world**", "iss", "sub-a", "PRIV",
+        "PUB"}));
+    Attachment avatar;
+    avatar.sha256 = "abc001";
+    avatar.extension = "png";
+    avatar.media_type = "image/png";
+    avatar.original_name = "avatar.png";
+    avatar.is_image = true;
+    ASSIGN_OR_FAIL(int64_t avatar_id, db->insertAttachment(avatar));
+    Attachment banner;
+    banner.sha256 = "def002";
+    banner.extension = "jpg";
+    banner.media_type = "image/jpeg";
+    banner.original_name = "banner.jpg";
+    banner.is_image = true;
+    ASSIGN_OR_FAIL(int64_t banner_id, db->insertAttachment(banner));
+
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+    UserProfileUpdate update;
+    update.display_name = "Alice";
+    update.bio = alice.bio;
+    update.avatar_attachment_id = avatar_id;
+    update.banner_attachment_id = banner_id;
+    update.fields = {
+        UserProfileField{0, alice.id, " Blog ", "https://example.test", 0},
+    };
+    EXPECT_TRUE(mw::isExpected(svc.updateProfile(alice, update)));
+    ASSIGN_OR_FAIL(auto updated, db->getUserById(alice.id));
+    ASSERT_TRUE(updated.has_value());
+
+    ASSIGN_OR_FAIL(auto view, svc.userView(*updated));
+    EXPECT_EQ(view["avatar_url"], "https://f.test/media/a/abc001.png");
+    EXPECT_EQ(view["banner_url"], "https://f.test/media/d/def002.jpg");
+    ASSERT_EQ(view["fields"].size(), 1u);
+    EXPECT_EQ(view["fields"][0]["label"], "Blog");
+    EXPECT_NE(view["fields"][0]["value_html"].get<std::string>().find(
+                  "https://example.test"),
+              std::string::npos);
+}
+
+TEST(ServiceProfile, RejectsRemoteAvatarAndInvalidField)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Attachment remote;
+    remote.media_type = "image/png";
+    remote.original_name = "remote.png";
+    remote.is_image = true;
+    remote.remote_url = "https://remote.test/avatar.png";
+    ASSIGN_OR_FAIL(int64_t remote_id, db->insertAttachment(remote));
+
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+    UserProfileUpdate update;
+    update.display_name = "Alice";
+    update.avatar_attachment_id = remote_id;
+    EXPECT_FALSE(svc.updateProfile(alice, update).has_value());
+
+    update.avatar_attachment_id = std::nullopt;
+    update.fields = {UserProfileField{0, alice.id, "Blog", "", 0}};
+    EXPECT_FALSE(svc.updateProfile(alice, update).has_value());
+}
+
 TEST(ServiceFollow, CanFollowRemoteActorUri)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());

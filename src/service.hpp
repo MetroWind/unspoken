@@ -92,8 +92,14 @@ public:
     mw::E<nlohmann::json>
     postViews(const std::vector<Post>& posts,
               const std::optional<User>& viewer) const;
-    // A user profile view (header fields + rendered bio).
-    nlohmann::json userView(const User& u) const;
+    // Persist a complete local profile update after service validation.
+    mw::E<void> updateProfile(const User& user,
+                              const UserProfileUpdate& update) const;
+    // A user profile view (header fields, profile media, and rendered bio).
+    mw::E<nlohmann::json> userView(const User& u) const;
+    // Render local profile metadata rows for ActivityPub output.
+    mw::E<std::vector<RenderedProfileField>>
+    renderedProfileFields(const User& user) const;
 
     const EmojiRegistry& emojiRegistry() const { return emoji; }
 

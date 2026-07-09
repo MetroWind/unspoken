@@ -55,6 +55,11 @@ bool wantsActivityJson(std::string_view accept);
 
 nlohmann::json actorJson(const Config& config, const User& user,
                          std::string_view summary_html);
+nlohmann::json actorJson(
+    const Config& config, const User& user, std::string_view summary_html,
+    const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields);
 nlohmann::json systemActorJson(const Config& config,
                                std::string_view public_key_pem);
 nlohmann::json noteJson(const Config& config, const Post& post,
@@ -69,6 +74,12 @@ nlohmann::json deleteActivityJson(std::string_view activity_id,
 nlohmann::json actorUpdateActivityJson(
     const Config& config, std::string_view activity_id, const User& user,
     std::string_view summary_html,
+    const std::vector<PostRecipient>& recipients);
+nlohmann::json actorUpdateActivityJson(
+    const Config& config, std::string_view activity_id, const User& user,
+    std::string_view summary_html, const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields,
     const std::vector<PostRecipient>& recipients);
 nlohmann::json emojiReactActivityJson(
     const Config& config, std::string_view activity_id,
@@ -145,6 +156,11 @@ mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
 mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
     const Config& config, const DataSourceInterface& data, const User& user,
     std::string_view summary_html, int64_t now_seconds);
+mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
+    const Config& config, const DataSourceInterface& data, const User& user,
+    std::string_view summary_html, const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields, int64_t now_seconds);
 mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
                                      std::string_view root_uri,
                                      int64_t now_seconds);

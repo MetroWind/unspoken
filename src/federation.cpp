@@ -61,6 +61,31 @@ std::string isoTimestamp(int64_t unix_seconds)
     return std::string(buf);
 }
 
+std::string localAttachmentUrl(const Config& config, const Attachment& a)
+{
+    std::string ext = a.extension.empty()
+        ? extensionOf(a.original_name) : a.extension;
+    std::string filename = ext.empty() ? a.sha256 : (a.sha256 + "." + ext);
+    return std::format("{}media/{}/{}", config.url_root,
+                       a.sha256.substr(0, 1), filename);
+}
+
+std::optional<nlohmann::json> actorImageJson(
+    const Config& config, const std::optional<Attachment>& attachment)
+{
+    if(!attachment.has_value() || attachment->remote_url.has_value()
+       || !attachment->is_image)
+    {
+        return std::nullopt;
+    }
+    return nlohmann::json{
+        {"type", "Image"},
+        {"mediaType", attachment->media_type},
+        {"url", localAttachmentUrl(config, *attachment)},
+        {"name", attachment->original_name},
+    };
+}
+
 std::string httpDate()
 {
     std::time_t t = std::time(nullptr);
@@ -1514,6 +1539,16 @@ bool wantsActivityJson(std::string_view accept)
 nlohmann::json actorJson(const Config& config, const User& user,
                          std::string_view summary_html)
 {
+    return actorJson(config, user, summary_html, std::nullopt, std::nullopt,
+                     {});
+}
+
+nlohmann::json actorJson(
+    const Config& config, const User& user, std::string_view summary_html,
+    const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields)
+{
     std::string actor = config.url_root + "u/" + user.username;
     nlohmann::json j;
     j["@context"] = activityContext();
@@ -1532,6 +1567,25 @@ nlohmann::json actorJson(const Config& config, const User& user,
         {"owner", actor},
         {"publicKeyPem", user.public_key_pem},
     };
+    if(auto image = actorImageJson(config, avatar); image.has_value())
+    {
+        j["icon"] = *image;
+    }
+    if(auto image = actorImageJson(config, banner); image.has_value())
+    {
+        j["image"] = *image;
+    }
+    nlohmann::json attachment = nlohmann::json::array();
+    for(const auto& field : fields)
+    {
+        if(field.label.empty() || field.value_html.empty()) continue;
+        attachment.push_back({
+            {"type", "PropertyValue"},
+            {"name", field.label},
+            {"value", field.value_html},
+        });
+    }
+    if(!attachment.empty()) j["attachment"] = std::move(attachment);
     return j;
 }
 
@@ -1579,12 +1633,7 @@ nlohmann::json noteJson(const Config& config, const Post& post,
         }
         else
         {
-            std::string ext = a.extension.empty()
-                ? extensionOf(a.original_name) : a.extension;
-            std::string filename = ext.empty() ? a.sha256
-                : (a.sha256 + "." + ext);
-            url = std::format("{}media/{}/{}", config.url_root,
-                              a.sha256.substr(0, 1), filename);
+            url = localAttachmentUrl(config, a);
         }
         attachment_arr.push_back({
             {"type", a.is_image ? "Image" : "Document"},
@@ -1644,6 +1693,18 @@ nlohmann::json actorUpdateActivityJson(
     std::string_view summary_html,
     const std::vector<PostRecipient>& recipients)
 {
+    return actorUpdateActivityJson(config, activity_id, user, summary_html,
+                                   std::nullopt, std::nullopt, {},
+                                   recipients);
+}
+
+nlohmann::json actorUpdateActivityJson(
+    const Config& config, std::string_view activity_id, const User& user,
+    std::string_view summary_html, const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields,
+    const std::vector<PostRecipient>& recipients)
+{
     nlohmann::json to = nlohmann::json::array();
     nlohmann::json cc = nlohmann::json::array();
     for(const auto& r : recipients)
@@ -1657,7 +1718,8 @@ nlohmann::json actorUpdateActivityJson(
         {"id", std::string(activity_id)},
         {"type", "Update"},
         {"actor", actor_uri},
-        {"object", actorJson(config, user, summary_html)},
+        {"object", actorJson(config, user, summary_html, avatar, banner,
+                             fields)},
         {"to", to},
         {"cc", cc},
     };
@@ -2403,6 +2465,17 @@ mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
     const Config& config, const DataSourceInterface& data, const User& user,
     std::string_view summary_html, int64_t now_seconds)
 {
+    return enqueueActorUpdateDelivery(config, data, user, summary_html,
+                                      std::nullopt, std::nullopt, {},
+                                      now_seconds);
+}
+
+mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
+    const Config& config, const DataSourceInterface& data, const User& user,
+    std::string_view summary_html, const std::optional<Attachment>& avatar,
+    const std::optional<Attachment>& banner,
+    const std::vector<RenderedProfileField>& fields, int64_t now_seconds)
+{
     std::string actor_uri = config.url_root + "u/" + user.username;
     std::vector<PostRecipient> recipients = {
         {0, actor_uri + "/followers", "to"},
@@ -2411,7 +2484,7 @@ mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
         config,
         std::format("{}activities/update/profile/{}/{}",
                     config.url_root, user.id, now_seconds),
-        user, summary_html, recipients);
+        user, summary_html, avatar, banner, fields, recipients);
     return enqueueOutboundDelivery(
         config, data, actor_uri, activity, recipients, now_seconds);
 }

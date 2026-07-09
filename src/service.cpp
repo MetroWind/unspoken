@@ -72,6 +72,15 @@ std::string localActorUri(const Config& config, std::string_view username)
     return config.url_root + "u/" + std::string(username);
 }
 
+std::string localAttachmentUrl(const Config& config, const Attachment& a)
+{
+    std::string ext = a.extension.empty()
+        ? extensionOf(a.original_name) : a.extension;
+    std::string filename = ext.empty() ? a.sha256 : (a.sha256 + "." + ext);
+    return std::format("{}media/{}/{}", config.url_root,
+                       a.sha256.substr(0, 1), filename);
+}
+
 mw::E<bool> canNonPublicActorViewPost(
     const Config& config, const DataSourceInterface& data, const Post& post,
     std::string_view actor_uri)
@@ -384,10 +393,108 @@ mw::E<void> Service::setFollow(const User& viewer,
 
 // ─── View models ───────────────────────────────────────────────────────
 
-nlohmann::json Service::userView(const User& u) const
+mw::E<void> Service::updateProfile(const User& user,
+                                   const UserProfileUpdate& update) const
+{
+    if(update.display_name.size() > 120)
+    {
+        return std::unexpected(mw::httpError(
+            400, "Display name is too long."));
+    }
+    if(update.bio.size() > 5000)
+    {
+        return std::unexpected(mw::httpError(400, "Bio is too long."));
+    }
+
+    auto check_profile_media = [&](std::optional<int64_t> id,
+                                   std::string_view name) -> mw::E<void> {
+        if(!id.has_value()) return {};
+        ASSIGN_OR_RETURN(auto attachment, data.getAttachmentById(*id));
+        if(!attachment.has_value())
+        {
+            return std::unexpected(mw::httpError(
+                400, std::format("{} attachment does not exist.", name)));
+        }
+        if(attachment->remote_url.has_value() || !attachment->is_image)
+        {
+            return std::unexpected(mw::httpError(
+                400, std::format("{} must be a local image.", name)));
+        }
+        return {};
+    };
+    DO_OR_RETURN(check_profile_media(update.avatar_attachment_id, "Avatar"));
+    DO_OR_RETURN(check_profile_media(update.banner_attachment_id, "Banner"));
+
+    std::vector<UserProfileField> fields;
+    fields.reserve(update.fields.size());
+    for(const auto& field : update.fields)
+    {
+        std::string label(mw::strip(field.label));
+        std::string value(mw::strip(field.value));
+        if(label.empty() && value.empty()) continue;
+        if(label.empty())
+        {
+            return std::unexpected(mw::httpError(
+                400, "Profile field label is required when value is set."));
+        }
+        if(value.empty())
+        {
+            return std::unexpected(mw::httpError(
+                400, "Profile field value is required when label is set."));
+        }
+        if(label.size() > 40)
+        {
+            return std::unexpected(mw::httpError(
+                400, "Profile field label is too long."));
+        }
+        if(value.size() > 250)
+        {
+            return std::unexpected(mw::httpError(
+                400, "Profile field value is too long."));
+        }
+        if(fields.size() >= 8)
+        {
+            return std::unexpected(mw::httpError(
+                400, "Too many profile fields."));
+        }
+        fields.push_back(UserProfileField{
+            0, user.id, std::move(label), std::move(value),
+            static_cast<int>(fields.size()),
+        });
+    }
+
+    UserProfileUpdate normalized;
+    normalized.display_name = update.display_name;
+    normalized.bio = update.bio;
+    normalized.avatar_attachment_id = update.avatar_attachment_id;
+    normalized.banner_attachment_id = update.banner_attachment_id;
+    normalized.fields = std::move(fields);
+    return data.replaceUserProfile(normalized, user.id);
+}
+
+mw::E<std::vector<RenderedProfileField>>
+Service::renderedProfileFields(const User& user) const
+{
+    ASSIGN_OR_RETURN(auto fields, data.profileFieldsForUser(user.id));
+    std::vector<RenderedProfileField> out;
+    out.reserve(fields.size());
+    for(const auto& field : fields)
+    {
+        std::string label(mw::strip(field.label));
+        std::string value(mw::strip(field.value));
+        if(label.empty() || value.empty()) continue;
+        out.push_back(RenderedProfileField{
+            label,
+            renderPostContent(value, emoji),
+        });
+    }
+    return out;
+}
+
+mw::E<nlohmann::json> Service::userView(const User& u) const
 {
     // Plain-text fields are HTML-escaped here because Inja does not
-    // auto-escape; only the rendered bio HTML is emitted raw.
+    // auto-escape; rendered HTML fields are emitted raw after generation.
     auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
     nlohmann::json j;
     j["id"] = u.id;
@@ -398,6 +505,47 @@ nlohmann::json Service::userView(const User& u) const
     j["profile_url"] = esc(actorUri(u.username));
     j["bio_source"] = esc(u.bio);          // shown in the edit textarea
     j["bio_html"] = renderPostContent(u.bio, emoji);
+    j["avatar_url"] = "";
+    j["avatar_alt"] = esc(std::format("{} avatar",
+                                      u.display_name.empty()
+                                      ? u.username : u.display_name));
+    j["banner_url"] = "";
+    j["banner_alt"] = esc(std::format("{} banner",
+                                      u.display_name.empty()
+                                      ? u.username : u.display_name));
+
+    if(u.avatar_attachment_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto avatar,
+                         data.getAttachmentById(*u.avatar_attachment_id));
+        if(avatar.has_value() && !avatar->remote_url.has_value()
+           && avatar->is_image)
+        {
+            j["avatar_url"] = esc(localAttachmentUrl(config, *avatar));
+        }
+    }
+    if(u.banner_attachment_id.has_value())
+    {
+        ASSIGN_OR_RETURN(auto banner,
+                         data.getAttachmentById(*u.banner_attachment_id));
+        if(banner.has_value() && !banner->remote_url.has_value()
+           && banner->is_image)
+        {
+            j["banner_url"] = esc(localAttachmentUrl(config, *banner));
+        }
+    }
+
+    ASSIGN_OR_RETURN(auto rendered_fields, renderedProfileFields(u));
+    nlohmann::json fields = nlohmann::json::array();
+    for(const auto& field : rendered_fields)
+    {
+        fields.push_back({
+            {"label", esc(field.label)},
+            {"value_html", field.value_html},
+        });
+    }
+    j["fields"] = std::move(fields);
+    j["is_local"] = true;
     return j;
 }
 
@@ -474,12 +622,7 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
         }
         else
         {
-            std::string ext = a.extension.empty()
-                ? extensionOf(a.original_name) : a.extension;
-            std::string filename = ext.empty() ? a.sha256
-                : (a.sha256 + "." + ext);
-            aj["url"] = esc(std::format("{}media/{}/{}", config.url_root,
-                                        a.sha256.substr(0, 1), filename));
+            aj["url"] = esc(localAttachmentUrl(config, a));
         }
         aj["media_type"] = esc(a.media_type);
         aj["is_image"] = a.is_image;
