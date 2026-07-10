@@ -96,6 +96,8 @@ mw::E<nlohmann::json> nodeInfoJson(const Config& config,
                                    const DataSourceInterface& data);
 
 bool isAllowedOutboundAddress(const mw::SockAddr& addr);
+// Return whether an actor document URL may be used for outbound federation.
+bool isValidRemoteUrl(const DevConfig& dev, std::string_view value);
 mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http);
 mw::E<void> hardenOutboundSession(const Config& config,
                                   mw::HTTPSessionInterface& http,
@@ -112,13 +114,23 @@ mw::E<mw::HTTPRequest> signedHttpRequest(
     const SigningActor& actor,
     std::string_view method, std::string_view uri,
     std::string_view body = "", std::string_view content_type = "");
-mw::E<RemoteActor> resolveRemoteActor(const Config& config,
-                                      const DataSourceInterface& data,
-                                      mw::CryptoInterface& crypto,
-                                      mw::HTTPSessionInterface& http,
-                                      const SystemActor& system_actor,
-                                      std::string_view actor_uri,
-                                      bool force_refresh = false);
+// Fetch and validate an actor document without retaining it.
+mw::E<RemoteActor> fetchRemoteActor(const Config& config,
+                                    mw::CryptoInterface& crypto,
+                                    mw::HTTPSessionInterface& http,
+                                    const SystemActor& system_actor,
+                                    std::string_view actor_uri);
+// Return a retained actor when available, otherwise a transient fetch.
+mw::E<RemoteActorResolution> findOrFetchRemoteActor(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view actor_uri);
+// Return a retained actor, retaining a newly fetched document when needed.
+mw::E<RemoteActor> ensureRemoteActorRetained(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view actor_uri,
+    int64_t now_seconds);
 mw::E<RemoteActor> resolveWebFingerActor(const Config& config,
                                          const DataSourceInterface& data,
                                          mw::CryptoInterface& crypto,

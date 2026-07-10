@@ -115,7 +115,8 @@ struct SystemActor
     int64_t created_at = 0;
 };
 
-// A remote actor we have encountered, cached on first contact.
+// A remote actor document. Values fetched only for one operation have id ==
+// 0; values retained by the data layer have id > 0.
 struct RemoteActor
 {
     int64_t id = 0;
@@ -129,6 +130,15 @@ struct RemoteActor
     std::string public_key_id;  // the keyId in signatures
     std::string actor_json;     // raw cached actor doc
     int64_t fetched_at = 0;
+};
+
+// A remote actor lookup result and whether it was retained before lookup.
+struct RemoteActorResolution
+{
+    // The retained or transient document selected by lookup.
+    RemoteActor actor;
+    // Whether the document was retained before this lookup began.
+    bool retained = false;
 };
 
 // A post. BOTH local and remote posts live in one table (PRD line 207).

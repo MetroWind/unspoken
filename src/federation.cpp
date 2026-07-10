@@ -607,10 +607,9 @@ mw::E<void> ensureRemoteActorForObject(
     std::string uri = actor_uri.value_or(std::string(fallback_actor));
     if(uri.empty() || isLocalActorUri(config, uri)) return {};
 
-    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(uri));
-    if(cached.has_value()) return {};
-    ASSIGN_OR_RETURN(auto actor, resolveRemoteActor(
-        config, data, crypto, http, system_actor, uri));
+    ASSIGN_OR_RETURN(auto actor, ensureRemoteActorRetained(
+        config, data, crypto, http, system_actor, uri,
+        mw::timeToSeconds(mw::Clock::now())));
     (void)actor;
     return {};
 }
@@ -1887,6 +1886,15 @@ bool isAllowedOutboundAddress(const mw::SockAddr& addr)
     return false;
 }
 
+bool isValidRemoteUrl(const DevConfig& dev, std::string_view value)
+{
+    auto parsed = mw::URL::fromStr(std::string(value));
+    if(!parsed.has_value() || parsed->host().empty()) return false;
+    if(parsed->scheme() == "https") return true;
+    return dev.allow_http_url_root && parsed->scheme() == "http"
+        && hostMatches(parsed->host(), dev.outbound_allow_private_hosts);
+}
+
 mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http)
 {
     DO_OR_RETURN(http.allowedProtocols("https"));
@@ -2040,17 +2048,12 @@ mw::E<mw::HTTPRequest> signedHttpRequest(
     return req;
 }
 
-mw::E<RemoteActor> resolveRemoteActor(const Config& config,
-                                      const DataSourceInterface& data,
-                                      mw::CryptoInterface& crypto,
-                                      mw::HTTPSessionInterface& http,
-                                      const SystemActor& system_actor,
-                                      std::string_view actor_uri,
-                                      bool force_refresh)
+mw::E<RemoteActor> fetchRemoteActor(const Config& config,
+                                    mw::CryptoInterface& crypto,
+                                    mw::HTTPSessionInterface& http,
+                                    const SystemActor& system_actor,
+                                    std::string_view actor_uri)
 {
-    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
-    if(cached.has_value() && !force_refresh) return *cached;
-
     DO_OR_RETURN(hardenOutboundSession(config, http, actor_uri));
     ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
                                                 actor_uri));
@@ -2068,14 +2071,19 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
         return std::unexpected(mw::runtimeError(
             "Remote actor response is not JSON"));
     }
-    std::string id = doc.value("id", std::string(actor_uri));
-    if(doc.contains("id") && id != actor_uri)
+    if(doc.contains("id") && !doc["id"].is_string())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor has invalid id"));
+    }
+    std::string id = doc.contains("id")
+        ? doc["id"].get<std::string>() : std::string(actor_uri);
+    if(id != actor_uri)
     {
         return std::unexpected(mw::runtimeError(
             "Remote actor id does not match requested URI"));
     }
-    auto parsed_id = mw::URL::fromStr(id);
-    if(!parsed_id.has_value() || parsed_id->host().empty())
+    if(!isValidRemoteUrl(config.dev, id))
     {
         return std::unexpected(mw::runtimeError(
             "Remote actor has invalid id"));
@@ -2086,6 +2094,12 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
         return std::unexpected(mw::runtimeError(
             "Remote actor is missing inbox or publicKey"));
     }
+    std::string inbox = doc["inbox"].get<std::string>();
+    if(!isValidRemoteUrl(config.dev, inbox))
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor has invalid inbox"));
+    }
     const auto& public_key = doc["publicKey"];
     if(!public_key.contains("id") || !public_key["id"].is_string()
        || !public_key.contains("publicKeyPem")
@@ -2094,25 +2108,87 @@ mw::E<RemoteActor> resolveRemoteActor(const Config& config,
         return std::unexpected(mw::runtimeError(
             "Remote actor has incomplete publicKey"));
     }
+    std::string public_key_id = public_key["id"].get<std::string>();
+    std::string public_key_pem = public_key["publicKeyPem"].get<std::string>();
+    if(public_key_id.empty() || public_key_pem.empty()
+       || (public_key.contains("owner")
+           && (!public_key["owner"].is_string()
+               || public_key["owner"].get<std::string>() != id)))
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor has invalid publicKey"));
+    }
 
     RemoteActor actor;
     actor.uri = id;
-    actor.username = doc.value("preferredUsername", std::string());
+    if(doc.contains("preferredUsername")
+       && !doc["preferredUsername"].is_string())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor has invalid preferredUsername"));
+    }
+    if(doc.contains("name") && !doc["name"].is_string())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor has invalid name"));
+    }
+    actor.username = doc.contains("preferredUsername")
+        ? doc["preferredUsername"].get<std::string>() : std::string();
+    auto parsed_id = mw::URL::fromStr(id);
     if(actor.username.empty()) actor.username = parsed_id->host();
     actor.domain = parsed_id->host();
-    actor.display_name = doc.value("name", std::string());
-    actor.inbox = doc["inbox"].get<std::string>();
+    actor.display_name = doc.contains("name")
+        ? doc["name"].get<std::string>() : std::string();
+    actor.inbox = std::move(inbox);
     if(doc.contains("endpoints") && doc["endpoints"].is_object()
-       && doc["endpoints"].contains("sharedInbox")
-       && doc["endpoints"]["sharedInbox"].is_string())
+       && doc["endpoints"].contains("sharedInbox"))
     {
-        actor.shared_inbox = doc["endpoints"]["sharedInbox"].get<std::string>();
+        if(!doc["endpoints"]["sharedInbox"].is_string())
+        {
+            return std::unexpected(mw::runtimeError(
+                "Remote actor has invalid sharedInbox"));
+        }
+        std::string shared_inbox = doc["endpoints"]["sharedInbox"]
+            .get<std::string>();
+        if(!isValidRemoteUrl(config.dev, shared_inbox))
+        {
+            return std::unexpected(mw::runtimeError(
+                "Remote actor has invalid sharedInbox"));
+        }
+        actor.shared_inbox = std::move(shared_inbox);
     }
-    actor.public_key_id = public_key["id"].get<std::string>();
-    actor.public_key_pem = public_key["publicKeyPem"].get<std::string>();
+    actor.public_key_id = std::move(public_key_id);
+    actor.public_key_pem = std::move(public_key_pem);
     actor.actor_json = doc.dump();
     actor.fetched_at = mw::timeToSeconds(mw::Clock::now());
-    return data.upsertRemoteActor(actor);
+    return actor;
+}
+
+mw::E<RemoteActorResolution> findOrFetchRemoteActor(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view actor_uri)
+{
+    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
+    if(cached.has_value()) return RemoteActorResolution{*cached, true};
+
+    ASSIGN_OR_RETURN(auto actor, fetchRemoteActor(
+        config, crypto, http, system_actor, actor_uri));
+    return RemoteActorResolution{std::move(actor), false};
+}
+
+mw::E<RemoteActor> ensureRemoteActorRetained(
+    const Config& config, const DataSourceInterface& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    const SystemActor& system_actor, std::string_view actor_uri,
+    int64_t now_seconds)
+{
+    ASSIGN_OR_RETURN(auto resolution, findOrFetchRemoteActor(
+        config, data, crypto, http, system_actor, actor_uri));
+    if(resolution.retained) return resolution.actor;
+
+    if(now_seconds > 0) resolution.actor.fetched_at = now_seconds;
+    return data.upsertRemoteActor(resolution.actor);
 }
 
 mw::E<RemoteActor> resolveWebFingerActor(
@@ -2185,8 +2261,9 @@ mw::E<RemoteActor> resolveWebFingerActor(
         return std::unexpected(mw::runtimeError(
             "WebFinger response has no ActivityPub self link"));
     }
-    return resolveRemoteActor(config, data, crypto, http, system_actor,
-                              *actor_uri);
+    ASSIGN_OR_RETURN(auto resolution, findOrFetchRemoteActor(
+        config, data, crypto, http, system_actor, *actor_uri));
+    return resolution.actor;
 }
 
 mw::E<Post> fetchRemotePostByUri(
@@ -2374,9 +2451,11 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     std::string actor_uri = params["keyid"];
     if(size_t hash = actor_uri.find('#'); hash != std::string::npos)
         actor_uri = actor_uri.substr(0, hash);
-    auto refreshed = resolveRemoteActor(config, data, crypto, http,
-                                        system_actor, actor_uri, true);
+    auto refreshed = fetchRemoteActor(config, crypto, http, system_actor,
+                                      actor_uri);
     if(!refreshed.has_value()) return std::unexpected(first.error());
+    auto retained = data.upsertRemoteActor(*refreshed);
+    if(!retained.has_value()) return std::unexpected(first.error());
 
     return verifyHttpSignature(config, data, crypto, req, now_seconds);
 }

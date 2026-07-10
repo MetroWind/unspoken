@@ -660,6 +660,19 @@ TEST(SSRF, BlocksPrivateAndAllowsPublicAddresses)
          0x88}, 443}));
 }
 
+TEST(SSRF, ValidatesRemoteUrlsWithDevelopmentPolicy)
+{
+    DevConfig dev;
+    EXPECT_TRUE(isValidRemoteUrl(dev, "https://remote.test/u/bob"));
+    EXPECT_FALSE(isValidRemoteUrl(dev, "http://remote.test/u/bob"));
+    EXPECT_FALSE(isValidRemoteUrl(dev, "not a URL"));
+
+    dev.allow_http_url_root = true;
+    dev.outbound_allow_private_hosts = {"remote.test"};
+    EXPECT_TRUE(isValidRemoteUrl(dev, "http://remote.test/u/bob"));
+    EXPECT_FALSE(isValidRemoteUrl(dev, "http://other.test/u/bob"));
+}
+
 TEST(SSRF, HardensOutboundSession)
 {
     FakeSession http;
@@ -739,7 +752,7 @@ TEST(RemoteActor, SignedGetRequestIncludesExplicitNonDefaultPortInHost)
     EXPECT_EQ(req.header["Host"], "remote.test:8443");
 }
 
-TEST(RemoteActor, ResolveFetchesSignsAndCachesActor)
+TEST(RemoteActor, FetchesSignsAndDoesNotCacheActor)
 {
     Config c = testConfig();
     mw::Crypto crypto;
@@ -764,8 +777,9 @@ TEST(RemoteActor, ResolveFetchesSignsAndCachesActor)
         }
     })");
 
-    ASSIGN_OR_FAIL(auto actor, resolveRemoteActor(
-        c, *db, crypto, http, system, "https://remote.test/u/bob"));
+    ASSIGN_OR_FAIL(auto actor, fetchRemoteActor(
+        c, crypto, http, system, "https://remote.test/u/bob"));
+    EXPECT_EQ(actor.id, 0);
     EXPECT_EQ(actor.uri, "https://remote.test/u/bob");
     EXPECT_EQ(actor.username, "bob");
     EXPECT_EQ(actor.domain, "remote.test");
@@ -774,6 +788,56 @@ TEST(RemoteActor, ResolveFetchesSignsAndCachesActor)
     EXPECT_NE(http.last_request.header["Signature"].find("rsa-sha256"),
               std::string::npos);
 
+    ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
+    EXPECT_FALSE(cached.has_value());
+}
+
+TEST(RemoteActor, FindUsesRetainedActorWithoutFetching)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor retained = testRemoteActor("https://remote.test/u/bob");
+    ASSIGN_OR_FAIL(retained, db->upsertRemoteActor(retained));
+    FakeSession http;
+
+    ASSIGN_OR_FAIL(auto resolution, findOrFetchRemoteActor(
+        c, *db, crypto, http, system, retained.uri));
+    EXPECT_TRUE(resolution.retained);
+    EXPECT_EQ(resolution.actor.id, retained.id);
+    EXPECT_TRUE(http.get_urls.empty());
+}
+
+TEST(RemoteActor, EnsureExplicitlyRetainsFetchedActor)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system;
+    system.private_key_pem = keys.private_key;
+    system.public_key_pem = keys.public_key;
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, R"({
+        "id": "https://remote.test/u/bob",
+        "preferredUsername": "bob",
+        "inbox": "https://remote.test/u/bob/inbox",
+        "publicKey": {
+          "id": "https://remote.test/u/bob#main-key",
+          "owner": "https://remote.test/u/bob",
+          "publicKeyPem": "PUB"
+        }
+    })");
+
+    ASSIGN_OR_FAIL(auto actor, ensureRemoteActorRetained(
+        c, *db, crypto, http, system, "https://remote.test/u/bob", 100));
+    EXPECT_GT(actor.id, 0);
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(cached.has_value());
     EXPECT_EQ(cached->public_key_id, "https://remote.test/u/bob#main-key");
@@ -800,8 +864,8 @@ TEST(RemoteActor, RejectsPartialActorDocumentWithoutCaching)
         }
     })");
 
-    EXPECT_FALSE(resolveRemoteActor(
-        c, *db, crypto, http, system, "https://remote.test/u/bob")
+    EXPECT_FALSE(fetchRemoteActor(
+        c, crypto, http, system, "https://remote.test/u/bob")
                      .has_value());
     ASSIGN_OR_FAIL(auto cached,
                    db->getRemoteActorByUri("https://remote.test/u/bob"));
@@ -831,15 +895,15 @@ TEST(RemoteActor, RejectsMismatchedActorIdWithoutCaching)
         }
     })");
 
-    EXPECT_FALSE(resolveRemoteActor(
-        c, *db, crypto, http, system, "https://remote.test/u/bob")
+    EXPECT_FALSE(fetchRemoteActor(
+        c, crypto, http, system, "https://remote.test/u/bob")
                      .has_value());
     ASSIGN_OR_FAIL(auto cached,
                    db->getRemoteActorByUri("https://remote.test/u/other"));
     EXPECT_FALSE(cached.has_value());
 }
 
-TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
+TEST(RemoteActor, WebFingerResolvesSelfLinkWithoutCachingActor)
 {
     Config c = testConfig();
     mw::Crypto crypto;
@@ -888,9 +952,9 @@ TEST(RemoteActor, WebFingerResolvesSelfLinkThenCachesActor)
     EXPECT_EQ(http.get_requests[1].header["Accept"],
               "application/activity+json");
 
+    EXPECT_EQ(actor.id, 0);
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
-    ASSERT_TRUE(cached.has_value());
-    EXPECT_EQ(cached->username, "bob");
+    EXPECT_FALSE(cached.has_value());
 }
 
 TEST(RemotePost, FetchByUriCachesAuthorAndStoresPost)

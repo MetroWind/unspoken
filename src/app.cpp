@@ -1040,6 +1040,7 @@ mw::E<std::vector<std::string>> remoteMentionActorUris(
     std::vector<std::string> out;
     std::set<std::string> seen;
     mw::HTTPSession http;
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
     for(const auto& mention : parsed.mentions)
     {
         if(mention.domain.empty() || mention.domain == config.public_domain)
@@ -1052,7 +1053,16 @@ mw::E<std::vector<std::string>> remoteMentionActorUris(
                          mention.name, mw::errorMsg(actor.error()));
             continue;
         }
-        if(seen.insert(actor->uri).second) out.push_back(actor->uri);
+        if(!seen.insert(actor->uri).second) continue;
+        auto retained = unspoken::ensureRemoteActorRetained(
+            config, data, crypto, http, system_actor, actor->uri, now);
+        if(!retained.has_value())
+        {
+            spdlog::warn("Skipping unresolved remote mention {}: {}",
+                         mention.name, mw::errorMsg(retained.error()));
+            continue;
+        }
+        out.push_back(actor->uri);
     }
     return out;
 }
@@ -1260,13 +1270,11 @@ std::optional<std::string> localUsernameForActor(const Config& config,
 mw::E<unspoken::RemoteActor> ensureRemoteActor(
     const Config& config, const unspoken::DataSourceInterface& data,
     mw::CryptoInterface& crypto, const unspoken::SystemActor& system_actor,
-    std::string_view actor_uri)
+    std::string_view actor_uri, int64_t now_seconds)
 {
-    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(actor_uri));
-    if(cached.has_value()) return *cached;
     mw::HTTPSession http;
-    return unspoken::resolveRemoteActor(config, data, crypto, http,
-                                        system_actor, actor_uri);
+    return unspoken::ensureRemoteActorRetained(
+        config, data, crypto, http, system_actor, actor_uri, now_seconds);
 }
 
 mw::E<void> enqueueFollowActivity(
@@ -1730,7 +1738,7 @@ void App::handleFollow(const Request& req, Response& res) const
                 follow->id, now);
             ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
             ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
-                config, *ds, crypto, system_actor, target_actor), res);
+                config, *ds, crypto, system_actor, target_actor, now), res);
             (void)actor;
             if(respondIfError(enqueueUndoFollowActivity(
                 config, *ds, *viewer, *follow, activity_id, now), res)) return;
@@ -1742,10 +1750,10 @@ void App::handleFollow(const Request& req, Response& res) const
     }
 
     ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
-    ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
-        config, *ds, crypto, system_actor, target_actor), res);
-    (void)actor;
     int64_t now = mw::timeToSeconds(mw::Clock::now());
+    ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
+        config, *ds, crypto, system_actor, target_actor, now), res);
+    (void)actor;
     std::string activity_id = std::format(
         "{}activities/follow/{}/{}", config.url_root, viewer->id, now);
     if(respondIfError(svc.setFollowActor(
@@ -2052,12 +2060,12 @@ mw::E<SearchResults> searchRemoteActorUrl(
 {
     SearchResults results;
     mw::HTTPSession http;
-    auto remote_actor = unspoken::resolveRemoteActor(
+    auto remote_actor = unspoken::findOrFetchRemoteActor(
         config, data, crypto, http, system_actor, query);
     if(remote_actor.has_value())
     {
         DO_OR_RETURN(appendRemoteActorSearchResult(
-            results, data, svc, viewer, *remote_actor));
+            results, data, svc, viewer, remote_actor->actor));
         return results;
     }
 
