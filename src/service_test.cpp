@@ -205,6 +205,7 @@ TEST(ServiceProfile, RemoteActorViewParsesRichProfileFields)
     actor.domain = "remote.test";
     actor.display_name = "Bob <Remote>";
     actor.actor_json = R"({
+        "name": "Bob JSON",
         "summary": "<p>Hello <script>bad()</script><b>world</b></p>",
         "icon": {"type": "Image", "url": "https://cdn.test/avatar.png"},
         "image": {"type": "Image", "href": "https://cdn.test/banner.jpg"},
@@ -227,7 +228,7 @@ TEST(ServiceProfile, RemoteActorViewParsesRichProfileFields)
     auto view = svc.remoteActorView(actor);
     EXPECT_EQ(view["id"], 42);
     EXPECT_EQ(view["username"], "bob");
-    EXPECT_EQ(view["display_name"], "Bob &lt;Remote&gt;");
+    EXPECT_EQ(view["display_name"], "Bob JSON");
     EXPECT_EQ(view["handle"], "@bob@remote.test");
     EXPECT_EQ(view["profile_url"], actor.uri);
     EXPECT_EQ(view["avatar_url"], "https://cdn.test/avatar.png");

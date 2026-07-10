@@ -269,6 +269,24 @@ class UnspokenControl:
         requireStatus(result, 200, "create unspoken attachment post")
         return postIdFromUrl(result.url)
 
+    def updateProfile(self, username: str, fields: dict[str, Any],
+                      files: list[dict[str, Any]] | None = None
+                      ) -> HttpResult:
+        """Submit the Unspoken rich profile edit form."""
+        csrf = self.csrfFrom(username, "/profile")
+        payload = {
+            "csrf": csrf,
+            "display_name": fields.get("display_name", ""),
+            "bio": fields.get("bio", ""),
+        }
+        for index, field in enumerate(fields.get("profile_fields", [])):
+            payload[f"field_label_{index}"] = field.get("label", "")
+            payload[f"field_value_{index}"] = field.get("value", "")
+        result = self.browser(username).postMultipart(
+            f"{self.base_url}/profile", payload, files or [])
+        requireStatus(result, 200, "update unspoken profile")
+        return result
+
     def reply(self, username: str, post_id: int,
               fields: dict[str, Any]) -> int:
         """Create a local Unspoken reply and return its numeric post id."""
@@ -473,6 +491,24 @@ class AkkomaControl:
             "POST", "/api/v2/media", data=body, token=token,
             content_type=multipart_type)
 
+    def updateProfile(self, token: str, fields: dict[str, Any],
+                      files: list[dict[str, Any]] | None = None
+                      ) -> dict[str, Any]:
+        """Update an Akkoma profile through the Mastodon-compatible API."""
+        payload = {
+            "display_name": fields.get("display_name", ""),
+            "note": fields.get("note", ""),
+        }
+        for index, field in enumerate(fields.get("profile_fields", [])):
+            payload[f"fields_attributes[{index}][name]"] = (
+                field.get("label", ""))
+            payload[f"fields_attributes[{index}][value]"] = (
+                field.get("value", ""))
+        body, multipart_type = multipartData(payload, files or [])
+        return self.httpJson(
+            "PATCH", "/api/v1/accounts/update_credentials", data=body,
+            token=token, content_type=multipart_type)
+
     def follow(self, token: str, actor_uri: str) -> dict[str, Any]:
         """Resolve and follow an ActivityPub actor from an Akkoma account."""
         account = self.searchAccount(token, actor_uri)
@@ -648,7 +684,12 @@ class UnspokenDatabase:
     def attachmentsForPost(self, post_id: int) -> list[dict[str, Any]]:
         """Return attachment rows associated with a stored post."""
         return self.rows(
-            "SELECT * FROM attachments WHERE post_id = ? ORDER BY id ASC",
+            "SELECT a.*, pa.sensitive AS sensitive, "
+            "pa.sort_order AS sort_order "
+            "FROM post_attachments pa "
+            "JOIN attachments a ON a.id = pa.attachment_id "
+            "WHERE pa.post_id = ? "
+            "ORDER BY pa.sort_order ASC, a.id ASC",
             (post_id,))
 
     def countSeenActivity(self, activity_uri: str) -> int:
@@ -1281,6 +1322,147 @@ def runPhase5(unspoken_url: str, akkoma_url: str,
     ]
 
 
+def testLocalProfileVisibleToAkkoma(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify Akkoma sees Unspoken actor icon, image, and fields."""
+    ctx.ensureFollowBothDirections()
+    display_name = f"Alice Rich {ctx.stamp}"
+    bio = f"phase 6 alice bio {ctx.stamp}"
+    blog = f"https://unspoken.test/profile/{ctx.stamp}"
+    matrix = f"@alice-{ctx.stamp}:unspoken.test"
+    ctx.unspoken.updateProfile(ctx.alice, {
+        "display_name": display_name,
+        "bio": bio,
+        "profile_fields": [
+            {"label": "Blog", "value": blog},
+            {"label": "Matrix", "value": matrix},
+        ],
+    }, [
+        {
+            "name": "avatar",
+            "filename": "alice-avatar.png",
+            "content": fixturePng(),
+            "content_type": "image/png",
+        },
+        {
+            "name": "banner",
+            "filename": "alice-banner.png",
+            "content": fixturePng(),
+            "content_type": "image/png",
+        },
+    ])
+
+    actor_json = ctx.unspoken.activityJson(f"/u/{ctx.alice}")
+    if actor_json.get("name") != display_name:
+        raise RuntimeError("Unspoken actor JSON did not include display name")
+    if not actor_json.get("icon", {}).get("url"):
+        raise RuntimeError("Unspoken actor JSON did not include icon URL")
+    if not actor_json.get("image", {}).get("url"):
+        raise RuntimeError("Unspoken actor JSON did not include image URL")
+    attachments = actor_json.get("attachment", [])
+    labels = [item.get("name") for item in attachments
+              if item.get("type") == "PropertyValue"]
+    if labels != ["Blog", "Matrix"]:
+        raise RuntimeError(f"Unspoken actor fields were {labels!r}")
+
+    def akkoma_account() -> dict[str, Any] | None:
+        account = ctx.akkoma.searchAccount(ctx.bob_token, ctx.aliceActor)
+        if account.get("display_name") != display_name:
+            return None
+        fields = account.get("fields", [])
+        names = [field.get("name") for field in fields]
+        if "Blog" not in names or "Matrix" not in names:
+            return None
+        if "unspoken.test" not in account.get("avatar", ""):
+            return None
+        if "unspoken.test" not in account.get("header", ""):
+            return None
+        return account
+
+    account = waitUntil("Akkoma refreshes Unspoken rich profile",
+                        akkoma_account)
+    return {
+        "name": "phase_6_local_profile_visible_to_akkoma",
+        "status": "passed",
+        "objects": {
+            "alice_actor": ctx.aliceActor,
+            "akkoma_account_id": account["id"],
+            "field_names": [field.get("name")
+                            for field in account.get("fields", [])],
+        },
+    }
+
+
+def testRemoteProfileVisibleToUnspoken(ctx: Phase4Context) -> dict[str, Any]:
+    """Verify Unspoken renders rich profile data from an Akkoma actor."""
+    ctx.ensureFollowBothDirections()
+    display_name = f"Bob Rich {ctx.stamp}"
+    note = f"phase 6 bob note {ctx.stamp}"
+    website = f"https://akkoma.test/users/{ctx.bob}/{ctx.stamp}"
+    xmpp = f"bob-{ctx.stamp}@akkoma.test"
+    bob_handle = f"@{ctx.bob}@akkoma.test"
+    ctx.akkoma.updateProfile(ctx.bob_token, {
+        "display_name": display_name,
+        "note": note,
+        "profile_fields": [
+            {"label": "Website", "value": website},
+            {"label": "XMPP", "value": xmpp},
+        ],
+    }, [
+        {
+            "name": "avatar",
+            "filename": "bob-avatar.png",
+            "content": fixturePng(),
+            "content_type": "image/png",
+        },
+        {
+            "name": "header",
+            "filename": "bob-header.png",
+            "content": fixturePng(),
+            "content_type": "image/png",
+        },
+    ])
+
+    def cached_actor() -> dict[str, Any] | None:
+        ctx.unspoken.search(ctx.alice, bob_handle)
+        actor = ctx.db.remoteActorByUri(ctx.bobActor)
+        if actor is None:
+            return None
+        doc = json.loads(actor.get("actor_json") or "{}")
+        if doc.get("name") != display_name:
+            return None
+        if not doc.get("icon") or not doc.get("image"):
+            return None
+        field_names = [
+            item.get("name") for item in doc.get("attachment", [])
+            if item.get("type") == "PropertyValue"
+        ]
+        if "Website" not in field_names or "XMPP" not in field_names:
+            return None
+        return actor
+
+    actor = waitUntil("Unspoken caches Akkoma rich profile", cached_actor)
+    return {
+        "name": "phase_6_remote_profile_visible_to_unspoken",
+        "status": "passed",
+        "objects": {
+            "bob_actor": actor["uri"],
+            "display_name": display_name,
+            "field_names": ["Website", "XMPP"],
+        },
+    }
+
+
+def runPhase6(unspoken_url: str, akkoma_url: str,
+              fake_oidc_url: str, db_path: str) -> list[dict[str, Any]]:
+    """Run rich profile interoperability checks."""
+    ctx = Phase4Context(unspoken_url, akkoma_url, fake_oidc_url, db_path)
+    ctx.setup()
+    return [
+        testLocalProfileVisibleToAkkoma(ctx),
+        testRemoteProfileVisibleToUnspoken(ctx),
+    ]
+
+
 def runRetryPrepare(unspoken_url: str, fake_oidc_url: str,
                     db_path: str) -> dict[str, Any]:
     """Create a post while Akkoma is down and wait for a retry state."""
@@ -1411,6 +1593,8 @@ def main() -> int:
         tests.extend(runPhase4(
             unspoken_url, akkoma_url, fake_oidc_url, db_path))
         tests.extend(runPhase5(
+            unspoken_url, akkoma_url, fake_oidc_url, db_path))
+        tests.extend(runPhase6(
             unspoken_url, akkoma_url, fake_oidc_url, db_path))
     except Exception as error:
         writeResults(results_path, "failed", tests, str(error))

@@ -161,3 +161,12 @@ state.
 Use `reset` before re-running unless you are intentionally debugging the
 preserved state. Existing follows, cached remote actors, and seen activity
 IDs can otherwise mask or create failures.
+
+## Peer-Specific Notes
+
+The rich profile checks use Akkoma's Mastodon-compatible
+`/api/v1/accounts/update_credentials` endpoint. Akkoma exposes profile
+metadata as account `fields`, and actor `icon`/`image` as account avatar
+and header URLs. Actor/profile refresh is eventually consistent, so the
+runner polls account search and Unspoken's cached actor JSON before
+asserting rendered profile fields.

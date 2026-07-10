@@ -578,6 +578,18 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
                                                false);
     if(!doc.is_object()) return j;
 
+    if(auto it = doc.find("name"); it != doc.end() && it->is_string())
+    {
+        std::string actor_name(mw::strip(it->get<std::string>()));
+        if(!actor_name.empty())
+        {
+            display_name = std::move(actor_name);
+            j["display_name"] = esc(display_name);
+            j["avatar_alt"] = esc(std::format("{} avatar", display_name));
+            j["banner_alt"] = esc(std::format("{} banner", display_name));
+        }
+    }
+
     if(auto it = doc.find("summary"); it != doc.end() && it->is_string())
     {
         j["bio_html"] = sanitizeRemoteHtml(it->get<std::string>());
