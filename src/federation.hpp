@@ -30,8 +30,16 @@ struct IncomingHttpRequest
 
 struct VerifiedSignature
 {
+    // The actor URI authenticated by the selected public key.
     std::string actor_uri;
+    // The precise key identifier supplied in the Signature header.
     std::string key_id;
+    // The retained or transient actor document used for verification.
+    RemoteActor actor;
+    // Whether the actor existed in durable storage before verification.
+    bool actor_was_retained = false;
+    // Whether a freshly fetched key successfully replaced a retained key.
+    bool key_was_refreshed = false;
 };
 
 struct SigningActor
@@ -143,10 +151,13 @@ mw::E<Post> fetchRemotePostByUri(const Config& config,
                                  mw::HTTPSessionInterface& http,
                                  const SystemActor& system_actor,
                                  std::string_view post_uri);
+// Verify a request using an already retained actor only; this never fetches.
 mw::E<VerifiedSignature> verifyHttpSignature(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
     int64_t now_seconds);
+// Verify a request, fetching an unknown signer transiently and refreshing a
+// retained signer's key only after the refreshed key proves the request.
 mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,

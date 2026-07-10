@@ -1037,6 +1037,84 @@ TEST(HttpSignature, VerifiesGoodRsaSha256Signature)
         testConfig(), *db, crypto, req, now));
     EXPECT_EQ(verified.actor_uri, actor.uri);
     EXPECT_EQ(verified.key_id, actor.public_key_id);
+    EXPECT_TRUE(verified.actor_was_retained);
+    EXPECT_FALSE(verified.key_was_refreshed);
+    EXPECT_EQ(verified.actor.id, actor.id);
+
+    FakeSession http;
+    SystemActor system;
+    ASSIGN_OR_FAIL(auto cached_verified, verifyHttpSignatureWithKeyRefresh(
+        testConfig(), *db, crypto, http, system, req, now));
+    EXPECT_TRUE(cached_verified.actor_was_retained);
+    EXPECT_FALSE(cached_verified.key_was_refreshed);
+    EXPECT_TRUE(http.get_urls.empty());
+}
+
+TEST(HttpSignature, VerifiesUnknownSignerWithoutRetainingActor)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto actor_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.public_key_pem = actor_keys.public_key;
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, nlohmann::json({
+        {"id", actor.uri},
+        {"type", "Person"},
+        {"preferredUsername", actor.username},
+        {"inbox", actor.inbox},
+        {"publicKey", {
+            {"id", actor.public_key_id},
+            {"owner", actor.uri},
+            {"publicKeyPem", actor.public_key_pem},
+        }},
+    }).dump());
+
+    int64_t now = 100000;
+    auto req = signedIncomingRequest(
+        crypto, actor_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", now, false, false);
+    ASSIGN_OR_FAIL(auto verified, verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, req, now));
+
+    EXPECT_FALSE(verified.actor_was_retained);
+    EXPECT_FALSE(verified.key_was_refreshed);
+    EXPECT_EQ(verified.actor.id, 0);
+    EXPECT_EQ(verified.actor_uri, actor.uri);
+    ASSERT_EQ(http.get_urls.size(), 1u);
+    EXPECT_EQ(http.get_urls[0], actor.uri);
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    EXPECT_FALSE(stored.has_value());
+}
+
+TEST(HttpSignature, RejectsBadEnvelopeWithoutFetchingUnknownSigner)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto actor_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    int64_t now = 100000;
+    auto req = signedIncomingRequest(
+        crypto, actor_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "post", "/inbox", "{}", now, true, true);
+    req.body = R"({"tampered":true})";
+
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, req, now).has_value());
+    EXPECT_TRUE(http.get_urls.empty());
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    EXPECT_FALSE(stored.has_value());
 }
 
 TEST(HttpSignature, AcceptsHs2019LabelForRsaSignature)
@@ -1323,6 +1401,52 @@ TEST(HttpSignature, RefetchesActorAndRetriesAfterKeyRotation)
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(cached.has_value());
     EXPECT_EQ(cached->public_key_pem, new_keys.public_key);
+    EXPECT_TRUE(verified.actor_was_retained);
+    EXPECT_TRUE(verified.key_was_refreshed);
+}
+
+TEST(HttpSignature, InvalidRefreshedKeyDoesNotUpdateRetainedActor)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto old_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto refreshed_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto attacker_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.public_key_pem = old_keys.public_key;
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, nlohmann::json({
+        {"id", actor.uri},
+        {"type", "Person"},
+        {"preferredUsername", actor.username},
+        {"inbox", actor.inbox},
+        {"publicKey", {
+            {"id", actor.public_key_id},
+            {"owner", actor.uri},
+            {"publicKeyPem", refreshed_keys.public_key},
+        }},
+    }).dump());
+
+    int64_t now = 100000;
+    auto req = signedIncomingRequest(
+        crypto, attacker_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", now, false, false);
+
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, req, now).has_value());
+    ASSERT_EQ(http.get_urls.size(), 1u);
+    ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(cached.has_value());
+    EXPECT_EQ(cached->public_key_pem, old_keys.public_key);
 }
 
 TEST(FederationJobs, DeliveryJobSignsPostsAndCompletes)

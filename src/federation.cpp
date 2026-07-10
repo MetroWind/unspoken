@@ -335,6 +335,15 @@ parseSignatureParams(std::string_view sig)
     return out;
 }
 
+struct ParsedHttpSignature
+{
+    std::string key_id;
+    std::string actor_uri;
+    std::vector<std::string> signed_headers;
+    std::vector<unsigned char> signature;
+    std::string signing_input;
+};
+
 std::optional<int64_t> parseHttpDate(std::string_view date)
 {
     std::tm tm{};
@@ -443,6 +452,120 @@ mw::E<std::string> signingString(
         out += lines[i];
     }
     return out;
+}
+
+mw::E<ParsedHttpSignature> parseHttpSignature(
+    const Config& config, const IncomingHttpRequest& req,
+    int64_t now_seconds)
+{
+    auto headers = signatureHeaders(req.headers);
+    auto sig_header = header(headers, "signature");
+    if(!sig_header.has_value())
+    {
+        return std::unexpected(mw::httpError(401, "Missing Signature"));
+    }
+    auto params = parseSignatureParams(*sig_header);
+    if(!params.contains("keyid") || !params.contains("signature")
+       || params["keyid"].empty() || params["signature"].empty())
+    {
+        return std::unexpected(mw::httpError(401, "Bad Signature header"));
+    }
+
+    std::string algorithm = lower(params.contains("algorithm")
+        ? params["algorithm"] : "rsa-sha256");
+    if(algorithm != "rsa-sha256" && algorithm != "hs2019")
+    {
+        return std::unexpected(mw::httpError(
+            401, "Unsupported signature algorithm"));
+    }
+
+    std::vector<std::string> signed_headers = params.contains("headers")
+        ? splitWords(params["headers"])
+        : std::vector<std::string>{"date"};
+    if(!containsHeader(signed_headers, "date"))
+    {
+        return std::unexpected(mw::httpError(401, "Date is not signed"));
+    }
+    if(!containsHeader(signed_headers, "(request-target)"))
+    {
+        return std::unexpected(mw::httpError(
+            401, "Request target is not signed"));
+    }
+
+    auto date = header(headers, "date");
+    if(!date.has_value())
+    {
+        return std::unexpected(mw::httpError(401, "Missing Date"));
+    }
+    auto request_time = parseHttpDate(*date);
+    if(!request_time.has_value()
+       || std::llabs(now_seconds - *request_time)
+              > config.http_signature_skew_seconds)
+    {
+        return std::unexpected(mw::httpError(401, "Date skew too large"));
+    }
+
+    std::string method = lower(req.method);
+    if(method == "post" || method == "put")
+    {
+        if(!containsHeader(signed_headers, "digest"))
+        {
+            return std::unexpected(mw::httpError(
+                401, "Digest is not signed"));
+        }
+        auto digest = header(headers, "digest");
+        if(!digest.has_value())
+        {
+            return std::unexpected(mw::httpError(401, "Missing Digest"));
+        }
+        auto digest_ok = verifyDigestHeader(*digest, req.body);
+        if(!digest_ok.has_value() || !*digest_ok)
+        {
+            return std::unexpected(mw::httpError(401, "Digest mismatch"));
+        }
+    }
+
+    auto signature = mw::base64Decode(params["signature"]);
+    if(!signature.has_value())
+    {
+        return std::unexpected(mw::httpError(401, "Bad Signature header"));
+    }
+    auto signing_input = signingString(req, headers, signed_headers);
+    if(!signing_input.has_value())
+    {
+        return std::unexpected(mw::httpError(401, "Bad Signature header"));
+    }
+
+    std::string actor_uri = params["keyid"];
+    size_t hash = actor_uri.find('#');
+    if(hash != std::string::npos) actor_uri.resize(hash);
+    if(actor_uri.empty() || !isValidRemoteUrl(config.dev, actor_uri))
+    {
+        return std::unexpected(mw::httpError(401, "Invalid signature key"));
+    }
+
+    return ParsedHttpSignature{
+        std::move(params["keyid"]),
+        std::move(actor_uri),
+        std::move(signed_headers),
+        std::move(*signature),
+        std::move(*signing_input),
+    };
+}
+
+mw::E<bool> verifyParsedHttpSignature(
+    mw::CryptoInterface& crypto, const ParsedHttpSignature& signature,
+    const RemoteActor& actor)
+{
+    if(actor.uri != signature.actor_uri
+       || actor.public_key_id != signature.key_id)
+    {
+        return false;
+    }
+    return crypto.verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256,
+                                  actor.public_key_pem,
+                                  signature.signature,
+                                  signature.signing_input);
 }
 
 void appendAll(std::vector<std::string>& out,
@@ -2344,93 +2467,27 @@ mw::E<VerifiedSignature> verifyHttpSignature(
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
     int64_t now_seconds)
 {
-    auto headers = signatureHeaders(req.headers);
-    auto sig_header = header(headers, "signature");
-    if(!sig_header.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Missing Signature"));
-    }
-    auto params = parseSignatureParams(*sig_header);
-    if(!params.contains("keyid") || !params.contains("signature"))
-    {
-        return std::unexpected(mw::httpError(401, "Bad Signature header"));
-    }
-    std::string algorithm = lower(params.contains("algorithm")
-        ? params["algorithm"] : "rsa-sha256");
-    if(algorithm != "rsa-sha256" && algorithm != "hs2019")
-    {
-        return std::unexpected(mw::httpError(
-            401, "Unsupported signature algorithm"));
-    }
-
-    std::vector<std::string> signed_headers = params.contains("headers")
-        ? splitWords(params["headers"])
-        : std::vector<std::string>{"date"};
-    if(!containsHeader(signed_headers, "date"))
-    {
-        return std::unexpected(mw::httpError(401, "Date is not signed"));
-    }
-    if(!containsHeader(signed_headers, "(request-target)"))
-    {
-        return std::unexpected(mw::httpError(
-            401, "Request target is not signed"));
-    }
-    auto date = header(headers, "date");
-    if(!date.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Missing Date"));
-    }
-    auto request_time = parseHttpDate(*date);
-    if(!request_time.has_value()
-       || std::llabs(now_seconds - *request_time)
-              > config.http_signature_skew_seconds)
-    {
-        return std::unexpected(mw::httpError(401, "Date skew too large"));
-    }
-
-    std::string method = lower(req.method);
-    if(method == "post" || method == "put")
-    {
-        if(!containsHeader(signed_headers, "digest"))
-        {
-            return std::unexpected(mw::httpError(
-                401, "Digest is not signed"));
-        }
-        auto digest = header(headers, "digest");
-        if(!digest.has_value())
-        {
-            return std::unexpected(mw::httpError(401, "Missing Digest"));
-        }
-        ASSIGN_OR_RETURN(bool digest_ok, verifyDigestHeader(
-            *digest, req.body));
-        if(!digest_ok)
-        {
-            return std::unexpected(mw::httpError(401, "Digest mismatch"));
-        }
-    }
-
-    ASSIGN_OR_RETURN(auto signature_bytes, mw::base64Decode(
-        params["signature"]));
-    ASSIGN_OR_RETURN(auto input, signingString(req, headers, signed_headers));
-
-    std::string key_id = params["keyid"];
-    std::string actor_uri = key_id;
-    if(size_t hash = actor_uri.find('#'); hash != std::string::npos)
-        actor_uri = actor_uri.substr(0, hash);
-    ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(actor_uri));
-    if(!actor.has_value() || actor->public_key_id != key_id)
+    ASSIGN_OR_RETURN(auto signature, parseHttpSignature(
+        config, req, now_seconds));
+    ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(signature.actor_uri));
+    if(!actor.has_value())
     {
         return std::unexpected(mw::httpError(401, "Unknown signature key"));
     }
 
-    ASSIGN_OR_RETURN(bool ok, crypto.verifySignature(
-        mw::SignatureAlgorithm::RSA_V1_5_SHA256, actor->public_key_pem,
-        signature_bytes, input));
+    ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
+        crypto, signature, *actor));
     if(!ok)
     {
         return std::unexpected(mw::httpError(401, "Bad signature"));
     }
-    return VerifiedSignature{actor_uri, key_id};
+    return VerifiedSignature{
+        signature.actor_uri,
+        signature.key_id,
+        *actor,
+        true,
+        false,
+    };
 }
 
 mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
@@ -2439,25 +2496,71 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     const SystemActor& system_actor, const IncomingHttpRequest& req,
     int64_t now_seconds)
 {
-    auto first = verifyHttpSignature(config, data, crypto, req, now_seconds);
-    if(first.has_value()) return *first;
+    ASSIGN_OR_RETURN(auto signature, parseHttpSignature(
+        config, req, now_seconds));
+    ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(
+        signature.actor_uri));
 
-    auto headers = signatureHeaders(req.headers);
-    auto sig_header = header(headers, "signature");
-    if(!sig_header.has_value()) return std::unexpected(first.error());
-    auto params = parseSignatureParams(*sig_header);
-    if(!params.contains("keyid")) return std::unexpected(first.error());
+    if(!cached.has_value())
+    {
+        auto fetched = fetchRemoteActor(config, crypto, http, system_actor,
+                                        signature.actor_uri);
+        if(!fetched.has_value() || fetched->public_key_id != signature.key_id)
+        {
+            return std::unexpected(mw::httpError(
+                401, "Unknown signature key"));
+        }
+        ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
+            crypto, signature, *fetched));
+        if(!ok)
+        {
+            return std::unexpected(mw::httpError(401, "Bad signature"));
+        }
+        return VerifiedSignature{
+            signature.actor_uri,
+            signature.key_id,
+            std::move(*fetched),
+            false,
+            false,
+        };
+    }
 
-    std::string actor_uri = params["keyid"];
-    if(size_t hash = actor_uri.find('#'); hash != std::string::npos)
-        actor_uri = actor_uri.substr(0, hash);
-    auto refreshed = fetchRemoteActor(config, crypto, http, system_actor,
-                                      actor_uri);
-    if(!refreshed.has_value()) return std::unexpected(first.error());
-    auto retained = data.upsertRemoteActor(*refreshed);
-    if(!retained.has_value()) return std::unexpected(first.error());
+    if(cached->public_key_id == signature.key_id)
+    {
+        ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
+            crypto, signature, *cached));
+        if(ok)
+        {
+            return VerifiedSignature{
+                signature.actor_uri,
+                signature.key_id,
+                *cached,
+                true,
+                false,
+            };
+        }
+    }
 
-    return verifyHttpSignature(config, data, crypto, req, now_seconds);
+    auto fetched = fetchRemoteActor(config, crypto, http, system_actor,
+                                    signature.actor_uri);
+    if(!fetched.has_value() || fetched->public_key_id != signature.key_id)
+    {
+        return std::unexpected(mw::httpError(401, "Bad signature"));
+    }
+    ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
+        crypto, signature, *fetched));
+    if(!ok)
+    {
+        return std::unexpected(mw::httpError(401, "Bad signature"));
+    }
+    ASSIGN_OR_RETURN(auto retained, data.upsertRemoteActor(*fetched));
+    return VerifiedSignature{
+        signature.actor_uri,
+        signature.key_id,
+        std::move(retained),
+        true,
+        true,
+    };
 }
 
 mw::E<int64_t> enqueueDeliveryJob(const DataSourceInterface& data,
