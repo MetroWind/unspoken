@@ -66,6 +66,16 @@ RemoteActor testRemoteActor(const std::string& uri)
     return actor;
 }
 
+VerifiedSignature retainedSignature(const RemoteActor& actor)
+{
+    return {actor.uri, actor.public_key_id, actor, true, false};
+}
+
+VerifiedSignature retainedSignature(std::string_view actor_uri)
+{
+    return retainedSignature(testRemoteActor(std::string(actor_uri)));
+}
+
 std::string httpDateFor(int64_t unix_seconds)
 {
     std::time_t t = static_cast<std::time_t>(unix_seconds);
@@ -1822,8 +1832,8 @@ TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
     };
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto first, dispatchIncomingActivity(
-        c, *db, remote.uri, activity, 100));
-    EXPECT_FALSE(first.duplicate);
+        c, *db, retainedSignature(remote), activity, 100));
+    EXPECT_EQ(first.disposition, InboxDisposition::APPLIED);
 
     ASSIGN_OR_FAIL(auto post, db->getPostByUri("https://remote.test/o/1"));
     ASSERT_TRUE(post.has_value());
@@ -1843,14 +1853,14 @@ TEST(InboxDispatch, CreateStoresRemoteNoteAndDedupsRedelivery)
     EXPECT_EQ(*atts[0].remote_url, "https://remote.test/media/1.png");
 
     ASSIGN_OR_FAIL(auto second, dispatchIncomingActivity(
-        c, *db, remote.uri, activity, 101));
-    EXPECT_TRUE(second.duplicate);
+        c, *db, retainedSignature(remote), activity, 101));
+    EXPECT_EQ(second.disposition, InboxDisposition::DUPLICATE);
 
     for(int i = 0; i < 25; ++i)
     {
         ASSIGN_OR_FAIL(auto redelivery, dispatchIncomingActivity(
-            c, *db, remote.uri, activity, 102 + i));
-        EXPECT_TRUE(redelivery.duplicate);
+            c, *db, retainedSignature(remote), activity, 102 + i));
+        EXPECT_EQ(redelivery.disposition, InboxDisposition::DUPLICATE);
     }
     ASSIGN_OR_FAIL(auto stable_post,
                    db->getPostByUri("https://remote.test/o/1"));
@@ -1889,8 +1899,9 @@ TEST(InboxDispatch, CreateWithObjectUriFetchesAndStoresRemoteNote)
     };
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
-        c, *db, remote.uri, activity, 100, &crypto, &http, &system));
-    EXPECT_FALSE(result.duplicate);
+        c, *db, retainedSignature(remote), activity, 100, &crypto, &http,
+        &system));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
 
     ASSIGN_OR_FAIL(auto post,
                    db->getPostByUri("https://remote.test/o/uri-create"));
@@ -1922,7 +1933,7 @@ TEST(InboxDispatch, CreateClassifiesRemoteDirectAndFollowersPosts)
     };
     ASSIGN_OR_FAIL(auto direct_activity, parseActivity(direct_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, direct_activity, 100).has_value());
+        c, *db, retainedSignature(remote), direct_activity, 100).has_value());
     ASSIGN_OR_FAIL(auto direct_post,
                    db->getPostByUri("https://remote.test/o/direct"));
     ASSERT_TRUE(direct_post.has_value());
@@ -1943,7 +1954,7 @@ TEST(InboxDispatch, CreateClassifiesRemoteDirectAndFollowersPosts)
     };
     ASSIGN_OR_FAIL(auto followers_activity, parseActivity(followers_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, followers_activity, 101).has_value());
+        c, *db, retainedSignature(remote), followers_activity, 101).has_value());
     ASSIGN_OR_FAIL(auto followers_post,
                    db->getPostByUri("https://remote.test/o/followers"));
     ASSERT_TRUE(followers_post.has_value());
@@ -2002,9 +2013,9 @@ TEST(InboxForwarding, ForwardsFirstSeenActivityAfterRefetchVerification)
     http.response = mw::HTTPResponse(200, note.dump());
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
-        c, *db, "https://remote.test/u/bob", activity, 100, &crypto, &http,
-        &system));
-    EXPECT_FALSE(result.duplicate);
+        c, *db, retainedSignature("https://remote.test/u/bob"), activity,
+        100, &crypto, &http, &system));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED_AND_FORWARDED);
 
     ASSIGN_OR_FAIL(auto job, db->claimJob(100));
     ASSERT_TRUE(job.has_value());
@@ -2017,9 +2028,9 @@ TEST(InboxForwarding, ForwardsFirstSeenActivityAfterRefetchVerification)
     EXPECT_EQ(http.get_urls[0], "https://remote.test/o/reply");
 
     ASSIGN_OR_FAIL(auto duplicate, dispatchIncomingActivity(
-        c, *db, "https://remote.test/u/bob", activity, 101, &crypto, &http,
-        &system));
-    EXPECT_TRUE(duplicate.duplicate);
+        c, *db, retainedSignature("https://remote.test/u/bob"), activity,
+        101, &crypto, &http, &system));
+    EXPECT_EQ(duplicate.disposition, InboxDisposition::DUPLICATE);
     ASSIGN_OR_FAIL(auto no_more, db->claimJob(101));
     EXPECT_FALSE(no_more.has_value());
 }
@@ -2068,9 +2079,9 @@ TEST(InboxForwarding, DoesNotForwardWhenRefetchDoesNotVerifyReference)
     http.response = mw::HTTPResponse(200, refetched_note.dump());
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
-        c, *db, "https://remote.test/u/bob", activity, 100, &crypto, &http,
-        &system));
-    EXPECT_FALSE(result.duplicate);
+        c, *db, retainedSignature("https://remote.test/u/bob"), activity,
+        100, &crypto, &http, &system));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
 
     ASSIGN_OR_FAIL(auto no_job, db->claimJob(100));
     EXPECT_FALSE(no_job.has_value());
@@ -2097,8 +2108,8 @@ TEST(InboxDispatch, FollowAutoAcceptsAndQueuesAccept)
     };
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
-        c, *db, remote.uri, activity, 200));
-    EXPECT_FALSE(result.duplicate);
+        c, *db, retainedSignature(remote), activity, 200));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
 
     ASSIGN_OR_FAIL(auto follow, db->getFollow(
         remote.uri, "https://f.test/u/alice"));
@@ -2144,7 +2155,7 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
     };
     ASSIGN_OR_FAIL(auto announce, parseActivity(announce_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, announce, 100).has_value());
+        c, *db, retainedSignature(remote), announce, 100).has_value());
 
     nlohmann::json like_raw = {
         {"id", "https://remote.test/a/like/1"},
@@ -2154,7 +2165,7 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
     };
     ASSIGN_OR_FAIL(auto like, parseActivity(like_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, like, 101).has_value());
+        c, *db, retainedSignature(remote), like, 101).has_value());
     ASSIGN_OR_FAIL(auto likes, db->likesForPost(post.uri));
     ASSERT_EQ(likes.size(), 1);
 
@@ -2178,7 +2189,7 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
     };
     ASSIGN_OR_FAIL(auto react, parseActivity(react_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, react, 102).has_value());
+        c, *db, retainedSignature(remote), react, 102).has_value());
     ASSIGN_OR_FAIL(auto reactions, db->reactionsForPost(post.uri));
     ASSERT_EQ(reactions.size(), 1);
     EXPECT_EQ(reactions[0].emoji, ":blobcat:");
@@ -2193,7 +2204,7 @@ TEST(InboxDispatch, LikeUndoAndPrivateAnnounceIgnored)
     };
     ASSIGN_OR_FAIL(auto undo, parseActivity(undo_raw));
     EXPECT_TRUE(dispatchIncomingActivity(
-        c, *db, remote.uri, undo, 103).has_value());
+        c, *db, retainedSignature(remote), undo, 103).has_value());
     ASSIGN_OR_FAIL(auto likes_after, db->likesForPost(post.uri));
     EXPECT_TRUE(likes_after.empty());
 }
@@ -2233,8 +2244,8 @@ TEST(InboxDispatch, UpdateReplacesKnownRemoteNote)
     };
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
     ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
-        c, *db, remote.uri, activity, 100));
-    EXPECT_FALSE(result.duplicate);
+        c, *db, retainedSignature(remote), activity, 100));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
 
     ASSIGN_OR_FAIL(auto by_id, db->getPostById(original.id));
     ASSERT_TRUE(by_id.has_value());
@@ -2275,8 +2286,8 @@ TEST(InboxDispatch, UpdateRefreshesCachedRemoteActor)
         }},
     };
     ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
-    EXPECT_TRUE(dispatchIncomingActivity(c, *db, actor.uri, activity, 500)
-                    .has_value());
+    EXPECT_TRUE(dispatchIncomingActivity(c, *db, retainedSignature(actor),
+                                         activity, 500).has_value());
 
     ASSIGN_OR_FAIL(auto updated, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(updated.has_value());
@@ -2287,4 +2298,195 @@ TEST(InboxDispatch, UpdateRefreshesCachedRemoteActor)
     EXPECT_EQ(*updated->shared_inbox, "https://remote.test/inbox");
     EXPECT_EQ(updated->public_key_id, actor.public_key_id);
     EXPECT_EQ(updated->fetched_at, 500);
+}
+
+TEST(InboxDispatch, TransientCreateRetainsActorWithPost)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    VerifiedSignature signature{
+        actor.uri, actor.public_key_id, actor, false, false};
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/create/transient"},
+        {"type", "Create"},
+        {"actor", actor.uri},
+        {"object", {
+            {"id", "https://remote.test/o/transient"},
+            {"type", "Note"},
+            {"attributedTo", actor.uri},
+            {"content", "transient"},
+            {"to", std::string(AS_PUBLIC)},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, signature, activity, 100));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+    EXPECT_TRUE(result.actor_retained);
+
+    ASSIGN_OR_FAIL(auto stored_actor, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(stored_actor.has_value());
+    ASSIGN_OR_FAIL(auto post, db->getPostByUri(
+        "https://remote.test/o/transient"));
+    ASSERT_TRUE(post.has_value());
+    EXPECT_EQ(post->remote_author_id, stored_actor->id);
+}
+
+TEST(InboxDispatch, UnknownDeleteDoesNotRetainSigner)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    VerifiedSignature signature{
+        actor.uri, actor.public_key_id, actor, false, false};
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/delete/unknown"},
+        {"type", "Delete"},
+        {"actor", actor.uri},
+        {"object", "https://remote.test/o/unknown"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, signature, activity, 100));
+    EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+    EXPECT_FALSE(result.actor_retained);
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    EXPECT_FALSE(stored.has_value());
+}
+
+TEST(InboxDispatch, InvalidSignerMismatchDoesNotClaimActivityId)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor bob = testRemoteActor("https://remote.test/u/bob");
+    ASSIGN_OR_FAIL(bob, db->upsertRemoteActor(bob));
+    RemoteActor attacker = testRemoteActor("https://remote.test/u/attacker");
+    VerifiedSignature attacker_signature{
+        attacker.uri, attacker.public_key_id, attacker, false, false};
+    constexpr std::string_view ACTIVITY_ID =
+        "https://remote.test/a/create/genuine";
+    nlohmann::json poisoned_raw = {
+        {"id", ACTIVITY_ID},
+        {"type", "Delete"},
+        {"actor", bob.uri},
+        {"object", "https://remote.test/o/unknown"},
+    };
+    ASSIGN_OR_FAIL(auto poisoned, parseActivity(poisoned_raw));
+    ASSIGN_OR_FAIL(auto ignored, dispatchIncomingActivity(
+        c, *db, attacker_signature, poisoned, 100));
+    EXPECT_EQ(ignored.disposition, InboxDisposition::IGNORED);
+
+    nlohmann::json genuine_raw = {
+        {"id", ACTIVITY_ID},
+        {"type", "Create"},
+        {"actor", bob.uri},
+        {"object", {
+            {"id", "https://remote.test/o/genuine"},
+            {"type", "Note"},
+            {"attributedTo", bob.uri},
+            {"content", "genuine"},
+            {"to", std::string(AS_PUBLIC)},
+        }},
+    };
+    ASSIGN_OR_FAIL(auto genuine, parseActivity(genuine_raw));
+    ASSIGN_OR_FAIL(auto applied, dispatchIncomingActivity(
+        c, *db, retainedSignature(bob), genuine, 101));
+    EXPECT_EQ(applied.disposition, InboxDisposition::APPLIED);
+    ASSIGN_OR_FAIL(auto post, db->getPostByUri(
+        "https://remote.test/o/genuine"));
+    EXPECT_TRUE(post.has_value());
+}
+
+TEST(InboxDispatch, DeleteRequiresStoredPostOwner)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto owner, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/owner")));
+    RemoteActor attacker = testRemoteActor("https://remote.test/u/attacker");
+    ASSIGN_OR_FAIL(attacker, db->upsertRemoteActor(attacker));
+    NewPost post;
+    post.uri = "https://remote.test/o/owned";
+    post.remote_author_id = owner.id;
+    post.content_html = "owned";
+    ASSIGN_OR_FAIL(auto stored_post, db->insertPost(
+        post, {{0, std::string(AS_PUBLIC), "to"}}, c.url_root + "p/"));
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/delete/attacker"},
+        {"type", "Delete"},
+        {"actor", attacker.uri},
+        {"object", stored_post.uri},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, retainedSignature(attacker), activity, 100));
+    EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+    ASSIGN_OR_FAIL(auto remaining, db->getPostById(stored_post.id));
+    EXPECT_TRUE(remaining.has_value());
+}
+
+TEST(InboxForwarding, ForwardsSignerActorMismatchWithoutRetainingForwarder)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system{keys.private_key, keys.public_key};
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(testNewUser("alice")));
+    NewPost local_np;
+    local_np.local_author_id = alice.id;
+    local_np.content_html = "local";
+    ASSIGN_OR_FAIL(auto local_post, db->insertPost(
+        local_np, {{0, std::string(AS_PUBLIC), "to"}}, c.url_root + "p/"));
+    RemoteActor follower = testRemoteActor("https://remote.test/u/carol");
+    ASSIGN_OR_FAIL(follower, db->upsertRemoteActor(follower));
+    EXPECT_TRUE(db->addFollow({0, follower.uri, "https://f.test/u/alice",
+                               FollowState::ACCEPTED, std::nullopt, 100})
+                    .has_value());
+
+    nlohmann::json note = {
+        {"id", "https://remote.test/o/forwarded"},
+        {"type", "Note"},
+        {"attributedTo", "https://remote.test/u/bob"},
+        {"content", "forwarded"},
+        {"inReplyTo", local_post.uri},
+        {"to", nlohmann::json::array({
+            "https://f.test/u/alice/followers"})},
+    };
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/forwarded"},
+        {"type", "Create"},
+        {"actor", "https://remote.test/u/bob"},
+        {"object", {
+            {"id", "https://remote.test/o/forwarded"},
+            {"type", "Note"},
+            {"attributedTo", "https://remote.test/u/bob"},
+            {"content", "tampered embedded content"},
+            {"inReplyTo", local_post.uri},
+            {"to", nlohmann::json::array({
+                "https://f.test/u/alice/followers"})},
+        }},
+        {"to", nlohmann::json::array({
+            "https://f.test/u/alice/followers"})},
+    };
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, note.dump());
+    RemoteActor forwarder = testRemoteActor("https://remote.test/u/charlie");
+    VerifiedSignature signature{
+        forwarder.uri, forwarder.public_key_id, forwarder, false, false};
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, signature, activity, 100, &crypto, &http, &system));
+    EXPECT_EQ(result.disposition, InboxDisposition::FORWARDED);
+    EXPECT_FALSE(result.actor_retained);
+    ASSIGN_OR_FAIL(auto no_forwarder, db->getRemoteActorByUri(forwarder.uri));
+    EXPECT_FALSE(no_forwarder.has_value());
+    ASSIGN_OR_FAIL(auto job, db->claimJob(100));
+    ASSERT_TRUE(job.has_value());
+    auto payload = nlohmann::json::parse(job->payload_json);
+    EXPECT_EQ(payload["activity"]["object"]["content"], "forwarded");
+    ASSIGN_OR_FAIL(auto not_stored, db->getPostByUri(
+        "https://remote.test/o/forwarded"));
+    EXPECT_FALSE(not_stored.has_value());
 }

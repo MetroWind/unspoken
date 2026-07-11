@@ -49,9 +49,24 @@ struct SigningActor
     std::string private_key_pem;
 };
 
+// The durable effect of a successfully authenticated inbox activity.
+enum class InboxDisposition
+{
+    DUPLICATE,             // The activity completed previously.
+    PROCESSING,            // Another request owns a live claim.
+    IGNORED,               // The valid activity required no action.
+    APPLIED,               // The activity changed local state.
+    FORWARDED,             // Forwarding delivery jobs were accepted.
+    APPLIED_AND_FORWARDED, // Both local and forwarding effects occurred.
+};
+
+// The result used by the HTTP handler and inbox lifecycle tests.
 struct InboxDispatchResult
 {
-    bool duplicate = false;
+    // The final processing outcome exposed to the HTTP handler.
+    InboxDisposition disposition = InboxDisposition::IGNORED;
+    // True when processing created or refreshed a durable actor row.
+    bool actor_retained = false;
 };
 
 std::vector<std::string> normalizeAddressing(const nlohmann::json& field);
@@ -189,7 +204,7 @@ mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
                                      int64_t now_seconds);
 mw::E<InboxDispatchResult> dispatchIncomingActivity(
     const Config& config, const DataSourceInterface& data,
-    std::string_view verified_actor_uri, const Activity& activity,
+    const VerifiedSignature& verified_signature, const Activity& activity,
     int64_t now_seconds, mw::CryptoInterface* crypto = nullptr,
     mw::HTTPSessionInterface* http = nullptr,
     const SystemActor* system_actor = nullptr);

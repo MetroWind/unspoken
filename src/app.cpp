@@ -2349,9 +2349,11 @@ void App::handleInbox(const Request& req, Response& res) const
     }
     ASSIGN_OR_RESPOND_ERROR(auto activity, unspoken::parseActivity(raw), res);
     ASSIGN_OR_RESPOND_ERROR(auto result, unspoken::dispatchIncomingActivity(
-        config, *ds, verified.actor_uri, activity, now, &crypto, &http,
+        config, *ds, verified, activity, now, &crypto, &http,
         &system), res);
-    res.status = result.duplicate ? 200 : 202;
+    bool accepted = result.disposition != unspoken::InboxDisposition::DUPLICATE
+        && result.disposition != unspoken::InboxDisposition::IGNORED;
+    res.status = accepted ? 202 : 200;
     res.set_content("", "text/plain");
 }
 

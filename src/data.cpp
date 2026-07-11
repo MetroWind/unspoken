@@ -1168,6 +1168,102 @@ DataSourceSQLite::insertPost(const NewPost& np,
     return *stored;
 }
 
+mw::E<Post>
+DataSourceSQLite::insertRemoteActorAndPost(
+    const RemoteActor& actor, const NewPost& post,
+    const std::vector<PostRecipient>& recipients) const
+{
+    if(!post.uri.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor post requires a remote URI"));
+    }
+    int64_t created = now();
+    int64_t actor_id = 0;
+    int64_t post_id = 0;
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        int64_t fetched = actor.fetched_at != 0 ? actor.fetched_at : created;
+        auto actor_st_e = db->statementFromStr(
+            "INSERT INTO remote_actors (uri, username, domain, display_name, "
+            "inbox, shared_inbox, public_key_pem, public_key_id, actor_json, "
+            "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(uri) DO UPDATE SET username=excluded.username, "
+            "domain=excluded.domain, display_name=excluded.display_name, "
+            "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
+            "public_key_pem=excluded.public_key_pem, "
+            "public_key_id=excluded.public_key_id, "
+            "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at;");
+        if(!actor_st_e.has_value()) return rollback(actor_st_e.error());
+        auto actor_bind = actor_st_e->bind<std::string, std::string,
+            std::string, std::string, std::string, std::optional<std::string>,
+            std::string, std::string, std::string, int64_t>(
+            actor.uri, actor.username, actor.domain, actor.display_name,
+            actor.inbox, actor.shared_inbox, actor.public_key_pem,
+            actor.public_key_id, actor.actor_json, fetched);
+        if(!actor_bind.has_value()) return rollback(actor_bind.error());
+        auto actor_ex = db->execute(std::move(*actor_st_e));
+        if(!actor_ex.has_value()) return rollback(actor_ex.error());
+
+        auto id_st_e = db->statementFromStr(
+            "SELECT id FROM remote_actors WHERE uri = ?;");
+        if(!id_st_e.has_value()) return rollback(id_st_e.error());
+        auto id_bind = id_st_e->bind<std::string>(actor.uri);
+        if(!id_bind.has_value()) return rollback(id_bind.error());
+        auto rows_e = db->eval<int64_t>(std::move(*id_st_e));
+        if(!rows_e.has_value()) return rollback(rows_e.error());
+        if(rows_e->empty()) return rollback(mw::runtimeError(
+            "Remote actor vanished during post insert"));
+        actor_id = std::get<0>((*rows_e)[0]);
+
+        auto post_st_e = db->statementFromStr(
+            "INSERT INTO posts (uri, local_author_id, remote_author_id, "
+            "content_html, content_source, summary, sensitive, visibility, "
+            "in_reply_to_uri, created_at, published) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+        if(!post_st_e.has_value()) return rollback(post_st_e.error());
+        auto post_bind = post_st_e->bind<std::string,
+            std::optional<int64_t>, std::optional<int64_t>, std::string,
+            std::optional<std::string>, std::optional<std::string>, int64_t,
+            std::string, std::optional<std::string>, int64_t,
+            std::optional<std::string>>(
+            *post.uri, post.local_author_id, actor_id, post.content_html,
+            post.content_source, post.summary, post.sensitive ? 1 : 0,
+            std::string(visibilityToStr(post.visibility)),
+            post.in_reply_to_uri, created, post.published);
+        if(!post_bind.has_value()) return rollback(post_bind.error());
+        auto post_ex = db->execute(std::move(*post_st_e));
+        if(!post_ex.has_value()) return rollback(post_ex.error());
+        post_id = db->lastInsertRowID();
+
+        for(const auto& recipient : recipients)
+        {
+            auto rec_st_e = db->statementFromStr(
+                "INSERT INTO post_recipients (post_id, recipient_uri, field) "
+                "VALUES (?, ?, ?);");
+            if(!rec_st_e.has_value()) return rollback(rec_st_e.error());
+            auto rec_bind = rec_st_e->bind<int64_t, std::string, std::string>(
+                post_id, recipient.recipient_uri, recipient.field);
+            if(!rec_bind.has_value()) return rollback(rec_bind.error());
+            auto rec_ex = db->execute(std::move(*rec_st_e));
+            if(!rec_ex.has_value()) return rollback(rec_ex.error());
+        }
+        return db->execute("COMMIT;");
+    };
+    DO_OR_RETURN(withWriteRetry(txn));
+    ASSIGN_OR_RETURN(auto stored, getPostById(post_id));
+    if(!stored.has_value())
+    {
+        return std::unexpected(mw::runtimeError(
+            "Post vanished immediately after remote actor insert"));
+    }
+    return *stored;
+}
+
 mw::E<std::optional<Post>> DataSourceSQLite::getPostById(int64_t id) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(std::format(

@@ -581,9 +581,10 @@ bool boolField(const nlohmann::json& object, std::string_view key)
     return it != object.end() && it->is_boolean() && it->get<bool>();
 }
 
-mw::E<void> handleCreateActivity(const Config& config,
+mw::E<bool> handleCreateActivity(const Config& config,
                                  const DataSourceInterface& data,
-                                 const Activity& activity);
+                                 const Activity& activity,
+                                 const VerifiedSignature* signature = nullptr);
 bool isLocalActorUri(const Config& config, std::string_view uri);
 
 mw::E<SigningActor> signingActorForUri(const Config& config,
@@ -914,115 +915,111 @@ mw::E<bool> referencesKnownOwnedObject(
     return false;
 }
 
-std::vector<std::string> forwardingReferenceUris(const Activity& activity)
+struct ForwardingPlan
 {
-    std::vector<std::string> out;
-    if(auto ref = normalizeRef(activity.object); ref.has_value())
-        out.push_back(*ref);
-    if(activity.object.is_object())
-    {
-        if(auto ref = normalizeRef(activity.object.contains("inReplyTo")
-                ? activity.object["inReplyTo"] : nlohmann::json());
-           ref.has_value())
-        {
-            out.push_back(*ref);
-        }
-    }
-    if(activity.raw.is_object())
-    {
-        if(auto ref = normalizeRef(activity.raw.contains("target")
-                ? activity.raw["target"] : nlohmann::json());
-           ref.has_value())
-        {
-            out.push_back(*ref);
-        }
-        nlohmann::json tags = activity.raw.value("tag",
-                                                 nlohmann::json::array());
-        if(tags.is_object()) tags = nlohmann::json::array({tags});
-        if(tags.is_array())
-        {
-            for(const auto& tag : tags)
-                if(auto ref = normalizeRef(tag); ref.has_value())
-                    out.push_back(*ref);
-        }
-    }
-    return out;
-}
+    nlohmann::json activity;
+    std::vector<std::pair<std::string, std::string>> destinations;
+};
 
-mw::E<bool> refetchedObjectReferencesOwnedObject(
+mw::E<std::optional<nlohmann::json>> fetchForwardedObject(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
     const SystemActor& system_actor, std::string_view object_uri)
 {
-    if(isLocalPostUri(config, object_uri)) return true;
+    if(isLocalPostUri(config, object_uri))
+        return std::optional<nlohmann::json>{};
     ASSIGN_OR_RETURN(auto doc, signedGetJson(config, crypto, http,
                                              system_actor, object_uri));
-    if(!doc.is_object()) return false;
+    if(!doc.is_object()) return std::optional<nlohmann::json>{};
     auto fetched_id = normalizeRef(doc);
-    if(!fetched_id.has_value() || *fetched_id != object_uri) return false;
+    if(!fetched_id.has_value() || *fetched_id != object_uri)
+        return std::optional<nlohmann::json>{};
     if(auto parent = normalizeRef(doc.contains("inReplyTo")
             ? doc["inReplyTo"] : nlohmann::json());
        parent.has_value())
     {
-        return referencesKnownOwnedObject(config, data, *parent,
-                                          config.thread_fetch_max_depth);
+        ASSIGN_OR_RETURN(bool references_owned, referencesKnownOwnedObject(
+            config, data, *parent, config.thread_fetch_max_depth));
+        if(references_owned) return std::optional<nlohmann::json>{doc};
     }
-    return false;
+    return std::optional<nlohmann::json>{};
 }
 
-mw::E<void> maybeForwardIncomingActivity(
+mw::E<std::optional<ForwardingPlan>> prepareIncomingForwarding(
     const Config& config, const DataSourceInterface& data,
     mw::CryptoInterface* crypto, mw::HTTPSessionInterface* http,
-    const SystemActor* system_actor, const Activity& activity,
-    int64_t now_seconds)
+    const SystemActor* system_actor, const Activity& activity)
 {
     if(crypto == nullptr || http == nullptr || system_actor == nullptr)
-        return {};
+        return std::optional<ForwardingPlan>{};
+    if(activity.type != "Create") return std::optional<ForwardingPlan>{};
+    auto object_uri = normalizeRef(activity.object);
+    if(!object_uri.has_value()) return std::optional<ForwardingPlan>{};
+
+    std::vector<std::string> claimed_addresses;
+    appendAll(claimed_addresses, activity.to);
+    appendAll(claimed_addresses, activity.cc);
+    std::set<std::string> claimed_collections;
+    for(const auto& address : claimed_addresses)
+    {
+        auto owner = followersCollectionOwner(config, address);
+        if(owner.has_value() && isLocalActorUri(config, *owner))
+            claimed_collections.insert(address);
+    }
+    if(claimed_collections.empty()) return std::optional<ForwardingPlan>{};
+
+    ASSIGN_OR_RETURN(auto object, fetchForwardedObject(
+        config, data, *crypto, *http, *system_actor, *object_uri));
+    if(!object.has_value()) return std::optional<ForwardingPlan>{};
+    auto attributed_to = normalizeRef(object->contains("attributedTo")
+        ? (*object)["attributedTo"] : nlohmann::json());
+    if(!attributed_to.has_value() || *attributed_to != activity.actor)
+        return std::optional<ForwardingPlan>{};
 
     std::vector<std::string> addressed;
-    appendAll(addressed, activity.to);
-    appendAll(addressed, activity.cc);
+    appendAll(addressed, normalizeAddressing(
+        object->value("to", nlohmann::json())));
+    appendAll(addressed, normalizeAddressing(
+        object->value("cc", nlohmann::json())));
+
+    ForwardingPlan plan;
+    plan.activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", activity.id},
+        {"type", "Create"},
+        {"actor", activity.actor},
+        {"object", *object},
+    };
+    if(object->contains("to")) plan.activity["to"] = (*object)["to"];
+    if(object->contains("cc")) plan.activity["cc"] = (*object)["cc"];
+
     std::set<std::string> forwarded_collections;
     for(const auto& address : addressed)
     {
         auto owner = followersCollectionOwner(config, address);
         if(!owner.has_value() || !isLocalActorUri(config, *owner)) continue;
-
-        bool references_owned = false;
-        for(const auto& ref : forwardingReferenceUris(activity))
-        {
-            ASSIGN_OR_RETURN(bool ok, referencesKnownOwnedObject(
-                config, data, ref, config.thread_fetch_max_depth));
-            if(ok)
-            {
-                references_owned = true;
-                break;
-            }
-        }
-        if(!references_owned) continue;
-
-        bool verified_by_refetch = false;
-        for(const auto& ref : forwardingReferenceUris(activity))
-        {
-            ASSIGN_OR_RETURN(bool ok, refetchedObjectReferencesOwnedObject(
-                config, data, *crypto, *http, *system_actor, ref));
-            if(ok)
-            {
-                verified_by_refetch = true;
-                break;
-            }
-        }
-        if(!verified_by_refetch) continue;
+        if(!claimed_collections.contains(address)) continue;
         if(!forwarded_collections.insert(address).second) continue;
+        plan.destinations.emplace_back(*owner, address);
+    }
+    if(plan.destinations.empty()) return std::optional<ForwardingPlan>{};
+    return std::optional<ForwardingPlan>{std::move(plan)};
+}
 
+mw::E<bool> executeIncomingForwarding(
+    const Config& config, const DataSourceInterface& data,
+    const ForwardingPlan& plan, int64_t now_seconds)
+{
+    for(const auto& [owner, address] : plan.destinations)
+    {
         std::vector<PostRecipient> recipients = {
             {0, address, "to"},
         };
         ASSIGN_OR_RETURN(auto jobs, enqueueOutboundDelivery(
-            config, data, *owner, activity.raw, recipients, now_seconds));
+            config, data, owner, plan.activity, recipients, now_seconds));
         (void)jobs;
     }
-    return {};
+    return !plan.destinations.empty();
 }
 
 bool addressesContainPublic(const std::vector<std::string>& addresses)
@@ -1335,36 +1332,53 @@ mw::E<NewPost> remoteNotePostFromActivity(
     return np;
 }
 
-mw::E<void> handleCreateActivity(const Config& config,
+mw::E<bool> handleCreateActivity(const Config& config,
                                  const DataSourceInterface& data,
-                                 const Activity& activity)
+                                 const Activity& activity,
+                                 const VerifiedSignature* signature)
 {
     if(!activity.object.is_object()
        || activity.object.value("type", std::string()) != "Note")
     {
-        return {};
+        return false;
     }
     auto uri = normalizeRef(activity.object);
-    if(!uri.has_value()) return {};
+    if(!uri.has_value() || isLocalPostUri(config, *uri)) return false;
+    auto attributed_to = normalizeRef(activity.object.contains("attributedTo")
+        ? activity.object["attributedTo"] : nlohmann::json());
+    if(attributed_to.has_value() && *attributed_to != activity.actor)
+        return false;
     ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*uri));
-    if(existing.has_value()) return {};
+    if(existing.has_value()) return false;
     ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(data, activity));
+    if(signature != nullptr && signature->actor_uri != activity.actor)
+        return false;
+    if(signature != nullptr && !signature->actor_was_retained)
+    {
+        ASSIGN_OR_RETURN(auto post, data.insertRemoteActorAndPost(
+            signature->actor, np, recipientsForObject(activity.object)));
+        DO_OR_RETURN(storeRemoteAttachments(data, activity.object, post.id));
+        return true;
+    }
+    if(signature != nullptr) np.remote_author_id = signature->actor.id;
     ASSIGN_OR_RETURN(auto post, data.insertPost(
         np, recipientsForObject(activity.object), config.url_root + "p/"));
-    return storeRemoteAttachments(data, activity.object, post.id);
+    DO_OR_RETURN(storeRemoteAttachments(data, activity.object, post.id));
+    return true;
 }
 
-mw::E<void> handleFollowActivity(const Config& config,
+mw::E<bool> handleFollowActivity(const Config& config,
                                  const DataSourceInterface& data,
                                  const Activity& activity,
-                                 int64_t now_seconds)
+                                 const VerifiedSignature& signature,
+                                 int64_t now_seconds, bool& actor_retained)
 {
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     auto username = localUsernameForActor(config, *object_uri);
-    if(!username.has_value()) return {};
+    if(!username.has_value()) return false;
     ASSIGN_OR_RETURN(auto local_user, data.getUserByUsername(*username));
-    if(!local_user.has_value()) return {};
+    if(!local_user.has_value()) return false;
 
     Follow follow;
     follow.follower_uri = activity.actor;
@@ -1373,6 +1387,13 @@ mw::E<void> handleFollowActivity(const Config& config,
     follow.follow_activity_uri = activity.id;
     follow.created_at = now_seconds;
     DO_OR_RETURN(data.addFollow(follow));
+    if(!signature.actor_was_retained)
+    {
+        ASSIGN_OR_RETURN(auto retained, data.upsertRemoteActor(
+            signature.actor));
+        (void)retained;
+        actor_retained = true;
+    }
     ASSIGN_OR_RETURN(auto stored_follow, data.getFollow(
         activity.actor, *object_uri));
     int64_t follow_id = stored_follow.has_value() ? stored_follow->id : 0;
@@ -1392,71 +1413,82 @@ mw::E<void> handleFollowActivity(const Config& config,
     ASSIGN_OR_RETURN(auto jobs, enqueueOutboundDelivery(
         config, data, *object_uri, accept, recipients, now_seconds));
     (void)jobs;
-    return {};
+    return true;
 }
 
-mw::E<void> handleAcceptActivity(const DataSourceInterface& data,
+mw::E<bool> handleAcceptActivity(const Config& config,
+                                 const DataSourceInterface& data,
                                  const Activity& activity)
 {
-    if(!activity.object.is_object()) return {};
+    if(!activity.object.is_object()) return false;
     auto follower = normalizeRef(
         activity.object.contains("actor") ? activity.object["actor"]
                                           : nlohmann::json());
     auto followee = normalizeRef(
         activity.object.contains("object") ? activity.object["object"]
                                            : nlohmann::json());
-    if(!follower.has_value() || !followee.has_value()) return {};
-    return data.setFollowState(*follower, *followee, FollowState::ACCEPTED);
+    if(!follower.has_value() || !followee.has_value()
+       || *followee != activity.actor || !isLocalActorUri(config, *follower))
+    {
+        return false;
+    }
+    ASSIGN_OR_RETURN(auto follow, data.getFollow(*follower, *followee));
+    if(!follow.has_value()) return false;
+    DO_OR_RETURN(data.setFollowState(*follower, *followee,
+                                     FollowState::ACCEPTED));
+    return true;
 }
 
-mw::E<void> handleLikeActivity(const DataSourceInterface& data,
+mw::E<bool> handleLikeActivity(const DataSourceInterface& data,
                                const Activity& activity,
                                int64_t now_seconds)
 {
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
-    if(!post.has_value()) return {};
+    if(!post.has_value()) return false;
     Like like;
     like.actor_uri = activity.actor;
     like.post_uri = *object_uri;
     like.activity_uri = activity.id;
     like.created_at = now_seconds;
-    return data.addLike(like);
+    DO_OR_RETURN(data.addLike(like));
+    return true;
 }
 
-mw::E<void> handleAnnounceActivity(const DataSourceInterface& data,
+mw::E<bool> handleAnnounceActivity(const DataSourceInterface& data,
                                    const Activity& activity,
                                    int64_t now_seconds)
 {
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
-    if(!post.has_value()) return {};
+    if(!post.has_value()) return false;
     if(post->visibility != Visibility::PUBLIC
        && post->visibility != Visibility::UNLISTED)
     {
-        return {};
+        return false;
     }
     Boost boost;
     boost.actor_uri = activity.actor;
     boost.post_uri = *object_uri;
     boost.activity_uri = activity.id;
     boost.created_at = now_seconds;
-    return data.addBoost(boost);
+    DO_OR_RETURN(data.addBoost(boost));
+    return true;
 }
 
-mw::E<void> handleEmojiReactActivity(const DataSourceInterface& data,
+mw::E<bool> handleEmojiReactActivity(const DataSourceInterface& data,
                                      const Activity& activity,
                                      int64_t now_seconds)
 {
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
-    if(!post.has_value()) return {};
+    if(!post.has_value()) return false;
     std::string emoji = activity.raw.value("content", std::string());
     if(emoji.empty()) emoji = activity.raw.value("name", std::string());
-    if(emoji.empty()) return {};
+    if(emoji.empty()) return false;
     Reaction reaction;
     reaction.actor_uri = activity.actor;
     reaction.post_uri = *object_uri;
@@ -1474,35 +1506,44 @@ mw::E<void> handleEmojiReactActivity(const DataSourceInterface& data,
     }
     reaction.activity_uri = activity.id;
     reaction.created_at = now_seconds;
-    return data.addReaction(reaction);
+    DO_OR_RETURN(data.addReaction(reaction));
+    return true;
 }
 
-mw::E<void> handleDeleteActivity(const DataSourceInterface& data,
+mw::E<bool> handleDeleteActivity(const DataSourceInterface& data,
                                  const Activity& activity)
 {
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
-    if(!post.has_value()) return {};
-    return data.deletePost(post->id);
+    if(!post.has_value() || post->local_author_id.has_value()
+       || !post->remote_author_id.has_value())
+    {
+        return false;
+    }
+    ASSIGN_OR_RETURN(auto author, data.getRemoteActorById(
+        *post->remote_author_id));
+    if(!author.has_value() || author->uri != activity.actor) return false;
+    DO_OR_RETURN(data.deletePost(post->id));
+    return true;
 }
 
-mw::E<void> handleUpdateActivity(const DataSourceInterface& data,
+mw::E<bool> handleUpdateActivity(const DataSourceInterface& data,
                                  const Activity& activity,
                                  int64_t now_seconds)
 {
     if(!activity.object.is_object())
     {
-        return {};
+        return false;
     }
     std::string type = activity.object.value("type", std::string());
     if(type != "Note")
     {
         auto actor_uri = normalizeRef(activity.object);
         if(!actor_uri.has_value() || *actor_uri != activity.actor)
-            return {};
+            return false;
         ASSIGN_OR_RETURN(auto existing, data.getRemoteActorByUri(*actor_uri));
-        if(!existing.has_value()) return {};
+        if(!existing.has_value()) return false;
 
         RemoteActor updated = *existing;
         updated.username = activity.object.value("preferredUsername",
@@ -1540,45 +1581,105 @@ mw::E<void> handleUpdateActivity(const DataSourceInterface& data,
         updated.fetched_at = now_seconds;
         ASSIGN_OR_RETURN(auto stored, data.upsertRemoteActor(updated));
         (void)stored;
-        return {};
+        return true;
     }
     auto object_uri = normalizeRef(activity.object);
-    if(!object_uri.has_value()) return {};
+    if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*object_uri));
-    if(!existing.has_value()) return {};
+    if(!existing.has_value() || existing->local_author_id.has_value()
+       || !existing->remote_author_id.has_value())
+    {
+        return false;
+    }
+    ASSIGN_OR_RETURN(auto author, data.getRemoteActorById(
+        *existing->remote_author_id));
+    auto attributed_to = normalizeRef(activity.object.contains("attributedTo")
+        ? activity.object["attributedTo"] : nlohmann::json());
+    if(!author.has_value() || author->uri != activity.actor
+       || (attributed_to.has_value() && *attributed_to != activity.actor))
+    {
+        return false;
+    }
     ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(data, activity));
     DO_OR_RETURN(data.updatePost(
         existing->id, np, recipientsForObject(activity.object)));
-    return storeRemoteAttachments(data, activity.object, existing->id);
+    DO_OR_RETURN(storeRemoteAttachments(data, activity.object, existing->id));
+    return true;
 }
 
-mw::E<void> handleUndoActivity(const DataSourceInterface& data,
+mw::E<bool> handleUndoActivity(const DataSourceInterface& data,
                                const Activity& activity)
 {
-    if(!activity.object.is_object()) return {};
+    if(!activity.object.is_object()) return false;
     Activity wrapped;
     ASSIGN_OR_RETURN(wrapped, parseActivity(activity.object));
+    if(wrapped.actor != activity.actor) return false;
     auto object_uri = normalizeRef(wrapped.object);
     if(wrapped.type == "Follow" && object_uri.has_value())
     {
-        return data.removeFollow(wrapped.actor, *object_uri);
+        ASSIGN_OR_RETURN(auto follow, data.getFollow(wrapped.actor,
+                                                     *object_uri));
+        if(!follow.has_value()) return false;
+        DO_OR_RETURN(data.removeFollow(wrapped.actor, *object_uri));
+        return true;
     }
     if(wrapped.type == "Like" && object_uri.has_value())
     {
-        return data.removeLike(wrapped.actor, *object_uri);
+        ASSIGN_OR_RETURN(auto likes, data.likesForPost(*object_uri));
+        bool exists = false;
+        for(const auto& like : likes)
+        {
+            if(like.actor_uri == wrapped.actor)
+            {
+                exists = true;
+                break;
+            }
+        }
+        if(!exists) return false;
+        DO_OR_RETURN(data.removeLike(wrapped.actor, *object_uri));
+        return true;
     }
     if(wrapped.type == "Announce" && object_uri.has_value())
     {
-        return data.removeBoost(wrapped.actor, *object_uri);
+        ASSIGN_OR_RETURN(auto boosts, data.boostsForPost(*object_uri));
+        bool exists = false;
+        for(const auto& boost : boosts)
+        {
+            if(boost.actor_uri == wrapped.actor)
+            {
+                exists = true;
+                break;
+            }
+        }
+        if(!exists) return false;
+        DO_OR_RETURN(data.removeBoost(wrapped.actor, *object_uri));
+        return true;
     }
     if(wrapped.type == "EmojiReact" && object_uri.has_value())
     {
         std::string emoji = wrapped.raw.value("content", std::string());
         if(emoji.empty()) emoji = wrapped.raw.value("name", std::string());
         if(!emoji.empty())
-            return data.removeReaction(wrapped.actor, *object_uri, emoji);
+        {
+            ASSIGN_OR_RETURN(auto reactions, data.reactionsForPost(
+                *object_uri));
+            bool exists = false;
+            for(const auto& reaction : reactions)
+            {
+                if(reaction.actor_uri == wrapped.actor
+                   && reaction.emoji == emoji)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if(!exists) return false;
+            DO_OR_RETURN(data.removeReaction(wrapped.actor, *object_uri,
+                                             emoji));
+            return true;
+        }
     }
-    return {};
+    return false;
 }
 
 } // namespace
@@ -2689,29 +2790,69 @@ mw::E<int64_t> enqueueFetchThreadJob(const DataSourceInterface& data,
 
 mw::E<InboxDispatchResult> dispatchIncomingActivity(
     const Config& config, const DataSourceInterface& data,
-    std::string_view verified_actor_uri, const Activity& activity,
+    const VerifiedSignature& verified_signature, const Activity& activity,
     int64_t now_seconds, mw::CryptoInterface* crypto,
     mw::HTTPSessionInterface* http, const SystemActor* system_actor)
 {
-    if(activity.actor != verified_actor_uri)
+    const bool direct_delivery = activity.actor == verified_signature.actor_uri;
+    std::optional<ForwardingPlan> forwarding_plan;
+    if(!direct_delivery)
     {
-        return std::unexpected(mw::httpError(
-            401, "Activity actor does not match signature actor"));
+        ASSIGN_OR_RETURN(forwarding_plan, prepareIncomingForwarding(
+            config, data, crypto, http, system_actor, activity));
+        if(!forwarding_plan.has_value())
+        {
+            return InboxDispatchResult{InboxDisposition::IGNORED, false};
+        }
     }
 
     ASSIGN_OR_RETURN(bool first_seen, data.markActivitySeen(
         activity.id, now_seconds));
-    if(!first_seen) return InboxDispatchResult{true};
+    if(!first_seen)
+    {
+        return InboxDispatchResult{InboxDisposition::DUPLICATE, false};
+    }
 
-    DO_OR_RETURN(maybeForwardIncomingActivity(config, data, crypto, http,
-                                              system_actor, activity,
-                                              now_seconds));
+    bool forwarded = false;
+    if(forwarding_plan.has_value())
+    {
+        ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
+            config, data, *forwarding_plan, now_seconds));
+    }
+    if(!direct_delivery)
+    {
+        return InboxDispatchResult{
+            forwarded ? InboxDisposition::FORWARDED : InboxDisposition::IGNORED,
+            false,
+        };
+    }
+
+    ASSIGN_OR_RETURN(forwarding_plan, prepareIncomingForwarding(
+        config, data, crypto, http, system_actor, activity));
+    if(forwarding_plan.has_value())
+    {
+        ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
+            config, data, *forwarding_plan, now_seconds));
+    }
+
+    bool applied = false;
+    bool actor_retained = false;
+    auto retain_actor = [&]() -> mw::E<void> {
+        if(verified_signature.actor_was_retained) return {};
+        ASSIGN_OR_RETURN(auto retained, data.upsertRemoteActor(
+            verified_signature.actor));
+        (void)retained;
+        actor_retained = true;
+        return {};
+    };
 
     if(activity.type == "Create")
     {
         if(activity.object.is_object())
         {
-            DO_OR_RETURN(handleCreateActivity(config, data, activity));
+            ASSIGN_OR_RETURN(applied, handleCreateActivity(
+                config, data, activity, &verified_signature));
+            actor_retained = applied && !verified_signature.actor_was_retained;
         }
         else if(auto object_uri = normalizeRef(activity.object);
                 object_uri.has_value() && !isLocalActorUri(config,
@@ -2725,43 +2866,57 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
             ASSIGN_OR_RETURN(auto post, fetchRemotePostByUri(
                 config, data, *crypto, *http, *system_actor, *object_uri));
             (void)post;
+            applied = true;
         }
     }
     else if(activity.type == "Follow")
     {
-        DO_OR_RETURN(handleFollowActivity(config, data, activity,
-                                          now_seconds));
+        ASSIGN_OR_RETURN(applied, handleFollowActivity(
+            config, data, activity, verified_signature, now_seconds,
+            actor_retained));
     }
     else if(activity.type == "Accept")
     {
-        DO_OR_RETURN(handleAcceptActivity(data, activity));
+        ASSIGN_OR_RETURN(applied, handleAcceptActivity(config, data, activity));
+        if(applied) DO_OR_RETURN(retain_actor());
     }
     else if(activity.type == "Like")
     {
-        DO_OR_RETURN(handleLikeActivity(data, activity, now_seconds));
+        ASSIGN_OR_RETURN(applied, handleLikeActivity(data, activity,
+                                                      now_seconds));
+        if(applied) DO_OR_RETURN(retain_actor());
     }
     else if(activity.type == "Announce")
     {
-        DO_OR_RETURN(handleAnnounceActivity(data, activity, now_seconds));
+        ASSIGN_OR_RETURN(applied, handleAnnounceActivity(data, activity,
+                                                          now_seconds));
+        if(applied) DO_OR_RETURN(retain_actor());
     }
     else if(activity.type == "EmojiReact")
     {
-        DO_OR_RETURN(handleEmojiReactActivity(data, activity, now_seconds));
+        ASSIGN_OR_RETURN(applied, handleEmojiReactActivity(data, activity,
+                                                            now_seconds));
+        if(applied) DO_OR_RETURN(retain_actor());
     }
     else if(activity.type == "Delete")
     {
-        DO_OR_RETURN(handleDeleteActivity(data, activity));
+        ASSIGN_OR_RETURN(applied, handleDeleteActivity(data, activity));
     }
     else if(activity.type == "Undo")
     {
-        DO_OR_RETURN(handleUndoActivity(data, activity));
+        ASSIGN_OR_RETURN(applied, handleUndoActivity(data, activity));
     }
     else if(activity.type == "Update")
     {
-        DO_OR_RETURN(handleUpdateActivity(data, activity, now_seconds));
+        ASSIGN_OR_RETURN(applied, handleUpdateActivity(data, activity,
+                                                        now_seconds));
     }
 
-    return InboxDispatchResult{false};
+    InboxDisposition disposition = InboxDisposition::IGNORED;
+    if(applied && forwarded) disposition = InboxDisposition::APPLIED_AND_FORWARDED;
+    else if(applied) disposition = InboxDisposition::APPLIED;
+    else if(forwarded) disposition = InboxDisposition::FORWARDED;
+    return InboxDispatchResult{disposition, actor_retained};
 }
 
 mw::E<bool> runFederationJobOnce(const Config& config,

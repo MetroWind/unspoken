@@ -79,6 +79,11 @@ public:
     // ── Remote actors ───────────────────────────────────────────
     virtual mw::E<RemoteActor>
     upsertRemoteActor(const RemoteActor& a) const = 0;
+    // Retain a remote actor and insert its authored post as one transaction.
+    virtual mw::E<Post>
+    insertRemoteActorAndPost(const RemoteActor& actor, const NewPost& post,
+                             const std::vector<PostRecipient>& recipients)
+        const = 0;
     virtual mw::E<std::optional<RemoteActor>>
     getRemoteActorById(int64_t id) const = 0;
     virtual mw::E<std::optional<RemoteActor>>
@@ -287,6 +292,10 @@ public:
                                std::string_view public_key_pem) const override;
 
     mw::E<RemoteActor> upsertRemoteActor(const RemoteActor& a) const override;
+    mw::E<Post>
+    insertRemoteActorAndPost(const RemoteActor& actor, const NewPost& post,
+                             const std::vector<PostRecipient>& recipients)
+        const override;
     mw::E<std::optional<RemoteActor>>
     getRemoteActorById(int64_t id) const override;
     mw::E<std::optional<RemoteActor>>

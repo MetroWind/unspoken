@@ -56,6 +56,10 @@ public:
 
     MOCK_METHOD(mw::E<RemoteActor>, upsertRemoteActor, (const RemoteActor&),
                 (const, override));
+    MOCK_METHOD(mw::E<Post>, insertRemoteActorAndPost,
+                (const RemoteActor&, const NewPost&,
+                 (const std::vector<PostRecipient>&)),
+                (const, override));
     MOCK_METHOD(mw::E<std::optional<RemoteActor>>, getRemoteActorById,
                 (int64_t), (const, override));
     MOCK_METHOD(mw::E<std::optional<RemoteActor>>, getRemoteActorByUri,
