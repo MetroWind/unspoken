@@ -209,6 +209,11 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
     mw::HTTPSessionInterface* http = nullptr,
     const SystemActor* system_actor = nullptr);
 
+// Prune one bounded batch of expired, completed inbox activity IDs.
+mw::E<int64_t> runInboxMaintenanceOnce(const Config& config,
+                                       const DataSourceInterface& data,
+                                       int64_t now_seconds);
+
 // Claims and processes at most one runnable federation job. Returns true
 // when a job was claimed, false when the queue was empty.
 mw::E<bool> runFederationJobOnce(const Config& config,

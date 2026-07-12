@@ -72,6 +72,14 @@ struct Config
     int http_signature_skew_seconds = 300;
     int thread_fetch_max_depth = 20;
     int sqlite_busy_timeout_ms = 5000;
+    // How long successfully processed inbox activity IDs are retained.
+    int seen_activity_retention_seconds = 2592000;
+    // How long an inbox processing claim remains owned before redelivery can
+    // reclaim it after a worker failure.
+    int inbox_processing_lease_seconds = 300;
+    // Maximum processed inbox activity IDs deleted by one maintenance
+    // transaction.
+    int maintenance_batch_size = 1000;
 
     // ─── Job queue ───────────────────────────────────────────────
     int job_workers = 4;

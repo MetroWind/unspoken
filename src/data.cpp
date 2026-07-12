@@ -26,7 +26,7 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 2;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 3;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -293,10 +293,14 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         " public_key_pem TEXT NOT NULL,"
         " public_key_id TEXT NOT NULL,"
         " actor_json TEXT NOT NULL,"
-        " fetched_at INTEGER NOT NULL);"));
+        " fetched_at INTEGER NOT NULL,"
+        " retained_at INTEGER NOT NULL DEFAULT 0);"));
     DO_OR_RETURN(db.execute(
         "CREATE INDEX IF NOT EXISTS idx_remote_actors_domain "
         "ON remote_actors(domain);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_remote_actors_retained "
+        "ON remote_actors(retained_at, id);"));
 
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS posts ("
@@ -451,7 +455,18 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS seen_activities ("
         " activity_uri TEXT PRIMARY KEY,"
-        " seen_at INTEGER NOT NULL);"));
+        " state TEXT NOT NULL,"
+        " claimed_at INTEGER,"
+        " processed_at INTEGER,"
+        " CHECK (state IN ('processing', 'processed')),"
+        " CHECK ((state = 'processing' AND claimed_at IS NOT NULL)"
+        " OR (state = 'processed' AND processed_at IS NOT NULL)));"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seen_activities_processed "
+        "ON seen_activities(processed_at) WHERE state = 'processed';"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seen_activities_processing "
+        "ON seen_activities(claimed_at) WHERE state = 'processing';"));
 
     DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS jobs ("
@@ -506,6 +521,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate1To2());
                 version = 2;
+                continue;
+            }
+            if(version == 2)
+            {
+                DO_OR_RETURN(data_source->migrate2To3());
+                version = 3;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -637,6 +658,66 @@ mw::E<void> DataSourceSQLite::migrate1To2() const
            !r.has_value()) return r;
 
         if(auto r = setSchemaVersion(2); !r.has_value())
+            return rollback(r.error());
+        return db->execute("COMMIT;");
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<void> DataSourceSQLite::migrate2To3() const
+{
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        auto step = [&](std::string_view sql) -> mw::E<void> {
+            auto r = db->execute(std::string(sql));
+            if(!r.has_value()) return rollback(r.error());
+            return {};
+        };
+
+        if(auto r = step(
+            "ALTER TABLE remote_actors ADD COLUMN retained_at INTEGER "
+            "NOT NULL DEFAULT 0;"); !r.has_value()) return r;
+        if(auto r = step(
+            "UPDATE remote_actors SET retained_at = fetched_at "
+            "WHERE retained_at = 0;"); !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_remote_actors_retained "
+            "ON remote_actors(retained_at, id);"); !r.has_value()) return r;
+
+        if(auto r = step(
+            "CREATE TABLE seen_activities_new ("
+            " activity_uri TEXT PRIMARY KEY,"
+            " state TEXT NOT NULL,"
+            " claimed_at INTEGER,"
+            " processed_at INTEGER,"
+            " CHECK (state IN ('processing', 'processed')),"
+            " CHECK ((state = 'processing' AND claimed_at IS NOT NULL)"
+            " OR (state = 'processed' AND processed_at IS NOT NULL))"
+            ");"); !r.has_value()) return r;
+        if(auto r = step(
+            "INSERT INTO seen_activities_new "
+            "(activity_uri, state, claimed_at, processed_at) "
+            "SELECT activity_uri, 'processed', NULL, seen_at "
+            "FROM seen_activities;"); !r.has_value()) return r;
+        if(auto r = step("DROP TABLE seen_activities;"); !r.has_value())
+            return r;
+        if(auto r = step(
+            "ALTER TABLE seen_activities_new RENAME TO seen_activities;");
+           !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_seen_activities_processed "
+            "ON seen_activities(processed_at) WHERE state = 'processed';");
+           !r.has_value()) return r;
+        if(auto r = step(
+            "CREATE INDEX idx_seen_activities_processing "
+            "ON seen_activities(claimed_at) WHERE state = 'processing';");
+           !r.has_value()) return r;
+
+        if(auto r = setSchemaVersion(3); !r.has_value())
             return rollback(r.error());
         return db->execute("COMMIT;");
     };
@@ -981,7 +1062,7 @@ DataSourceSQLite::upsertRemoteActor(const RemoteActor& a) const
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "INSERT INTO remote_actors (uri, username, domain, display_name, "
             "inbox, shared_inbox, public_key_pem, public_key_id, actor_json, "
-            "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "fetched_at, retained_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(uri) DO UPDATE SET username=excluded.username, "
             "domain=excluded.domain, display_name=excluded.display_name, "
             "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
@@ -990,10 +1071,10 @@ DataSourceSQLite::upsertRemoteActor(const RemoteActor& a) const
             "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at;"));
         DO_OR_RETURN((st.bind<std::string, std::string, std::string,
             std::string, std::string, std::optional<std::string>, std::string,
-            std::string, std::string, int64_t>(
+            std::string, std::string, int64_t, int64_t>(
             a.uri, a.username, a.domain, a.display_name, a.inbox,
             a.shared_inbox, a.public_key_pem, a.public_key_id, a.actor_json,
-            fetched)));
+            fetched, fetched)));
         return db->execute(std::move(st));
     };
     DO_OR_RETURN(withWriteRetry(txn));
@@ -1191,7 +1272,7 @@ DataSourceSQLite::insertRemoteActorAndPost(
         auto actor_st_e = db->statementFromStr(
             "INSERT INTO remote_actors (uri, username, domain, display_name, "
             "inbox, shared_inbox, public_key_pem, public_key_id, actor_json, "
-            "fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "fetched_at, retained_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(uri) DO UPDATE SET username=excluded.username, "
             "domain=excluded.domain, display_name=excluded.display_name, "
             "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
@@ -1201,10 +1282,10 @@ DataSourceSQLite::insertRemoteActorAndPost(
         if(!actor_st_e.has_value()) return rollback(actor_st_e.error());
         auto actor_bind = actor_st_e->bind<std::string, std::string,
             std::string, std::string, std::string, std::optional<std::string>,
-            std::string, std::string, std::string, int64_t>(
+            std::string, std::string, std::string, int64_t, int64_t>(
             actor.uri, actor.username, actor.domain, actor.display_name,
             actor.inbox, actor.shared_inbox, actor.public_key_pem,
-            actor.public_key_id, actor.actor_json, fetched);
+            actor.public_key_id, actor.actor_json, fetched, fetched);
         if(!actor_bind.has_value()) return rollback(actor_bind.error());
         auto actor_ex = db->execute(std::move(*actor_st_e));
         if(!actor_ex.has_value()) return rollback(actor_ex.error());
@@ -2456,22 +2537,132 @@ DataSourceSQLite::takePendingLogin(std::string_view state) const
 
 // ─── Activity dedup ────────────────────────────────────────────────
 
-mw::E<bool> DataSourceSQLite::markActivitySeen(std::string_view uri,
-                                               int64_t now_ts) const
+mw::E<ActivityClaimResult> DataSourceSQLite::claimIncomingActivity(
+    std::string_view activity_uri, int64_t now_seconds,
+    int64_t lease_seconds) const
 {
-    bool inserted = false;
+    ActivityClaimResult result = ActivityClaimResult::IN_PROGRESS;
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN IMMEDIATE;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+
+        auto select_e = db->statementFromStr(
+            "SELECT state, claimed_at FROM seen_activities "
+            "WHERE activity_uri = ?;");
+        if(!select_e.has_value()) return rollback(select_e.error());
+        auto select = std::move(*select_e);
+        if(auto r = select.bind<std::string>(std::string(activity_uri));
+           !r.has_value()) return rollback(r.error());
+        auto rows_e = db->eval<std::string, std::optional<int64_t>>(
+            std::move(select));
+        if(!rows_e.has_value()) return rollback(rows_e.error());
+
+        if(rows_e->empty())
+        {
+            auto insert_e = db->statementFromStr(
+                "INSERT INTO seen_activities "
+                "(activity_uri, state, claimed_at, processed_at) "
+                "VALUES (?, 'processing', ?, NULL);");
+            if(!insert_e.has_value()) return rollback(insert_e.error());
+            auto b = insert_e->bind<std::string, int64_t>(
+                std::string(activity_uri), now_seconds);
+            if(!b.has_value()) return rollback(b.error());
+            auto executed = db->execute(std::move(*insert_e));
+            if(!executed.has_value()) return rollback(executed.error());
+            result = ActivityClaimResult::CLAIMED;
+            return db->execute("COMMIT;");
+        }
+
+        const auto& row = (*rows_e)[0];
+        if(std::get<0>(row) == "processed")
+        {
+            result = ActivityClaimResult::ALREADY_PROCESSED;
+            return db->execute("COMMIT;");
+        }
+        const auto claimed_at = std::get<1>(row);
+        if(claimed_at.has_value()
+           && *claimed_at > now_seconds - lease_seconds)
+        {
+            result = ActivityClaimResult::IN_PROGRESS;
+            return db->execute("COMMIT;");
+        }
+
+        auto update_e = db->statementFromStr(
+            "UPDATE seen_activities SET claimed_at = ? "
+            "WHERE activity_uri = ? AND state = 'processing';");
+        if(!update_e.has_value()) return rollback(update_e.error());
+        auto b = update_e->bind<int64_t, std::string>(
+            now_seconds, std::string(activity_uri));
+        if(!b.has_value()) return rollback(b.error());
+        auto executed = db->execute(std::move(*update_e));
+        if(!executed.has_value()) return rollback(executed.error());
+        result = ActivityClaimResult::CLAIMED;
+        return db->execute("COMMIT;");
+    };
+    DO_OR_RETURN(withWriteRetry(txn));
+    return result;
+}
+
+mw::E<void> DataSourceSQLite::finalizeIncomingActivity(
+    std::string_view activity_uri, int64_t now_seconds) const
+{
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO seen_activities (activity_uri, seen_at) "
-            "VALUES (?, ?) ON CONFLICT(activity_uri) DO NOTHING;"));
-        DO_OR_RETURN((st.bind<std::string, int64_t>(
-            std::string(uri), now_ts)));
+            "UPDATE seen_activities SET state = 'processed', "
+            "claimed_at = NULL, processed_at = ? "
+            "WHERE activity_uri = ? AND state = 'processing';"));
+        DO_OR_RETURN((st.bind<int64_t, std::string>(
+            now_seconds, std::string(activity_uri))));
         DO_OR_RETURN(db->execute(std::move(st)));
-        inserted = db->changedRowsCount() > 0;
+        if(db->changedRowsCount() != 1)
+        {
+            return std::unexpected(mw::runtimeError(
+                "Inbox activity claim was lost before finalization"));
+        }
+        return {};
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<void> DataSourceSQLite::releaseIncomingActivity(
+    std::string_view activity_uri) const
+{
+    auto txn = [&]() -> mw::E<void> {
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "DELETE FROM seen_activities WHERE activity_uri = ? "
+            "AND state = 'processing';"));
+        DO_OR_RETURN(st.bind<std::string>(std::string(activity_uri)));
+        return db->execute(std::move(st));
+    };
+    return withWriteRetry(txn);
+}
+
+mw::E<int64_t> DataSourceSQLite::pruneIncomingActivities(
+    int64_t cutoff_seconds, int batch_size) const
+{
+    if(batch_size <= 0)
+    {
+        return std::unexpected(mw::runtimeError(
+            "Inbox activity maintenance batch size must be positive"));
+    }
+    int64_t pruned = 0;
+    auto txn = [&]() -> mw::E<void> {
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "DELETE FROM seen_activities WHERE activity_uri IN ("
+            " SELECT activity_uri FROM seen_activities "
+            " WHERE state = 'processed' AND processed_at < ? "
+            " ORDER BY processed_at ASC LIMIT ?"
+            ");"));
+        DO_OR_RETURN((st.bind<int64_t, int>(cutoff_seconds, batch_size)));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        pruned = db->changedRowsCount();
         return {};
     };
     DO_OR_RETURN(withWriteRetry(txn));
-    return inserted;
+    return pruned;
 }
 
 // ─── Job queue ─────────────────────────────────────────────────────

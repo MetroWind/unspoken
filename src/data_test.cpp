@@ -51,11 +51,11 @@ Post insertLocalPost(const DataSourceSQLite& db, int64_t author_id,
 
 } // namespace
 
-TEST(Data, SchemaVersionIsTwo)
+TEST(Data, SchemaVersionIsThree)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 2);
+    EXPECT_EQ(v, 3);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -80,7 +80,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 2);
+    EXPECT_EQ(version, 3);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -559,13 +559,53 @@ TEST(Data, PendingLoginTakenOnce)
     EXPECT_FALSE(unknown.has_value());
 }
 
-TEST(Data, ActivityDedup)
+TEST(Data, ActivityDedupClaimFinalizeReleaseAndPrune)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
-    ASSIGN_OR_FAIL(bool first, db->markActivitySeen("https://a/1", 0));
-    EXPECT_TRUE(first);
-    ASSIGN_OR_FAIL(bool again, db->markActivitySeen("https://a/1", 0));
-    EXPECT_FALSE(again);
+    ASSIGN_OR_FAIL(auto first, db->claimIncomingActivity("https://a/1", 0, 10));
+    EXPECT_EQ(first, ActivityClaimResult::CLAIMED);
+    ASSIGN_OR_FAIL(auto in_progress,
+                   db->claimIncomingActivity("https://a/1", 5, 10));
+    EXPECT_EQ(in_progress, ActivityClaimResult::IN_PROGRESS);
+    EXPECT_TRUE(mw::isExpected(db->finalizeIncomingActivity(
+        "https://a/1", 100)));
+    ASSIGN_OR_FAIL(auto complete,
+                   db->claimIncomingActivity("https://a/1", 11, 10));
+    EXPECT_EQ(complete, ActivityClaimResult::ALREADY_PROCESSED);
+
+    ASSIGN_OR_FAIL(auto retry, db->claimIncomingActivity("https://a/2", 0, 10));
+    EXPECT_EQ(retry, ActivityClaimResult::CLAIMED);
+    EXPECT_TRUE(mw::isExpected(db->releaseIncomingActivity("https://a/2")));
+    ASSIGN_OR_FAIL(auto reclaimed,
+                   db->claimIncomingActivity("https://a/2", 1, 10));
+    EXPECT_EQ(reclaimed, ActivityClaimResult::CLAIMED);
+
+    ASSIGN_OR_FAIL(auto expired,
+                   db->claimIncomingActivity("https://a/3", 0, 10));
+    EXPECT_EQ(expired, ActivityClaimResult::CLAIMED);
+    ASSIGN_OR_FAIL(auto reclaimed_expired,
+                   db->claimIncomingActivity("https://a/3", 10, 10));
+    EXPECT_EQ(reclaimed_expired, ActivityClaimResult::CLAIMED);
+
+    ASSIGN_OR_FAIL(auto old, db->claimIncomingActivity("https://a/old", 0, 10));
+    EXPECT_EQ(old, ActivityClaimResult::CLAIMED);
+    EXPECT_TRUE(mw::isExpected(db->finalizeIncomingActivity(
+        "https://a/old", 10)));
+    ASSIGN_OR_FAIL(auto newer,
+                   db->claimIncomingActivity("https://a/newer", 0, 10));
+    EXPECT_EQ(newer, ActivityClaimResult::CLAIMED);
+    EXPECT_TRUE(mw::isExpected(db->finalizeIncomingActivity(
+        "https://a/newer", 20)));
+    ASSIGN_OR_FAIL(auto one_pruned, db->pruneIncomingActivities(21, 1));
+    EXPECT_EQ(one_pruned, 1);
+    ASSIGN_OR_FAIL(auto old_again,
+                   db->claimIncomingActivity("https://a/old", 21, 10));
+    EXPECT_EQ(old_again, ActivityClaimResult::CLAIMED);
+    ASSIGN_OR_FAIL(auto remaining_pruned, db->pruneIncomingActivities(21, 10));
+    EXPECT_EQ(remaining_pruned, 1);
+    ASSIGN_OR_FAIL(auto newer_again,
+                   db->claimIncomingActivity("https://a/newer", 21, 10));
+    EXPECT_EQ(newer_again, ActivityClaimResult::CLAIMED);
 }
 
 TEST(Data, JobClaimAndComplete)

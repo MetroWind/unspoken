@@ -20,6 +20,14 @@
 namespace unspoken
 {
 
+// The outcome of an atomic attempt to acquire an inbound activity ID.
+enum class ActivityClaimResult
+{
+    CLAIMED,           // This request owns the processing lease.
+    ALREADY_PROCESSED, // A previous request completed the activity.
+    IN_PROGRESS,       // Another request owns an unexpired lease.
+};
+
 // Retry a write transaction that may see SQLITE_BUSY / SQLITE_LOCKED
 // even after the connection's busy_timeout (e.g. during a WAL
 // checkpoint). The callable should be idempotent: it may run more than
@@ -39,6 +47,8 @@ public:
 
     virtual mw::E<int64_t> getSchemaVersion() const = 0;
     virtual mw::E<void> migrate1To2() const = 0;
+    // Migrate schema version 2 databases to the inbox-claim schema.
+    virtual mw::E<void> migrate2To3() const = 0;
 
     // ── Users ───────────────────────────────────────────────────
     virtual mw::E<User> createUser(const NewUser& nu) const = 0;
@@ -220,10 +230,20 @@ public:
     takePendingLogin(std::string_view state) const = 0;
 
     // ── Activity dedup ──────────────────────────────────────────
-    // Returns true if newly inserted, false if already seen (the
-    // activity is a redelivery).
-    virtual mw::E<bool> markActivitySeen(std::string_view uri,
-                                         int64_t now) const = 0;
+    // Claim an activity ID or reclaim its expired processing lease.
+    virtual mw::E<ActivityClaimResult>
+    claimIncomingActivity(std::string_view activity_uri, int64_t now_seconds,
+                          int64_t lease_seconds) const = 0;
+    // Mark a successfully dispatched activity as processed.
+    virtual mw::E<void>
+    finalizeIncomingActivity(std::string_view activity_uri,
+                             int64_t now_seconds) const = 0;
+    // Release an unsuccessful processing claim so redelivery can retry.
+    virtual mw::E<void>
+    releaseIncomingActivity(std::string_view activity_uri) const = 0;
+    // Delete up to batch_size processed activity IDs before the cutoff.
+    virtual mw::E<int64_t>
+    pruneIncomingActivities(int64_t cutoff_seconds, int batch_size) const = 0;
 
     // ── Job queue ───────────────────────────────────────────────
     virtual mw::E<int64_t>
@@ -261,6 +281,7 @@ public:
 
     mw::E<int64_t> getSchemaVersion() const override;
     mw::E<void> migrate1To2() const override;
+    mw::E<void> migrate2To3() const override;
 
     mw::E<User> createUser(const NewUser& nu) const override;
     mw::E<std::optional<User>> getUserById(int64_t id) const override;
@@ -399,8 +420,17 @@ public:
     mw::E<std::optional<std::string>>
     takePendingLogin(std::string_view state) const override;
 
-    mw::E<bool> markActivitySeen(std::string_view uri,
-                                 int64_t now) const override;
+    mw::E<ActivityClaimResult>
+    claimIncomingActivity(std::string_view activity_uri, int64_t now_seconds,
+                          int64_t lease_seconds) const override;
+    mw::E<void>
+    finalizeIncomingActivity(std::string_view activity_uri,
+                             int64_t now_seconds) const override;
+    mw::E<void>
+    releaseIncomingActivity(std::string_view activity_uri) const override;
+    mw::E<int64_t>
+    pruneIncomingActivities(int64_t cutoff_seconds, int batch_size)
+        const override;
 
     mw::E<int64_t> enqueueJob(std::string_view kind,
                               std::string_view payload_json,

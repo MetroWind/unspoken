@@ -408,9 +408,25 @@ void App::jobWorkerLoop(int worker_id) const
 
     mw::Crypto local_crypto;
     mw::HTTPSession http;
+    int64_t next_maintenance = mw::timeToSeconds(mw::Clock::now()) + 3600;
     while(!job_workers_stop)
     {
         int64_t now = mw::timeToSeconds(mw::Clock::now());
+        if(worker_id == 0 && now >= next_maintenance)
+        {
+            auto pruned = unspoken::runInboxMaintenanceOnce(config, **db, now);
+            if(!pruned.has_value())
+            {
+                spdlog::warn("Inbox maintenance failed: {}",
+                             mw::errorMsg(pruned.error()));
+            }
+            else if(*pruned > 0)
+            {
+                spdlog::info("Inbox maintenance pruned {} activity IDs",
+                             *pruned);
+            }
+            next_maintenance = now + 3600;
+        }
         auto ran = unspoken::runFederationJobOnce(
             config, **db, local_crypto, http, now);
         if(!ran.has_value())

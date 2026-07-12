@@ -24,6 +24,7 @@ class DataSourceMock : public DataSourceInterface
 public:
     MOCK_METHOD(mw::E<int64_t>, getSchemaVersion, (), (const, override));
     MOCK_METHOD(mw::E<void>, migrate1To2, (), (const, override));
+    MOCK_METHOD(mw::E<void>, migrate2To3, (), (const, override));
 
     MOCK_METHOD(mw::E<User>, createUser, (const NewUser&), (const, override));
     MOCK_METHOD(mw::E<std::optional<User>>, getUserById, (int64_t),
@@ -166,8 +167,14 @@ public:
     MOCK_METHOD(mw::E<std::optional<std::string>>, takePendingLogin,
                 (std::string_view), (const, override));
 
-    MOCK_METHOD(mw::E<bool>, markActivitySeen, (std::string_view, int64_t),
+    MOCK_METHOD(mw::E<ActivityClaimResult>, claimIncomingActivity,
+                (std::string_view, int64_t, int64_t), (const, override));
+    MOCK_METHOD(mw::E<void>, finalizeIncomingActivity,
+                (std::string_view, int64_t), (const, override));
+    MOCK_METHOD(mw::E<void>, releaseIncomingActivity, (std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<int64_t>, pruneIncomingActivities,
+                (int64_t, int), (const, override));
 
     MOCK_METHOD(mw::E<int64_t>, enqueueJob,
                 (std::string_view, std::string_view, int64_t, int64_t),

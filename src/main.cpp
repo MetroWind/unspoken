@@ -9,6 +9,7 @@
 #include "commit.hpp"
 #include "config.hpp"
 #include "data.hpp"
+#include "federation.hpp"
 
 int main(int argc, char** argv)
 {
@@ -76,6 +77,19 @@ int main(int argc, char** argv)
         spdlog::error("Failed to open database {}: {}", config->database_path,
                       mw::errorMsg(db_init.error()));
         return 1;
+    }
+    int64_t maintenance_now = mw::timeToSeconds(mw::Clock::now());
+    auto pruned = unspoken::runInboxMaintenanceOnce(
+        *config, **db_init, maintenance_now);
+    if(!pruned.has_value())
+    {
+        spdlog::warn("Startup inbox maintenance failed: {}",
+                     mw::errorMsg(pruned.error()));
+    }
+    else if(*pruned > 0)
+    {
+        spdlog::info("Startup inbox maintenance pruned {} activity IDs",
+                     *pruned);
     }
     db_init->reset();
 

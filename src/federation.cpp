@@ -2806,117 +2806,163 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
         }
     }
 
-    ASSIGN_OR_RETURN(bool first_seen, data.markActivitySeen(
-        activity.id, now_seconds));
-    if(!first_seen)
+    ASSIGN_OR_RETURN(auto claim, data.claimIncomingActivity(
+        activity.id, now_seconds, config.inbox_processing_lease_seconds));
+    if(claim == ActivityClaimResult::ALREADY_PROCESSED)
     {
         return InboxDispatchResult{InboxDisposition::DUPLICATE, false};
     }
-
-    bool forwarded = false;
-    if(forwarding_plan.has_value())
+    if(claim == ActivityClaimResult::IN_PROGRESS)
     {
-        ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
-            config, data, *forwarding_plan, now_seconds));
+        return InboxDispatchResult{InboxDisposition::PROCESSING, false};
     }
-    if(!direct_delivery)
-    {
-        return InboxDispatchResult{
-            forwarded ? InboxDisposition::FORWARDED : InboxDisposition::IGNORED,
-            false,
+
+    auto release_claim = [&]() {
+        auto released = data.releaseIncomingActivity(activity.id);
+        if(!released.has_value())
+        {
+            spdlog::error("Failed to release inbox activity claim {}: {}",
+                          activity.id, mw::errorMsg(released.error()));
+        }
+    };
+    auto dispatch = [&]() -> mw::E<InboxDispatchResult> {
+        bool forwarded = false;
+        if(forwarding_plan.has_value())
+        {
+            ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
+                config, data, *forwarding_plan, now_seconds));
+        }
+        if(!direct_delivery)
+        {
+            return InboxDispatchResult{
+                forwarded ? InboxDisposition::FORWARDED
+                          : InboxDisposition::IGNORED,
+                false,
+            };
+        }
+
+        ASSIGN_OR_RETURN(forwarding_plan, prepareIncomingForwarding(
+            config, data, crypto, http, system_actor, activity));
+        if(forwarding_plan.has_value())
+        {
+            ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
+                config, data, *forwarding_plan, now_seconds));
+        }
+
+        bool applied = false;
+        bool actor_retained = false;
+        auto retain_actor = [&]() -> mw::E<void> {
+            if(verified_signature.actor_was_retained) return {};
+            ASSIGN_OR_RETURN(auto retained, data.upsertRemoteActor(
+                verified_signature.actor));
+            (void)retained;
+            actor_retained = true;
+            return {};
         };
-    }
 
-    ASSIGN_OR_RETURN(forwarding_plan, prepareIncomingForwarding(
-        config, data, crypto, http, system_actor, activity));
-    if(forwarding_plan.has_value())
-    {
-        ASSIGN_OR_RETURN(forwarded, executeIncomingForwarding(
-            config, data, *forwarding_plan, now_seconds));
-    }
+        if(activity.type == "Create")
+        {
+            if(activity.object.is_object())
+            {
+                ASSIGN_OR_RETURN(applied, handleCreateActivity(
+                    config, data, activity, &verified_signature));
+                actor_retained = applied
+                    && !verified_signature.actor_was_retained;
+            }
+            else if(auto object_uri = normalizeRef(activity.object);
+                    object_uri.has_value() && !isLocalActorUri(config,
+                                                               *object_uri))
+            {
+                if(crypto == nullptr || http == nullptr
+                   || system_actor == nullptr)
+                {
+                    return std::unexpected(mw::runtimeError(
+                        "Create object fetch requires federation clients"));
+                }
+                ASSIGN_OR_RETURN(auto post, fetchRemotePostByUri(
+                    config, data, *crypto, *http, *system_actor, *object_uri));
+                (void)post;
+                applied = true;
+            }
+        }
+        else if(activity.type == "Follow")
+        {
+            ASSIGN_OR_RETURN(applied, handleFollowActivity(
+                config, data, activity, verified_signature, now_seconds,
+                actor_retained));
+        }
+        else if(activity.type == "Accept")
+        {
+            ASSIGN_OR_RETURN(applied,
+                             handleAcceptActivity(config, data, activity));
+            if(applied) DO_OR_RETURN(retain_actor());
+        }
+        else if(activity.type == "Like")
+        {
+            ASSIGN_OR_RETURN(applied, handleLikeActivity(data, activity,
+                                                          now_seconds));
+            if(applied) DO_OR_RETURN(retain_actor());
+        }
+        else if(activity.type == "Announce")
+        {
+            ASSIGN_OR_RETURN(applied, handleAnnounceActivity(data, activity,
+                                                              now_seconds));
+            if(applied) DO_OR_RETURN(retain_actor());
+        }
+        else if(activity.type == "EmojiReact")
+        {
+            ASSIGN_OR_RETURN(applied, handleEmojiReactActivity(data, activity,
+                                                                now_seconds));
+            if(applied) DO_OR_RETURN(retain_actor());
+        }
+        else if(activity.type == "Delete")
+        {
+            ASSIGN_OR_RETURN(applied, handleDeleteActivity(data, activity));
+        }
+        else if(activity.type == "Undo")
+        {
+            ASSIGN_OR_RETURN(applied, handleUndoActivity(data, activity));
+        }
+        else if(activity.type == "Update")
+        {
+            ASSIGN_OR_RETURN(applied, handleUpdateActivity(data, activity,
+                                                            now_seconds));
+        }
 
-    bool applied = false;
-    bool actor_retained = false;
-    auto retain_actor = [&]() -> mw::E<void> {
-        if(verified_signature.actor_was_retained) return {};
-        ASSIGN_OR_RETURN(auto retained, data.upsertRemoteActor(
-            verified_signature.actor));
-        (void)retained;
-        actor_retained = true;
-        return {};
+        InboxDisposition disposition = InboxDisposition::IGNORED;
+        if(applied && forwarded)
+            disposition = InboxDisposition::APPLIED_AND_FORWARDED;
+        else if(applied)
+            disposition = InboxDisposition::APPLIED;
+        else if(forwarded)
+            disposition = InboxDisposition::FORWARDED;
+        return InboxDispatchResult{disposition, actor_retained};
     };
 
-    if(activity.type == "Create")
+    auto result = dispatch();
+    if(!result.has_value())
     {
-        if(activity.object.is_object())
-        {
-            ASSIGN_OR_RETURN(applied, handleCreateActivity(
-                config, data, activity, &verified_signature));
-            actor_retained = applied && !verified_signature.actor_was_retained;
-        }
-        else if(auto object_uri = normalizeRef(activity.object);
-                object_uri.has_value() && !isLocalActorUri(config,
-                                                           *object_uri))
-        {
-            if(crypto == nullptr || http == nullptr || system_actor == nullptr)
-            {
-                return std::unexpected(mw::runtimeError(
-                    "Create object fetch requires federation clients"));
-            }
-            ASSIGN_OR_RETURN(auto post, fetchRemotePostByUri(
-                config, data, *crypto, *http, *system_actor, *object_uri));
-            (void)post;
-            applied = true;
-        }
+        auto error = std::move(result.error());
+        release_claim();
+        return std::unexpected(std::move(error));
     }
-    else if(activity.type == "Follow")
+    auto finalized = data.finalizeIncomingActivity(activity.id, now_seconds);
+    if(!finalized.has_value())
     {
-        ASSIGN_OR_RETURN(applied, handleFollowActivity(
-            config, data, activity, verified_signature, now_seconds,
-            actor_retained));
+        auto error = std::move(finalized.error());
+        release_claim();
+        return std::unexpected(std::move(error));
     }
-    else if(activity.type == "Accept")
-    {
-        ASSIGN_OR_RETURN(applied, handleAcceptActivity(config, data, activity));
-        if(applied) DO_OR_RETURN(retain_actor());
-    }
-    else if(activity.type == "Like")
-    {
-        ASSIGN_OR_RETURN(applied, handleLikeActivity(data, activity,
-                                                      now_seconds));
-        if(applied) DO_OR_RETURN(retain_actor());
-    }
-    else if(activity.type == "Announce")
-    {
-        ASSIGN_OR_RETURN(applied, handleAnnounceActivity(data, activity,
-                                                          now_seconds));
-        if(applied) DO_OR_RETURN(retain_actor());
-    }
-    else if(activity.type == "EmojiReact")
-    {
-        ASSIGN_OR_RETURN(applied, handleEmojiReactActivity(data, activity,
-                                                            now_seconds));
-        if(applied) DO_OR_RETURN(retain_actor());
-    }
-    else if(activity.type == "Delete")
-    {
-        ASSIGN_OR_RETURN(applied, handleDeleteActivity(data, activity));
-    }
-    else if(activity.type == "Undo")
-    {
-        ASSIGN_OR_RETURN(applied, handleUndoActivity(data, activity));
-    }
-    else if(activity.type == "Update")
-    {
-        ASSIGN_OR_RETURN(applied, handleUpdateActivity(data, activity,
-                                                        now_seconds));
-    }
+    return *result;
+}
 
-    InboxDisposition disposition = InboxDisposition::IGNORED;
-    if(applied && forwarded) disposition = InboxDisposition::APPLIED_AND_FORWARDED;
-    else if(applied) disposition = InboxDisposition::APPLIED;
-    else if(forwarded) disposition = InboxDisposition::FORWARDED;
-    return InboxDispatchResult{disposition, actor_retained};
+mw::E<int64_t> runInboxMaintenanceOnce(const Config& config,
+                                       const DataSourceInterface& data,
+                                       int64_t now_seconds)
+{
+    return data.pruneIncomingActivities(
+        now_seconds - config.seen_activity_retention_seconds,
+        config.maintenance_batch_size);
 }
 
 mw::E<bool> runFederationJobOnce(const Config& config,

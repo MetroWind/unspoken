@@ -2490,3 +2490,82 @@ TEST(InboxForwarding, ForwardsSignerActorMismatchWithoutRetainingForwarder)
         "https://remote.test/o/forwarded"));
     EXPECT_FALSE(not_stored.has_value());
 }
+
+TEST(InboxDispatch, ReturnsProcessingForLiveActivityClaim)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/processing"},
+        {"type", "Delete"},
+        {"actor", "https://remote.test/u/bob"},
+        {"object", "https://remote.test/o/missing"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto claim, db->claimIncomingActivity(
+        activity.id, 100, c.inbox_processing_lease_seconds));
+    EXPECT_EQ(claim, ActivityClaimResult::CLAIMED);
+
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, retainedSignature(activity.actor), activity, 101));
+    EXPECT_EQ(result.disposition, InboxDisposition::PROCESSING);
+}
+
+TEST(InboxDispatch, ReleasesActivityClaimAfterDispatchFailure)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/retry"},
+        {"type", "Create"},
+        {"actor", "https://remote.test/u/bob"},
+        {"object", "https://remote.test/o/retry"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    EXPECT_FALSE(dispatchIncomingActivity(
+        c, *db, retainedSignature(activity.actor), activity, 100).has_value());
+
+    ASSIGN_OR_FAIL(auto retry_claim, db->claimIncomingActivity(
+        activity.id, 101, c.inbox_processing_lease_seconds));
+    EXPECT_EQ(retry_claim, ActivityClaimResult::CLAIMED);
+}
+
+TEST(InboxDispatch, PrunesIgnoredActivitiesWithoutRetainingSigners)
+{
+    Config c = testConfig();
+    c.seen_activity_retention_seconds = 10;
+    c.maintenance_batch_size = 2;
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    for(int i = 0; i < 3; ++i)
+    {
+        std::string actor_uri = std::format("https://remote.test/u/{}", i);
+        std::string activity_uri = std::format("https://remote.test/a/{}", i);
+        nlohmann::json raw = {
+            {"id", activity_uri},
+            {"type", "Delete"},
+            {"actor", actor_uri},
+            {"object", "https://remote.test/o/missing"},
+        };
+        ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+        RemoteActor actor = testRemoteActor(actor_uri);
+        VerifiedSignature signature{
+            actor.uri, actor.public_key_id, actor, false, false};
+        ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+            c, *db, signature, activity, 100));
+        EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+        ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor_uri));
+        EXPECT_FALSE(stored.has_value());
+    }
+
+    ASSIGN_OR_FAIL(auto first_batch, runInboxMaintenanceOnce(c, *db, 111));
+    EXPECT_EQ(first_batch, 2);
+    ASSIGN_OR_FAIL(auto second_batch, runInboxMaintenanceOnce(c, *db, 111));
+    EXPECT_EQ(second_batch, 1);
+    for(int i = 0; i < 3; ++i)
+    {
+        ASSIGN_OR_FAIL(auto claim, db->claimIncomingActivity(
+            std::format("https://remote.test/a/{}", i), 111,
+            c.inbox_processing_lease_seconds));
+        EXPECT_EQ(claim, ActivityClaimResult::CLAIMED);
+    }
+}

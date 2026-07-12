@@ -47,6 +47,12 @@ Common optional keys and defaults:
 - `http_signature_skew_seconds`: `300`.
 - `thread_fetch_max_depth`: `20`.
 - `sqlite_busy_timeout_ms`: `5000`.
+- `seen_activity_retention_seconds`: `2592000` (30 days). Completed inbox
+  activity IDs older than this are eligible for pruning.
+- `inbox_processing_lease_seconds`: `300` (5 minutes). A redelivery may
+  reclaim an unfinished inbox activity after this interval.
+- `maintenance_batch_size`: `1000`. The maximum completed activity IDs
+  removed in one SQLite maintenance transaction.
 - `job_workers`: `4`.
 - `job_max_retries`: `8`.
 - `job_retry_base_delay_seconds`: `30`.
@@ -70,6 +76,10 @@ emoji_dir: /var/lib/unspoken/emoji
 emoji_data_file: /usr/share/unspoken/data/emoji_categories.json
 template_dir: /usr/share/unspoken/templates
 static_dir: /usr/share/unspoken/static
+
+seen_activity_retention_seconds: 2592000
+inbox_processing_lease_seconds: 300
+maintenance_batch_size: 1000
 
 oidc:
   issuer: https://sso.example.org/realms/main

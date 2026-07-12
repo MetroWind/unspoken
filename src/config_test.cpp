@@ -61,6 +61,9 @@ listen_address: "127.0.0.1"
 listen_port: 8080
 database_path: ":memory:"
 attachment_dir: "/tmp"
+seen_activity_retention_seconds: 11
+inbox_processing_lease_seconds: 12
+maintenance_batch_size: 13
 oidc:
   issuer: "https://kc.example/realms/main"
   client_id: "unspoken"
@@ -73,6 +76,9 @@ oidc:
 
     ASSERT_TRUE(config.has_value()) << mw::errorMsg(config.error());
     EXPECT_EQ(config->public_domain, "f.mws.rocks");
+    EXPECT_EQ(config->seen_activity_retention_seconds, 11);
+    EXPECT_EQ(config->inbox_processing_lease_seconds, 12);
+    EXPECT_EQ(config->maintenance_batch_size, 13);
 }
 
 TEST(Config, FromYamlReadsVerbose)
@@ -205,6 +211,21 @@ TEST(Config, RejectsNonPositiveTuning)
 {
     Config c = validBase();
     c.posts_per_page = 0;
+    EXPECT_FALSE(c.validateAndFinalize().has_value());
+}
+
+TEST(Config, RejectsNonPositiveInboxRetentionTuning)
+{
+    Config c = validBase();
+    c.seen_activity_retention_seconds = 0;
+    EXPECT_FALSE(c.validateAndFinalize().has_value());
+
+    c = validBase();
+    c.inbox_processing_lease_seconds = 0;
+    EXPECT_FALSE(c.validateAndFinalize().has_value());
+
+    c = validBase();
+    c.maintenance_batch_size = 0;
     EXPECT_FALSE(c.validateAndFinalize().has_value());
 }
 
