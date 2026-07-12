@@ -2965,6 +2965,15 @@ mw::E<int64_t> runInboxMaintenanceOnce(const Config& config,
         config.maintenance_batch_size);
 }
 
+mw::E<int64_t> runRemoteActorCollectionOnce(
+    const Config& config, const DataSourceInterface& data,
+    int64_t now_seconds)
+{
+    return data.collectUnreferencedRemoteActors(
+        now_seconds - config.remote_actor_gc_grace_seconds,
+        config.maintenance_batch_size);
+}
+
 mw::E<bool> runFederationJobOnce(const Config& config,
                                  const DataSourceInterface& data,
                                  mw::CryptoInterface& crypto,

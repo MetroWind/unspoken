@@ -64,6 +64,7 @@ attachment_dir: "/tmp"
 seen_activity_retention_seconds: 11
 inbox_processing_lease_seconds: 12
 maintenance_batch_size: 13
+remote_actor_gc_grace_seconds: 14
 oidc:
   issuer: "https://kc.example/realms/main"
   client_id: "unspoken"
@@ -79,6 +80,7 @@ oidc:
     EXPECT_EQ(config->seen_activity_retention_seconds, 11);
     EXPECT_EQ(config->inbox_processing_lease_seconds, 12);
     EXPECT_EQ(config->maintenance_batch_size, 13);
+    EXPECT_EQ(config->remote_actor_gc_grace_seconds, 14);
 }
 
 TEST(Config, FromYamlReadsVerbose)
@@ -226,6 +228,10 @@ TEST(Config, RejectsNonPositiveInboxRetentionTuning)
 
     c = validBase();
     c.maintenance_batch_size = 0;
+    EXPECT_FALSE(c.validateAndFinalize().has_value());
+
+    c = validBase();
+    c.remote_actor_gc_grace_seconds = 0;
     EXPECT_FALSE(c.validateAndFinalize().has_value());
 }
 

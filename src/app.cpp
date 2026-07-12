@@ -425,6 +425,18 @@ void App::jobWorkerLoop(int worker_id) const
                 spdlog::info("Inbox maintenance pruned {} activity IDs",
                              *pruned);
             }
+            auto collected = unspoken::runRemoteActorCollectionOnce(
+                config, **db, now);
+            if(!collected.has_value())
+            {
+                spdlog::warn("Remote actor collection failed: {}",
+                             mw::errorMsg(collected.error()));
+            }
+            else if(*collected > 0)
+            {
+                spdlog::info("Remote actor collection removed {} actors",
+                             *collected);
+            }
             next_maintenance = now + 3600;
         }
         auto ran = unspoken::runFederationJobOnce(

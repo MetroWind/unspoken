@@ -80,6 +80,8 @@ struct Config
     // Maximum processed inbox activity IDs deleted by one maintenance
     // transaction.
     int maintenance_batch_size = 1000;
+    // How long an unreferenced remote actor remains before collection.
+    int remote_actor_gc_grace_seconds = 2592000;
 
     // ─── Job queue ───────────────────────────────────────────────
     int job_workers = 4;

@@ -65,6 +65,10 @@ public:
                 (int64_t), (const, override));
     MOCK_METHOD(mw::E<std::optional<RemoteActor>>, getRemoteActorByUri,
                 (std::string_view), (const, override));
+    MOCK_METHOD(mw::E<void>, touchRemoteActorRetention,
+                (std::string_view, int64_t), (const, override));
+    MOCK_METHOD(mw::E<int64_t>, collectUnreferencedRemoteActors,
+                (int64_t, int), (const, override));
 
     MOCK_METHOD(mw::E<Post>, insertPost,
                 (const NewPost&, (const std::vector<PostRecipient>&),

@@ -69,6 +69,26 @@ int64_t now()
     return mw::timeToSeconds(mw::Clock::now());
 }
 
+mw::E<void> touchRemoteActorRetentionByUri(mw::SQLite& db,
+                                           std::string_view actor_uri,
+                                           int64_t retained_at)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "UPDATE remote_actors SET retained_at = ? WHERE uri = ?;"));
+    DO_OR_RETURN((st.bind<int64_t, std::string>(
+        retained_at, std::string(actor_uri))));
+    return db.execute(std::move(st));
+}
+
+mw::E<void> touchRemoteActorRetentionById(mw::SQLite& db, int64_t actor_id,
+                                          int64_t retained_at)
+{
+    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
+        "UPDATE remote_actors SET retained_at = ? WHERE id = ?;"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t>(retained_at, actor_id)));
+    return db.execute(std::move(st));
+}
+
 // Bind a single int64 value at a 1-based positional placeholder. Used
 // where the number of placeholders varies with the cursor, so a single
 // variadic bind<>() call won't do.
@@ -1093,12 +1113,13 @@ DataSourceSQLite::getRemoteActorById(int64_t id) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(
         "SELECT id, uri, username, domain, display_name, inbox, shared_inbox, "
-        "public_key_pem, public_key_id, actor_json, fetched_at "
+        "public_key_pem, public_key_id, actor_json, fetched_at, retained_at "
         "FROM remote_actors WHERE id = ?;"));
     DO_OR_RETURN(st.bind<int64_t>(id));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
         std::string, std::string, std::string, std::optional<std::string>,
-        std::string, std::string, std::string, int64_t>(std::move(st))));
+        std::string, std::string, std::string, int64_t, int64_t>(
+            std::move(st))));
     if(rows.empty()) return std::optional<RemoteActor>{};
     const auto& r = rows[0];
     RemoteActor a;
@@ -1113,6 +1134,7 @@ DataSourceSQLite::getRemoteActorById(int64_t id) const
     a.public_key_id = std::get<8>(r);
     a.actor_json = std::get<9>(r);
     a.fetched_at = std::get<10>(r);
+    a.retained_at = std::get<11>(r);
     return std::optional<RemoteActor>{std::move(a)};
 }
 
@@ -1121,12 +1143,13 @@ DataSourceSQLite::getRemoteActorByUri(std::string_view uri) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(
         "SELECT id, uri, username, domain, display_name, inbox, shared_inbox, "
-        "public_key_pem, public_key_id, actor_json, fetched_at "
+        "public_key_pem, public_key_id, actor_json, fetched_at, retained_at "
         "FROM remote_actors WHERE uri = ?;"));
     DO_OR_RETURN(st.bind<std::string>(std::string(uri)));
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
         std::string, std::string, std::string, std::optional<std::string>,
-        std::string, std::string, std::string, int64_t>(std::move(st))));
+        std::string, std::string, std::string, int64_t, int64_t>(
+            std::move(st))));
     if(rows.empty()) return std::optional<RemoteActor>{};
     const auto& r = rows[0];
     RemoteActor a;
@@ -1141,7 +1164,18 @@ DataSourceSQLite::getRemoteActorByUri(std::string_view uri) const
     a.public_key_id = std::get<8>(r);
     a.actor_json = std::get<9>(r);
     a.fetched_at = std::get<10>(r);
+    a.retained_at = std::get<11>(r);
     return std::optional<RemoteActor>{std::move(a)};
+}
+
+mw::E<void>
+DataSourceSQLite::touchRemoteActorRetention(std::string_view actor_uri,
+                                            int64_t now_seconds) const
+{
+    auto txn = [&]() -> mw::E<void> {
+        return touchRemoteActorRetentionByUri(*db, actor_uri, now_seconds);
+    };
+    return withWriteRetry(txn);
 }
 
 // ─── Posts ─────────────────────────────────────────────────────────
@@ -1235,6 +1269,18 @@ DataSourceSQLite::insertPost(const NewPost& np,
             auto ex = db->execute(std::move(rst));
             if(!ex.has_value()) return rollback(ex.error());
         }
+        if(np.remote_author_id.has_value())
+        {
+            auto retained = touchRemoteActorRetentionById(
+                *db, *np.remote_author_id, created);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
+        for(const auto& rec : recipients)
+        {
+            auto retained = touchRemoteActorRetentionByUri(
+                *db, rec.recipient_uri, created);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
 
         return db->execute("COMMIT;");
     };
@@ -1278,7 +1324,8 @@ DataSourceSQLite::insertRemoteActorAndPost(
             "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
             "public_key_pem=excluded.public_key_pem, "
             "public_key_id=excluded.public_key_id, "
-            "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at;");
+            "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at, "
+            "retained_at=excluded.retained_at;");
         if(!actor_st_e.has_value()) return rollback(actor_st_e.error());
         auto actor_bind = actor_st_e->bind<std::string, std::string,
             std::string, std::string, std::string, std::optional<std::string>,
@@ -1333,6 +1380,12 @@ DataSourceSQLite::insertRemoteActorAndPost(
             auto rec_ex = db->execute(std::move(*rec_st_e));
             if(!rec_ex.has_value()) return rollback(rec_ex.error());
         }
+        for(const auto& recipient : recipients)
+        {
+            auto retained = touchRemoteActorRetentionByUri(
+                *db, recipient.recipient_uri, created);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
         return db->execute("COMMIT;");
     };
     DO_OR_RETURN(withWriteRetry(txn));
@@ -1378,12 +1431,38 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
 
 mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         DO_OR_RETURN(db->execute("BEGIN;"));
         auto rollback = [&](mw::Error e) -> mw::E<void> {
             (void)db->execute("ROLLBACK;");
             return std::unexpected(std::move(e));
         };
+        std::optional<int64_t> remote_author_id;
+        std::vector<std::string> recipient_uris;
+        {
+            auto st_e = db->statementFromStr(
+                "SELECT remote_author_id FROM posts WHERE id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto rows_e = db->eval<std::optional<int64_t>>(std::move(*st_e));
+            if(!rows_e.has_value()) return rollback(rows_e.error());
+            if(!rows_e->empty()) remote_author_id = std::get<0>((*rows_e)[0]);
+        }
+        {
+            auto st_e = db->statementFromStr(
+                "SELECT recipient_uri FROM post_recipients WHERE post_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto rows_e = db->eval<std::string>(std::move(*st_e));
+            if(!rows_e.has_value()) return rollback(rows_e.error());
+            for(const auto& row : *rows_e)
+            {
+                recipient_uris.push_back(std::get<0>(row));
+            }
+        }
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_recipients WHERE post_id = ?;");
@@ -1410,6 +1489,18 @@ mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
             auto ex = db->execute(std::move(*st_e));
             if(!ex.has_value()) return rollback(ex.error());
         }
+        if(remote_author_id.has_value())
+        {
+            auto retained = touchRemoteActorRetentionById(
+                *db, *remote_author_id, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
+        for(const auto& recipient_uri : recipient_uris)
+        {
+            auto retained = touchRemoteActorRetentionByUri(
+                *db, recipient_uri, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
         return db->execute("COMMIT;");
     };
     return withWriteRetry(txn);
@@ -1420,12 +1511,39 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
                              const std::vector<PostRecipient>& recipients)
     const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         DO_OR_RETURN(db->execute("BEGIN;"));
         auto rollback = [&](mw::Error e) -> mw::E<void> {
             (void)db->execute("ROLLBACK;");
             return std::unexpected(std::move(e));
         };
+        std::optional<int64_t> old_remote_author_id;
+        std::vector<std::string> old_recipient_uris;
+        {
+            auto st_e = db->statementFromStr(
+                "SELECT remote_author_id FROM posts WHERE id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto rows_e = db->eval<std::optional<int64_t>>(std::move(*st_e));
+            if(!rows_e.has_value()) return rollback(rows_e.error());
+            if(!rows_e->empty())
+                old_remote_author_id = std::get<0>((*rows_e)[0]);
+        }
+        {
+            auto st_e = db->statementFromStr(
+                "SELECT recipient_uri FROM post_recipients WHERE post_id = ?;");
+            if(!st_e.has_value()) return rollback(st_e.error());
+            auto b = st_e->bind<int64_t>(id);
+            if(!b.has_value()) return rollback(b.error());
+            auto rows_e = db->eval<std::string>(std::move(*st_e));
+            if(!rows_e.has_value()) return rollback(rows_e.error());
+            for(const auto& row : *rows_e)
+            {
+                old_recipient_uris.push_back(std::get<0>(row));
+            }
+        }
         {
             auto st_e = db->statementFromStr(
                 "UPDATE posts SET uri = ?, local_author_id = ?, "
@@ -1479,6 +1597,30 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
             if(!b.has_value()) return rollback(b.error());
             auto ex = db->execute(std::move(st));
             if(!ex.has_value()) return rollback(ex.error());
+        }
+        if(old_remote_author_id.has_value())
+        {
+            auto retained = touchRemoteActorRetentionById(
+                *db, *old_remote_author_id, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
+        if(np.remote_author_id.has_value())
+        {
+            auto retained = touchRemoteActorRetentionById(
+                *db, *np.remote_author_id, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
+        for(const auto& recipient_uri : old_recipient_uris)
+        {
+            auto retained = touchRemoteActorRetentionByUri(
+                *db, recipient_uri, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
+        }
+        for(const auto& recipient : recipients)
+        {
+            auto retained = touchRemoteActorRetentionByUri(
+                *db, recipient.recipient_uri, retained_at);
+            if(!retained.has_value()) return rollback(retained.error());
         }
         return db->execute("COMMIT;");
     };
@@ -1770,7 +1912,10 @@ mw::E<void> DataSourceSQLite::addFollow(const Follow& f) const
             f.follower_uri, f.followee_uri,
             std::string(followStateToStr(f.state)), f.follow_activity_uri,
             created)));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        DO_OR_RETURN(touchRemoteActorRetentionByUri(
+            *db, f.follower_uri, created));
+        return touchRemoteActorRetentionByUri(*db, f.followee_uri, created);
     };
     return withWriteRetry(txn);
 }
@@ -1804,6 +1949,7 @@ DataSourceSQLite::setFollowState(std::string_view follower_uri,
                                  std::string_view followee_uri,
                                  FollowState s) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "UPDATE follows SET state = ? WHERE follower_uri = ? "
@@ -1811,7 +1957,10 @@ DataSourceSQLite::setFollowState(std::string_view follower_uri,
         DO_OR_RETURN((st.bind<std::string, std::string, std::string>(
             std::string(followStateToStr(s)), std::string(follower_uri),
             std::string(followee_uri))));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        DO_OR_RETURN(touchRemoteActorRetentionByUri(
+            *db, follower_uri, retained_at));
+        return touchRemoteActorRetentionByUri(*db, followee_uri, retained_at);
     };
     return withWriteRetry(txn);
 }
@@ -1820,12 +1969,16 @@ mw::E<void>
 DataSourceSQLite::removeFollow(std::string_view follower_uri,
                                std::string_view followee_uri) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "DELETE FROM follows WHERE follower_uri = ? AND followee_uri = ?;"));
         DO_OR_RETURN((st.bind<std::string, std::string>(
             std::string(follower_uri), std::string(followee_uri))));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        DO_OR_RETURN(touchRemoteActorRetentionByUri(
+            *db, follower_uri, retained_at));
+        return touchRemoteActorRetentionByUri(*db, followee_uri, retained_at);
     };
     return withWriteRetry(txn);
 }
@@ -1938,7 +2091,8 @@ mw::E<void> DataSourceSQLite::addLike(const Like& l) const
         DO_OR_RETURN((st.bind<std::string, std::string,
             std::optional<std::string>, int64_t>(
             l.actor_uri, l.post_uri, l.activity_uri, created)));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, l.actor_uri, created);
     };
     return withWriteRetry(txn);
 }
@@ -1946,12 +2100,14 @@ mw::E<void> DataSourceSQLite::addLike(const Like& l) const
 mw::E<void> DataSourceSQLite::removeLike(std::string_view actor_uri,
                                          std::string_view post_uri) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "DELETE FROM likes WHERE actor_uri = ? AND post_uri = ?;"));
         DO_OR_RETURN((st.bind<std::string, std::string>(
             std::string(actor_uri), std::string(post_uri))));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
     };
     return withWriteRetry(txn);
 }
@@ -1991,7 +2147,8 @@ mw::E<void> DataSourceSQLite::addBoost(const Boost& b) const
         DO_OR_RETURN((st.bind<std::string, std::string,
             std::optional<std::string>, int64_t>(
             b.actor_uri, b.post_uri, b.activity_uri, created)));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, b.actor_uri, created);
     };
     return withWriteRetry(txn);
 }
@@ -1999,12 +2156,14 @@ mw::E<void> DataSourceSQLite::addBoost(const Boost& b) const
 mw::E<void> DataSourceSQLite::removeBoost(std::string_view actor_uri,
                                           std::string_view post_uri) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "DELETE FROM boosts WHERE actor_uri = ? AND post_uri = ?;"));
         DO_OR_RETURN((st.bind<std::string, std::string>(
             std::string(actor_uri), std::string(post_uri))));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
     };
     return withWriteRetry(txn);
 }
@@ -2047,7 +2206,8 @@ mw::E<void> DataSourceSQLite::addReaction(const Reaction& r) const
             std::optional<std::string>, int64_t>(
             r.actor_uri, r.post_uri, r.emoji, r.remote_emoji_url,
             r.remote_emoji_media_type, r.activity_uri, created)));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, r.actor_uri, created);
     };
     return withWriteRetry(txn);
 }
@@ -2056,6 +2216,7 @@ mw::E<void> DataSourceSQLite::removeReaction(std::string_view actor_uri,
                                              std::string_view post_uri,
                                              std::string_view emoji) const
 {
+    int64_t retained_at = now();
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "DELETE FROM reactions WHERE actor_uri = ? AND post_uri = ? "
@@ -2063,7 +2224,8 @@ mw::E<void> DataSourceSQLite::removeReaction(std::string_view actor_uri,
         DO_OR_RETURN((st.bind<std::string, std::string, std::string>(
             std::string(actor_uri), std::string(post_uri),
             std::string(emoji))));
-        return db->execute(std::move(st));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
     };
     return withWriteRetry(txn);
 }
@@ -2663,6 +2825,78 @@ mw::E<int64_t> DataSourceSQLite::pruneIncomingActivities(
     };
     DO_OR_RETURN(withWriteRetry(txn));
     return pruned;
+}
+
+mw::E<int64_t> DataSourceSQLite::collectUnreferencedRemoteActors(
+    int64_t cutoff_seconds, int batch_size) const
+{
+    if(batch_size <= 0)
+    {
+        return std::unexpected(mw::runtimeError(
+            "Remote actor collection batch size must be positive"));
+    }
+
+    int64_t collected = 0;
+    auto txn = [&]() -> mw::E<void> {
+        DO_OR_RETURN(db->execute("BEGIN IMMEDIATE;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void> {
+            (void)db->execute("ROLLBACK;");
+            return std::unexpected(std::move(e));
+        };
+        auto candidates_e = db->statementFromStr(
+            "SELECT ra.id FROM remote_actors ra "
+            "WHERE ra.retained_at < ? "
+            "AND NOT EXISTS (SELECT 1 FROM posts p "
+            "                WHERE p.remote_author_id = ra.id) "
+            "AND NOT EXISTS (SELECT 1 FROM follows f "
+            "                WHERE f.follower_uri = ra.uri "
+            "                   OR f.followee_uri = ra.uri) "
+            "AND NOT EXISTS (SELECT 1 FROM likes l "
+            "                WHERE l.actor_uri = ra.uri) "
+            "AND NOT EXISTS (SELECT 1 FROM boosts b "
+            "                WHERE b.actor_uri = ra.uri) "
+            "AND NOT EXISTS (SELECT 1 FROM reactions r "
+            "                WHERE r.actor_uri = ra.uri) "
+            "AND NOT EXISTS (SELECT 1 FROM post_recipients pr "
+            "                WHERE pr.recipient_uri = ra.uri) "
+            "ORDER BY ra.retained_at ASC, ra.id ASC LIMIT ?;");
+        if(!candidates_e.has_value()) return rollback(candidates_e.error());
+        auto candidates_bind = candidates_e->bind<int64_t, int>(
+            cutoff_seconds, batch_size);
+        if(!candidates_bind.has_value()) return rollback(candidates_bind.error());
+        auto candidates = db->eval<int64_t>(std::move(*candidates_e));
+        if(!candidates.has_value()) return rollback(candidates.error());
+
+        for(const auto& candidate : *candidates)
+        {
+            auto delete_e = db->statementFromStr(
+                "DELETE FROM remote_actors "
+                "WHERE id = ? AND retained_at < ? "
+                "AND NOT EXISTS (SELECT 1 FROM posts p "
+                "                WHERE p.remote_author_id = remote_actors.id) "
+                "AND NOT EXISTS (SELECT 1 FROM follows f "
+                "                WHERE f.follower_uri = remote_actors.uri "
+                "                   OR f.followee_uri = remote_actors.uri) "
+                "AND NOT EXISTS (SELECT 1 FROM likes l "
+                "                WHERE l.actor_uri = remote_actors.uri) "
+                "AND NOT EXISTS (SELECT 1 FROM boosts b "
+                "                WHERE b.actor_uri = remote_actors.uri) "
+                "AND NOT EXISTS (SELECT 1 FROM reactions r "
+                "                WHERE r.actor_uri = remote_actors.uri) "
+                "AND NOT EXISTS (SELECT 1 FROM post_recipients pr "
+                "                WHERE pr.recipient_uri = remote_actors.uri);");
+            if(!delete_e.has_value()) return rollback(delete_e.error());
+            auto delete_bind = delete_e->bind<int64_t, int64_t>(
+                std::get<0>(candidate), cutoff_seconds);
+            if(!delete_bind.has_value()) return rollback(delete_bind.error());
+            auto deleted = db->execute(std::move(*delete_e));
+            if(!deleted.has_value()) return rollback(deleted.error());
+            collected += db->changedRowsCount();
+        }
+        return db->execute("COMMIT;");
+    };
+    DO_OR_RETURN(withWriteRetry(txn));
+    return collected;
 }
 
 // ─── Job queue ─────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ sqlite_busy_timeout_ms: 5000
 seen_activity_retention_seconds: 2592000
 inbox_processing_lease_seconds: 300
 maintenance_batch_size: 1000
+remote_actor_gc_grace_seconds: 2592000
 
 job_workers: 4
 job_max_retries: 8

@@ -130,6 +130,7 @@ struct RemoteActor
     std::string public_key_id;  // the keyId in signatures
     std::string actor_json;     // raw cached actor doc
     int64_t fetched_at = 0;
+    int64_t retained_at = 0;    // latest local-reference transition
 };
 
 // A remote actor lookup result and whether it was retained before lookup.

@@ -91,6 +91,18 @@ int main(int argc, char** argv)
         spdlog::info("Startup inbox maintenance pruned {} activity IDs",
                      *pruned);
     }
+    auto collected = unspoken::runRemoteActorCollectionOnce(
+        *config, **db_init, maintenance_now);
+    if(!collected.has_value())
+    {
+        spdlog::warn("Startup remote actor collection failed: {}",
+                     mw::errorMsg(collected.error()));
+    }
+    else if(*collected > 0)
+    {
+        spdlog::info("Startup remote actor collection removed {} actors",
+                     *collected);
+    }
     db_init->reset();
 
     App app(*config);

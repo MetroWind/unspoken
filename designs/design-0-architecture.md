@@ -202,12 +202,12 @@ critical: **one SQLite connection per thread**, WAL mode, a configurable
 2. The HTTP signature is verified (§10), including `Digest` and clock
    skew. On failure → `401`.
 3. The body is parsed and normalized through the JSON-LD layer (§9).
-4. The activity is deduplicated by `id` (§12.6). A duplicate → `200`
-   immediately, no processing.
+4. A direct or valid forwarded delivery claims the activity ID (§12.6).
+   A completed duplicate returns `200`; a live claim returns `202`.
 5. The activity is dispatched to its handler (`Create`, `Follow`, …).
    Anything slow (e.g. fetching a referenced object) is enqueued.
-6. Return `202 Accepted` (we accept responsibility; processing may be
-   async).
+6. Successful dispatch finalizes the claim; a failed dispatch releases it
+   for redelivery. Ignored and duplicate activities return `200`.
 
 **Outbound delivery** (we publish something):
 1. A handler/service creates the local object + activity in the DB.
@@ -596,10 +596,13 @@ CREATE TABLE pending_logins (
     created_at      INTEGER NOT NULL
 );
 
--- Dedup of processed incoming activities (decision C2).
+-- Inbox deduplication claims. Completed IDs are pruned by bounded
+-- maintenance after their configured retention period.
 CREATE TABLE seen_activities (
     activity_uri    TEXT PRIMARY KEY,
-    seen_at         INTEGER NOT NULL
+    state           TEXT NOT NULL,
+    claimed_at      INTEGER,
+    processed_at    INTEGER
 );
 
 -- Persisted job queue (PRD line 146).
@@ -956,9 +959,13 @@ On first encounter with a remote actor URI:
 3. Derive the `domain` for the handle (the host of the actor `id`, unless
    the actor advertises a different WebFinger-canonical handle — for v1,
    host of the id is acceptable).
-4. `upsertRemoteActor` into the DB cache.
+4. Return a transient actor document. Stateful operations explicitly retain
+   it only when they create a durable post, follow, interaction, or
+   recipient relationship.
 
-Re-fetch on the key-rotation path (§10.1 step 7) updates this row.
+Re-fetch on the key-rotation path (§10.1 step 7) updates an already retained
+row only after the new key verifies the request. Verification traffic alone
+does not extend actor retention.
 
 ### 12.4 WebFinger and NodeInfo (decision C3)
 
@@ -1009,10 +1016,10 @@ The inbox handler (HTML-irrelevant; pure AP):
 
 1. **Verify signature** (§10). Fail → `401`.
 2. **Parse + normalize** (§9).
-3. **Dedup:** `markActivitySeen(activity.id)`. If it returns "already
-   seen", return `200` immediately without processing (idempotent
-   redelivery).
-4. **Inbox forwarding check** (§12.7) — may forward.
+3. **Forwarding check:** establish direct delivery or validate a forwarded
+   activity before claiming its ID (§12.7).
+4. **Claim:** acquire an activity-ID lease. A completed duplicate returns
+   `200`; a live claim returns `202`.
 5. **Dispatch by `type`:**
 
 | Type | Action |
@@ -1029,7 +1036,9 @@ The inbox handler (HTML-irrelevant; pure AP):
 
 Anything requiring a slow remote fetch (e.g. resolving an unknown author,
 fetching a missing parent) is enqueued as a job; the inbox returns
-`202 Accepted` promptly.
+`202 Accepted` when it applies or forwards state. Successful ignored
+activities are finalized and return `200`; dispatch failures release their
+claim so redelivery can retry.
 
 ### 12.7 Inbox forwarding, AP §8.1.2 (decision E3)
 
@@ -1043,8 +1052,8 @@ collection **only when all three hold**:
    resolves (recursively, bounded by `thread_fetch_max_depth`) to an
    object we host.
 
-When all hold, deliver the **original activity verbatim** to that
-followers collection (sharedInbox-preferred).
+When all hold, deliver an activity constructed from the origin-refetched
+object to that followers collection (sharedInbox-preferred).
 
 **Verifying forwarded activities:** the HTTP signature on a forwarded
 activity belongs to the *forwarder*, not the original author, so it can't

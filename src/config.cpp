@@ -194,6 +194,7 @@ mw::E<void> Config::validateAndFinalize()
         {"seen_activity_retention_seconds", seen_activity_retention_seconds},
         {"inbox_processing_lease_seconds", inbox_processing_lease_seconds},
         {"maintenance_batch_size", maintenance_batch_size},
+        {"remote_actor_gc_grace_seconds", remote_actor_gc_grace_seconds},
         {"job_workers", job_workers},
         {"job_max_retries", job_max_retries},
         {"job_retry_base_delay_seconds", job_retry_base_delay_seconds},
@@ -283,6 +284,8 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
             config.inbox_processing_lease_seconds);
     readInt(child(root, "maintenance_batch_size"),
             config.maintenance_batch_size);
+    readInt(child(root, "remote_actor_gc_grace_seconds"),
+            config.remote_actor_gc_grace_seconds);
 
     readInt(child(root, "job_workers"), config.job_workers);
     readInt(child(root, "job_max_retries"), config.job_max_retries);

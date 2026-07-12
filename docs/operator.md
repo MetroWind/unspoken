@@ -53,6 +53,8 @@ Common optional keys and defaults:
   reclaim an unfinished inbox activity after this interval.
 - `maintenance_batch_size`: `1000`. The maximum completed activity IDs
   removed in one SQLite maintenance transaction.
+- `remote_actor_gc_grace_seconds`: `2592000` (30 days). Unreferenced remote
+  actors remain available for this grace period before collection.
 - `job_workers`: `4`.
 - `job_max_retries`: `8`.
 - `job_retry_base_delay_seconds`: `30`.
@@ -80,6 +82,7 @@ static_dir: /usr/share/unspoken/static
 seen_activity_retention_seconds: 2592000
 inbox_processing_lease_seconds: 300
 maintenance_batch_size: 1000
+remote_actor_gc_grace_seconds: 2592000
 
 oidc:
   issuer: https://sso.example.org/realms/main

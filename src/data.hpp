@@ -98,6 +98,15 @@ public:
     getRemoteActorById(int64_t id) const = 0;
     virtual mw::E<std::optional<RemoteActor>>
     getRemoteActorByUri(std::string_view uri) const = 0;
+    // Record that local durable state added or removed an actor reference.
+    virtual mw::E<void>
+    touchRemoteActorRetention(std::string_view actor_uri,
+                              int64_t now_seconds) const = 0;
+    // Delete up to batch_size remote actors that passed their retention grace
+    // period and have no durable local references.
+    virtual mw::E<int64_t>
+    collectUnreferencedRemoteActors(int64_t cutoff_seconds,
+                                    int batch_size) const = 0;
 
     // ── Posts ───────────────────────────────────────────────────
     // Inserts the post and its recipients. For local posts (uri unset)
@@ -321,6 +330,12 @@ public:
     getRemoteActorById(int64_t id) const override;
     mw::E<std::optional<RemoteActor>>
     getRemoteActorByUri(std::string_view uri) const override;
+    mw::E<void>
+    touchRemoteActorRetention(std::string_view actor_uri,
+                              int64_t now_seconds) const override;
+    mw::E<int64_t>
+    collectUnreferencedRemoteActors(int64_t cutoff_seconds,
+                                    int batch_size) const override;
 
     mw::E<Post> insertPost(const NewPost& np,
                            const std::vector<PostRecipient>& recipients,

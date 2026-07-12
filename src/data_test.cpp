@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,6 +48,20 @@ Post insertLocalPost(const DataSourceSQLite& db, int64_t author_id,
     auto r = db.insertPost(np, {}, "https://f.test/p/");
     EXPECT_TRUE(mw::isExpected(r));
     return r.value();
+}
+
+RemoteActor sampleRemoteActor(const std::string& uri)
+{
+    RemoteActor actor;
+    actor.uri = uri;
+    actor.username = "remote";
+    actor.domain = "remote.test";
+    actor.display_name = "Remote";
+    actor.inbox = uri + "/inbox";
+    actor.public_key_pem = "PUB";
+    actor.public_key_id = uri + "#main-key";
+    actor.actor_json = "{}";
+    return actor;
 }
 
 } // namespace
@@ -262,14 +277,19 @@ TEST(Data, RemoteActorUpsert)
     a.public_key_pem = "PUB";
     a.public_key_id = a.uri + "#main-key";
     a.actor_json = "{}";
+    a.fetched_at = 1;
     ASSIGN_OR_FAIL(RemoteActor stored, db->upsertRemoteActor(a));
     EXPECT_GT(stored.id, 0);
+    EXPECT_EQ(stored.retained_at, 1);
 
     // Upsert again with a new display name updates in place.
     a.display_name = "Bobby";
+    a.fetched_at = 2;
     ASSIGN_OR_FAIL(RemoteActor stored2, db->upsertRemoteActor(a));
     EXPECT_EQ(stored2.id, stored.id);
     EXPECT_EQ(stored2.display_name, "Bobby");
+    EXPECT_EQ(stored2.fetched_at, 2);
+    EXPECT_EQ(stored2.retained_at, 1);
 
     ASSIGN_OR_FAIL(auto got, db->getRemoteActorByUri(a.uri));
     ASSERT_TRUE(got.has_value());
@@ -277,6 +297,79 @@ TEST(Data, RemoteActorUpsert)
     ASSIGN_OR_FAIL(auto by_id, db->getRemoteActorById(stored.id));
     ASSERT_TRUE(by_id.has_value());
     EXPECT_EQ(by_id->uri, a.uri);
+}
+
+TEST(Data, CollectsOnlyExpiredUnreferencedRemoteActors)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    std::vector<RemoteActor> actors;
+    for(int i = 0; i < 8; ++i)
+    {
+        ASSIGN_OR_FAIL(auto actor, db->upsertRemoteActor(sampleRemoteActor(
+            std::format("https://remote.test/u/{}", i))));
+        ASSERT_TRUE(db->touchRemoteActorRetention(actor.uri, 1).has_value());
+        actors.push_back(std::move(actor));
+    }
+
+    NewPost remote_post;
+    remote_post.uri = "https://remote.test/p/author";
+    remote_post.remote_author_id = actors[1].id;
+    remote_post.content_html = "remote post";
+    remote_post.visibility = Visibility::PUBLIC;
+    ASSERT_TRUE(db->insertPost(remote_post, {}, "https://f.test/p/").has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[1].uri, 1).has_value());
+
+    ASSERT_TRUE(db->addFollow(Follow{0, actors[2].uri,
+                                     "https://f.test/u/alice",
+                                     FollowState::ACCEPTED, {}, 0}).has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[2].uri, 1).has_value());
+    ASSERT_TRUE(db->addLike(Like{0, actors[3].uri,
+                                 "https://f.test/p/1", {}, 0}).has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[3].uri, 1).has_value());
+    ASSERT_TRUE(db->addBoost(Boost{0, actors[4].uri,
+                                   "https://f.test/p/1", {}, 0}).has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[4].uri, 1).has_value());
+    ASSERT_TRUE(db->addReaction(Reaction{0, actors[5].uri,
+                                         "https://f.test/p/1", "👍",
+                                         {}, {}, {}, 0}).has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[5].uri, 1).has_value());
+    NewPost recipient_post;
+    recipient_post.local_author_id = 1;
+    recipient_post.content_html = "recipient";
+    recipient_post.visibility = Visibility::PUBLIC;
+    ASSERT_TRUE(db->insertPost(
+        recipient_post, {{0, actors[6].uri, "to"}}, "https://f.test/p/")
+                    .has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actors[6].uri, 1).has_value());
+
+    ASSIGN_OR_FAIL(auto first, db->collectUnreferencedRemoteActors(2, 1));
+    EXPECT_EQ(first, 1);
+    ASSIGN_OR_FAIL(auto first_actor, db->getRemoteActorByUri(actors[0].uri));
+    EXPECT_FALSE(first_actor.has_value());
+    ASSIGN_OR_FAIL(auto second, db->collectUnreferencedRemoteActors(2, 1));
+    EXPECT_EQ(second, 1);
+    ASSIGN_OR_FAIL(auto second_actor, db->getRemoteActorByUri(actors[7].uri));
+    EXPECT_FALSE(second_actor.has_value());
+    for(int i = 1; i < 7; ++i)
+    {
+        ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(actors[i].uri));
+        EXPECT_TRUE(actor.has_value());
+    }
+}
+
+TEST(Data, RemovingInteractionRestartsActorCollectionGracePeriod)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto actor, db->upsertRemoteActor(
+        sampleRemoteActor("https://remote.test/u/interaction")));
+    ASSERT_TRUE(db->touchRemoteActorRetention(actor.uri, 1).has_value());
+    ASSERT_TRUE(db->addLike(
+        Like{0, actor.uri, "https://f.test/p/1", {}, 0}).has_value());
+    ASSERT_TRUE(db->touchRemoteActorRetention(actor.uri, 1).has_value());
+    ASSERT_TRUE(db->removeLike(actor.uri, "https://f.test/p/1").has_value());
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_GT(stored->retained_at, 1);
 }
 
 TEST(Data, SystemActorRoundTrip)

@@ -213,6 +213,10 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
 mw::E<int64_t> runInboxMaintenanceOnce(const Config& config,
                                        const DataSourceInterface& data,
                                        int64_t now_seconds);
+// Collect expired remote actors that have no durable local references.
+mw::E<int64_t> runRemoteActorCollectionOnce(
+    const Config& config, const DataSourceInterface& data,
+    int64_t now_seconds);
 
 // Claims and processes at most one runnable federation job. Returns true
 // when a job was claimed, false when the queue was empty.
