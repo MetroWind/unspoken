@@ -741,6 +741,44 @@ class UnspokenDatabase:
         return rows[0] if rows else None
 
 
+class LifecyclePeerControl:
+    """Control the signed test peer used by actor-lifecycle interop checks."""
+
+    def __init__(self, base_url: str) -> None:
+        """Create a control client for the lifecycle peer."""
+        self.base_url = base_url.rstrip("/")
+
+    def actorUri(self, name: str = "main") -> str:
+        """Return the ActivityPub URI of one lifecycle peer actor."""
+        path = "/actor" if name == "main" else "/transient-actor"
+        return self.base_url + path
+
+    def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Send one runner-only JSON control request to the peer."""
+        request = urllib.request.Request(
+            self.base_url + path, data=jsonData(body), method="POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(
+                    f"Lifecycle peer {path} returned {response.status}")
+            return json.loads(response.read().decode("utf-8", "replace"))
+
+    def rotate(self) -> str:
+        """Rotate the main peer actor key and return its new key ID."""
+        return str(self.post("/rotate", {"actor": "main"})["key_id"])
+
+    def deliver(self, actor: str, target: str,
+                activity: dict[str, Any]) -> int:
+        """Ask one peer actor to sign and deliver an activity."""
+        result = self.post("/deliver", {
+            "actor": actor,
+            "target": target,
+            "activity": activity,
+        })
+        return int(result["status"])
+
+
 def waitUntil(name: str, probe: Callable[[], Any]) -> Any:
     """Poll a probe until it returns a truthy value or times out."""
     deadline = time.monotonic() + TIMEOUT_SECONDS
@@ -1524,6 +1562,133 @@ def runRetryRecover(akkoma_url: str, db_path: str,
     }
 
 
+def runActorLifecyclePrepare(unspoken_url: str, akkoma_url: str,
+                             fake_oidc_url: str, lifecycle_peer_url: str,
+                             db_path: str) -> dict[str, Any]:
+    """Exercise real key rotation and preserve state for restart checks."""
+    ctx = Phase4Context(unspoken_url, akkoma_url, fake_oidc_url, db_path)
+    ctx.setup()
+    ctx.ensureFollowBothDirections()
+    peer = LifecyclePeerControl(lifecycle_peer_url)
+    stamp = str(int(time.time()))
+    target = f"{ctx.unspoken_url}/inbox"
+    main_actor = peer.actorUri()
+
+    follow_id = f"{main_actor}/activities/follow/{stamp}"
+    follow_status = peer.deliver("main", target, {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": follow_id,
+        "type": "Follow",
+        "actor": main_actor,
+        "object": ctx.aliceActor,
+    })
+    if follow_status not in (200, 202):
+        raise RuntimeError(f"Lifecycle Follow returned {follow_status}")
+    follow = waitUntil(
+        "Unspoken stores lifecycle peer follow",
+        lambda: ctx.db.follow(main_actor, ctx.aliceActor))
+    retained = ctx.db.remoteActorByUri(main_actor)
+    if retained is None:
+        raise RuntimeError("Relevant lifecycle Follow did not retain signer")
+
+    local_id, local_uri, _ = ctx.createAlicePostSeenByAkkoma("key-rotation")
+    new_key_id = peer.rotate()
+    like_id = f"{main_actor}/activities/like/{stamp}"
+    like_status = peer.deliver("main", target, {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": like_id,
+        "type": "Like",
+        "actor": main_actor,
+        "object": local_uri,
+    })
+    if like_status not in (200, 202):
+        raise RuntimeError(f"Rotated-key Like returned {like_status}")
+    waitUntil("Unspoken stores rotated-key Like",
+              lambda: ctx.db.likesForPost(local_uri))
+    refreshed = waitUntil(
+        "Unspoken stores verified rotated key",
+        lambda: (
+            actor if (actor := ctx.db.remoteActorByUri(main_actor))
+            and actor.get("public_key_id") == new_key_id else None
+        ))
+
+    transient_actor = peer.actorUri("transient")
+    delete_id = f"{transient_actor}/activities/delete/{stamp}"
+    delete_status = peer.deliver("transient", target, {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "id": delete_id,
+        "type": "Delete",
+        "actor": transient_actor,
+        "object": f"{transient_actor}/objects/missing-{stamp}",
+    })
+    if delete_status not in (200, 202):
+        raise RuntimeError(
+            f"Unknown-object Delete returned {delete_status}")
+    if ctx.db.remoteActorByUri(transient_actor) is not None:
+        raise RuntimeError("Unknown-object Delete retained transient signer")
+    if ctx.db.countSeenActivity(delete_id) != 1:
+        raise RuntimeError("Unknown-object Delete was not finalized once")
+
+    remote_status, remote_post = ctx.createBobPostSeenByUnspoken(
+        "restart-author")
+    return {
+        "name": "phase_7_actor_lifecycle_prepare",
+        "status": "passed",
+        "objects": {
+            "follow_activity": follow.get("follow_activity_uri"),
+            "retained_actor": retained["uri"],
+            "rotated_key_id": refreshed["public_key_id"],
+            "rotated_like_activity": like_id,
+            "unknown_delete_activity": delete_id,
+            "transient_actor": transient_actor,
+            "remote_post_id": remote_post["id"],
+            "remote_post_uri": remote_status["uri"],
+        },
+    }
+
+
+def runActorLifecycleVerify(unspoken_url: str, akkoma_url: str,
+                            fake_oidc_url: str, db_path: str,
+                            remote_post_id: int, remote_post_uri: str
+                            ) -> dict[str, Any]:
+    """Verify retained follows and stored remote authors after restart."""
+    unspoken = UnspokenControl(unspoken_url, fake_oidc_url)
+    akkoma = AkkomaControl(akkoma_url)
+    db = UnspokenDatabase(db_path)
+    akkoma.createUser("bob")
+    bob_token = akkoma.login("bob")
+    unspoken.login("alice")
+    bob_actor = f"{akkoma_url.rstrip('/')}/users/bob"
+    alice_actor = f"{unspoken_url.rstrip('/')}/u/alice"
+    follow = db.follow(bob_actor, alice_actor)
+    if follow is None or follow.get("state") != "accepted":
+        raise RuntimeError("Inbound relevant Follow did not survive restart")
+    if db.remoteActorByUri(bob_actor) is None:
+        raise RuntimeError("Inbound follower actor did not survive restart")
+
+    remote_html = unspoken.browser("alice").get(
+        f"{unspoken_url.rstrip('/')}/p/{remote_post_id}")
+    requireStatus(remote_html, 200, "render stored remote post after restart")
+    if "restart-author" not in remote_html.body:
+        raise RuntimeError("Stored remote post did not render after restart")
+
+    post_id = unspoken.createPost(
+        "alice", {"content": f"phase 7 restart delivery {int(time.time())}"})
+    post_uri = f"{unspoken_url.rstrip('/')}/p/{post_id}"
+    delivered = waitUntil(
+        "Akkoma receives post after Unspoken restart",
+        lambda: akkoma.searchStatus(bob_token, post_uri))
+    return {
+        "name": "phase_7_actor_lifecycle_restart_verify",
+        "status": "passed",
+        "objects": {
+            "remote_post_uri": remote_post_uri,
+            "restart_delivery_post_uri": post_uri,
+            "akkoma_status_id": delivered["id"],
+        },
+    }
+
+
 def writeResults(path: str, status: str, tests: list[dict[str, Any]],
                   error: str | None = None) -> None:
     """Write the interop runner result artifact as JSON."""
@@ -1547,6 +1712,8 @@ def main() -> int:
     akkoma_url = os.environ.get("AKKOMA_URL", "http://akkoma.test:4000")
     fake_oidc_url = os.environ.get(
         "FAKE_OIDC_URL", "http://fake-oidc.test:9000")
+    lifecycle_peer_url = os.environ.get(
+        "LIFECYCLE_PEER_URL", "http://lifecycle-peer.test:8090")
     results_path = os.environ.get("RESULTS_PATH", "/artifacts/results.json")
     db_path = os.environ.get("UNSPOKEN_DB", "/unspoken-data/unspoken.db")
     only = os.environ.get("INTEROP_ONLY", "")
@@ -1558,6 +1725,32 @@ def main() -> int:
     }
     tests = [readiness]
     try:
+        if only == "actor_lifecycle_prepare":
+            readiness["checks"].append(
+                waitFor("unspoken", f"{unspoken_url}/health"))
+            readiness["checks"].append(waitFor(
+                "akkoma", f"{akkoma_url}/api/v1/instance"))
+            readiness["checks"].append(waitFor(
+                "lifecycle peer", f"{lifecycle_peer_url}/health"))
+            tests.append(runActorLifecyclePrepare(
+                unspoken_url, akkoma_url, fake_oidc_url, lifecycle_peer_url,
+                db_path))
+            writeResults(results_path, "passed", tests)
+            return 0
+        if only == "actor_lifecycle_verify":
+            remote_post_id = int(os.environ.get("LIFECYCLE_REMOTE_POST_ID", "0"))
+            remote_post_uri = os.environ.get("LIFECYCLE_REMOTE_POST_URI", "")
+            if remote_post_id <= 0 or not remote_post_uri:
+                raise RuntimeError("Lifecycle restart artifacts are required")
+            readiness["checks"].append(
+                waitFor("unspoken", f"{unspoken_url}/health"))
+            readiness["checks"].append(waitFor(
+                "akkoma", f"{akkoma_url}/api/v1/instance"))
+            tests.append(runActorLifecycleVerify(
+                unspoken_url, akkoma_url, fake_oidc_url, db_path,
+                remote_post_id, remote_post_uri))
+            writeResults(results_path, "passed", tests)
+            return 0
         if only == "retry_prepare":
             readiness["checks"].append(
                 waitFor("unspoken", f"{unspoken_url}/health"))

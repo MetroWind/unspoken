@@ -2,9 +2,10 @@
 
 This directory contains the disposable Akkoma interop lab for `unspoken`.
 It starts `unspoken`, a fake OpenID Connect provider, Akkoma, PostgreSQL,
-and a Python runner in one Docker Compose project. The runner talks to
-both servers from inside the Compose network, so no public DNS, public TLS,
-host PostgreSQL, host Redis, or `/etc/hosts` edits are required.
+a controllable ActivityPub lifecycle peer, and a Python runner in one Docker
+Compose project. The runner talks to both servers from inside the Compose
+network, so no public DNS, public TLS, host PostgreSQL, host Redis, or
+`/etc/hosts` edits are required.
 
 The harness is development and release-test infrastructure. It is not part
 of the production deployment path.
@@ -46,6 +47,8 @@ and builds the Akkoma, `unspoken`, fake-OIDC, and runner images.
 `test` runs the Python interop suite against an already running stack. It
 also runs the retry/recovery check by stopping Akkoma, creating an outbound
 delivery, restarting Akkoma, and confirming the queued delivery recovers.
+It also restarts Unspoken after a lifecycle-peer delivery to verify that an
+inbound follower remains deliverable and a remote post still renders.
 
 `down` stops containers but keeps Docker volumes. This preserves federation
 state for inspection.
@@ -69,6 +72,7 @@ The Compose network provides stable test hostnames:
 - `http://unspoken.test:8080`
 - `http://akkoma.test:4000`
 - `http://fake-oidc.test:9000`
+- `http://lifecycle-peer.test:8090`
 
 Host ports are exposed only for debugging:
 
@@ -101,6 +105,16 @@ dev:
 
 The allowlist is host-based and explicit. It is not a wildcard and does
 not make cloud metadata addresses valid test targets.
+
+## Actor Lifecycle Coverage
+
+The lifecycle peer serves actor documents and can rotate its RSA key between
+signed deliveries. The test stages verify a real retained-key rotation, an
+unknown-object `Delete` from a transient signer, and restart persistence for
+an inbound follow and a stored remote post author. It is intentionally a
+small purpose-built peer: Akkoma remains the compatibility peer for normal
+federation behavior, while the lifecycle peer makes those timing-sensitive
+security cases deterministic.
 
 ## Artifacts
 

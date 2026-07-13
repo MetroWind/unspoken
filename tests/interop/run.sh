@@ -51,19 +51,50 @@ print(result["tests"][-1]["objects"][os.environ["FIELD"]])
 PY
 }
 
+lifecycle_artifact()
+{
+    RESULT_FILE="$SCRIPT_DIR/.artifacts/actor_lifecycle_prepare.json" \
+        FIELD="$1" python3 - <<'PY'
+import json
+import os
+with open(os.environ["RESULT_FILE"], encoding="utf-8") as f:
+    result = json.load(f)
+print(result["tests"][-1]["objects"][os.environ["FIELD"]])
+PY
+}
+
 cmd="${1:-}"
 case "$cmd" in
     build)
         build_cmake
-        compose build akkoma unspoken fake-oidc interop-runner
+        compose build akkoma unspoken fake-oidc lifecycle-peer interop-runner
         ;;
     up)
         build_cmake
-        compose up -d --build postgres akkoma fake-oidc unspoken
+        compose up -d --build postgres akkoma fake-oidc lifecycle-peer unspoken
         ;;
     test)
         compose build interop-runner
         if ! compose run --rm interop-runner; then
+            print_logs
+            exit 1
+        fi
+        if ! compose run --no-deps --rm \
+            -e INTEROP_ONLY=actor_lifecycle_prepare \
+            -e RESULTS_PATH=/artifacts/actor_lifecycle_prepare.json \
+            interop-runner; then
+            print_logs
+            exit 1
+        fi
+        remote_post_id=$(lifecycle_artifact remote_post_id)
+        remote_post_uri=$(lifecycle_artifact remote_post_uri)
+        compose restart unspoken
+        if ! compose run --no-deps --rm \
+            -e INTEROP_ONLY=actor_lifecycle_verify \
+            -e LIFECYCLE_REMOTE_POST_ID="$remote_post_id" \
+            -e LIFECYCLE_REMOTE_POST_URI="$remote_post_uri" \
+            -e RESULTS_PATH=/artifacts/actor_lifecycle_verify.json \
+            interop-runner; then
             print_logs
             exit 1
         fi

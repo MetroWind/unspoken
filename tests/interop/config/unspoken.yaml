@@ -35,3 +35,4 @@ dev:
   allow_http_url_root: true
   outbound_allow_private_hosts:
     - akkoma.test
+    - lifecycle-peer.test

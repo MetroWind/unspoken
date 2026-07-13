@@ -103,6 +103,19 @@ services:
         aliases:
           - fake-oidc.test
 
+  lifecycle-peer:
+    build:
+      context: lifecycle_peer
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8090/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      feditest:
+        aliases:
+          - lifecycle-peer.test
+
   interop-runner:
     build:
       context: runner
@@ -111,12 +124,15 @@ services:
         condition: service_healthy
       fake-oidc:
         condition: service_healthy
+      lifecycle-peer:
+        condition: service_healthy
       unspoken:
         condition: service_healthy
     environment:
       UNSPOKEN_URL: http://unspoken.test:8080
       AKKOMA_URL: http://akkoma.test:4000
       FAKE_OIDC_URL: http://fake-oidc.test:9000
+      LIFECYCLE_PEER_URL: http://lifecycle-peer.test:8090
       RESULTS_PATH: /artifacts/results.json
     networks:
       - feditest

@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <mw/database.hpp>
 #include <mw/error.hpp>
 #include <mw/test_utils.hpp>
 
@@ -127,6 +128,102 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
     EXPECT_FALSE(post17_attachments[0].sensitive);
 
     removeTempDb();
+}
+
+TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
+{
+    namespace fs = std::filesystem;
+    fs::path fixture = "tests/fixtures/db/v1.sqlite";
+    fs::path path = fs::temp_directory_path()
+        / "unspoken_v2_migration_test.sqlite";
+    auto remove_temp_db = [&]() {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+        fs::remove(path.string() + "-wal", ignored);
+        fs::remove(path.string() + "-shm", ignored);
+    };
+    remove_temp_db();
+    std::error_code ec;
+    fs::copy_file(fixture, path, fs::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    {
+        ASSIGN_OR_FAIL(auto conn, mw::SQLite::connectFile(path.string()));
+        DataSourceSQLite version_two(std::move(conn));
+        ASSERT_TRUE(version_two.migrate1To2().has_value());
+        ASSIGN_OR_FAIL(auto version, version_two.getSchemaVersion());
+        EXPECT_EQ(version, 2);
+    }
+    {
+        ASSIGN_OR_FAIL(auto conn, mw::SQLite::connectFile(path.string()));
+        ASSERT_TRUE(conn->execute(
+            "INSERT INTO remote_actors "
+            "(uri, username, domain, display_name, inbox, shared_inbox, "
+            "public_key_pem, public_key_id, actor_json, fetched_at) VALUES "
+            "('https://remote.test/u/bob', 'bob', 'remote.test', 'Bob', "
+            "'https://remote.test/u/bob/inbox', NULL, 'PUB', "
+            "'https://remote.test/u/bob#main-key', '{}', 1234);").has_value());
+        ASSERT_TRUE(conn->execute(
+            "INSERT INTO seen_activities (activity_uri, seen_at) VALUES "
+            "('https://remote.test/a/old', 4321);").has_value());
+    }
+
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
+    ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
+    EXPECT_EQ(version, 3);
+    ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
+        "https://remote.test/u/bob"));
+    ASSERT_TRUE(actor.has_value());
+    EXPECT_EQ(actor->username, "bob");
+    EXPECT_EQ(actor->fetched_at, 1234);
+    EXPECT_EQ(actor->retained_at, 1234);
+    ASSIGN_OR_FAIL(auto claim, db->claimIncomingActivity(
+        "https://remote.test/a/old", 5000, 10));
+    EXPECT_EQ(claim, ActivityClaimResult::ALREADY_PROCESSED);
+    remove_temp_db();
+}
+
+TEST(Data, FailedVersionTwoMigrationRollsBackSchemaChanges)
+{
+    namespace fs = std::filesystem;
+    fs::path fixture = "tests/fixtures/db/v1.sqlite";
+    fs::path path = fs::temp_directory_path()
+        / "unspoken_v2_migration_rollback_test.sqlite";
+    auto remove_temp_db = [&]() {
+        std::error_code ignored;
+        fs::remove(path, ignored);
+        fs::remove(path.string() + "-wal", ignored);
+        fs::remove(path.string() + "-shm", ignored);
+    };
+    remove_temp_db();
+    std::error_code ec;
+    fs::copy_file(fixture, path, fs::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    {
+        ASSIGN_OR_FAIL(auto conn, mw::SQLite::connectFile(path.string()));
+        DataSourceSQLite version_two(std::move(conn));
+        ASSERT_TRUE(version_two.migrate1To2().has_value());
+    }
+    {
+        ASSIGN_OR_FAIL(auto conn, mw::SQLite::connectFile(path.string()));
+        ASSERT_TRUE(conn->execute(
+            "CREATE TRIGGER fail_v2_to_v3_retention_update "
+            "BEFORE UPDATE OF retained_at ON remote_actors "
+            "BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;")
+                        .has_value());
+    }
+    EXPECT_FALSE(DataSourceSQLite::fromFile(path.string()).has_value());
+    ASSIGN_OR_FAIL(auto conn, mw::SQLite::connectFile(path.string()));
+    ASSIGN_OR_FAIL(auto version, conn->evalToValue<int64_t>(
+        "PRAGMA user_version;"));
+    EXPECT_EQ(version, 2);
+    ASSIGN_OR_FAIL(auto columns, conn->eval<std::string>(
+        "SELECT name FROM pragma_table_info('remote_actors');"));
+    EXPECT_EQ(std::count_if(columns.begin(), columns.end(),
+                            [](const auto& column) {
+        return std::get<0>(column) == "retained_at";
+    }), 0);
+    remove_temp_db();
 }
 
 TEST(Data, UserRoundTrip)
@@ -370,6 +467,18 @@ TEST(Data, RemovingInteractionRestartsActorCollectionGracePeriod)
     ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(stored.has_value());
     EXPECT_GT(stored->retained_at, 1);
+}
+
+TEST(Data, RecentUnreferencedActorWaitsForCollectionGracePeriod)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto actor, db->upsertRemoteActor(
+        sampleRemoteActor("https://remote.test/u/recent")));
+    ASSERT_TRUE(db->touchRemoteActorRetention(actor.uri, 100).has_value());
+    ASSIGN_OR_FAIL(auto deleted, db->collectUnreferencedRemoteActors(100, 10));
+    EXPECT_EQ(deleted, 0);
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    EXPECT_TRUE(stored.has_value());
 }
 
 TEST(Data, SystemActorRoundTrip)
@@ -680,6 +789,10 @@ TEST(Data, ActivityDedupClaimFinalizeReleaseAndPrune)
                    db->claimIncomingActivity("https://a/3", 10, 10));
     EXPECT_EQ(reclaimed_expired, ActivityClaimResult::CLAIMED);
 
+    ASSIGN_OR_FAIL(auto processing,
+                   db->claimIncomingActivity("https://a/processing", 0, 100));
+    EXPECT_EQ(processing, ActivityClaimResult::CLAIMED);
+
     ASSIGN_OR_FAIL(auto old, db->claimIncomingActivity("https://a/old", 0, 10));
     EXPECT_EQ(old, ActivityClaimResult::CLAIMED);
     EXPECT_TRUE(mw::isExpected(db->finalizeIncomingActivity(
@@ -696,6 +809,9 @@ TEST(Data, ActivityDedupClaimFinalizeReleaseAndPrune)
     EXPECT_EQ(old_again, ActivityClaimResult::CLAIMED);
     ASSIGN_OR_FAIL(auto remaining_pruned, db->pruneIncomingActivities(21, 10));
     EXPECT_EQ(remaining_pruned, 1);
+    ASSIGN_OR_FAIL(auto still_processing,
+                   db->claimIncomingActivity("https://a/processing", 21, 100));
+    EXPECT_EQ(still_processing, ActivityClaimResult::IN_PROGRESS);
     ASSIGN_OR_FAIL(auto newer_again,
                    db->claimIncomingActivity("https://a/newer", 21, 10));
     EXPECT_EQ(newer_again, ActivityClaimResult::CLAIMED);

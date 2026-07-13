@@ -66,6 +66,21 @@ RemoteActor testRemoteActor(const std::string& uri)
     return actor;
 }
 
+nlohmann::json remoteActorDocument(const RemoteActor& actor)
+{
+    return {
+        {"id", actor.uri},
+        {"type", "Person"},
+        {"preferredUsername", actor.username},
+        {"inbox", actor.inbox},
+        {"publicKey", {
+            {"id", actor.public_key_id},
+            {"owner", actor.uri},
+            {"publicKeyPem", actor.public_key_pem},
+        }},
+    };
+}
+
 VerifiedSignature retainedSignature(const RemoteActor& actor)
 {
     return {actor.uri, actor.public_key_id, actor, true, false};
@@ -882,6 +897,28 @@ TEST(RemoteActor, RejectsPartialActorDocumentWithoutCaching)
     EXPECT_FALSE(cached.has_value());
 }
 
+TEST(RemoteActor, RejectsInvalidPublicKeyMetadata)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system{keys.private_key, keys.public_key};
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    FakeSession http;
+
+    auto missing_key = remoteActorDocument(actor);
+    missing_key["publicKey"].erase("publicKeyPem");
+    http.response = mw::HTTPResponse(200, missing_key.dump());
+    EXPECT_FALSE(fetchRemoteActor(c, crypto, http, system, actor.uri)
+                     .has_value());
+    auto conflicting_owner = remoteActorDocument(actor);
+    conflicting_owner["publicKey"]["owner"] =
+        "https://remote.test/u/other";
+    http.response = mw::HTTPResponse(200, conflicting_owner.dump());
+    EXPECT_FALSE(fetchRemoteActor(c, crypto, http, system, actor.uri)
+                     .has_value());
+}
+
 TEST(RemoteActor, RejectsMismatchedActorIdWithoutCaching)
 {
     Config c = testConfig();
@@ -1123,6 +1160,44 @@ TEST(HttpSignature, RejectsBadEnvelopeWithoutFetchingUnknownSigner)
     EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
         c, *db, crypto, http, system, req, now).has_value());
     EXPECT_TRUE(http.get_urls.empty());
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    EXPECT_FALSE(stored.has_value());
+}
+
+TEST(HttpSignature, RejectsUnknownInvalidSignaturesWithoutRetention)
+{
+    Config c = testConfig();
+    c.http_signature_skew_seconds = 300;
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto actor_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto attacker_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.public_key_pem = actor_keys.public_key;
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, remoteActorDocument(actor).dump());
+    auto bad_signature = signedIncomingRequest(
+        crypto, attacker_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", 100000, false, false);
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, bad_signature, 100000).has_value());
+    ASSERT_EQ(http.get_urls.size(), 1u);
+
+    auto stale = signedIncomingRequest(
+        crypto, actor_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", 99000, false, false);
+    auto unsupported = signedIncomingRequest(
+        crypto, actor_keys.private_key, actor.public_key_id, "ed25519",
+        "get", "/p/1", "", 100000, false, false);
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, stale, 100000).has_value());
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, unsupported, 100000).has_value());
+    EXPECT_EQ(http.get_urls.size(), 1u);
     ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
     EXPECT_FALSE(stored.has_value());
 }
@@ -1457,6 +1532,66 @@ TEST(HttpSignature, InvalidRefreshedKeyDoesNotUpdateRetainedActor)
     ASSIGN_OR_FAIL(auto cached, db->getRemoteActorByUri(actor.uri));
     ASSERT_TRUE(cached.has_value());
     EXPECT_EQ(cached->public_key_pem, old_keys.public_key);
+}
+
+TEST(HttpSignature, DifferentKeyIdRefreshesOnlyAfterVerification)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto old_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto new_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.public_key_pem = old_keys.public_key;
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+    RemoteActor refreshed = actor;
+    refreshed.public_key_id = actor.uri + "#rotated-key";
+    refreshed.public_key_pem = new_keys.public_key;
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, remoteActorDocument(refreshed).dump());
+    auto request = signedIncomingRequest(
+        crypto, new_keys.private_key, refreshed.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", 100000, false, false);
+    ASSIGN_OR_FAIL(auto verified, verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, request, 100000));
+    EXPECT_TRUE(verified.key_was_refreshed);
+    ASSERT_EQ(http.get_urls.size(), 1u);
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->public_key_id, refreshed.public_key_id);
+    EXPECT_EQ(stored->public_key_pem, refreshed.public_key_pem);
+}
+
+TEST(HttpSignature, RejectsFetchedMismatchedKeyWithoutUpdatingActor)
+{
+    Config c = testConfig();
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto old_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto new_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    actor.public_key_pem = old_keys.public_key;
+    ASSIGN_OR_FAIL(actor, db->upsertRemoteActor(actor));
+    RemoteActor fetched = actor;
+    fetched.public_key_id = actor.uri + "#unexpected";
+    fetched.public_key_pem = new_keys.public_key;
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, remoteActorDocument(fetched).dump());
+    auto request = signedIncomingRequest(
+        crypto, new_keys.private_key, actor.public_key_id, "rsa-sha256",
+        "get", "/p/1", "", 100000, false, false);
+    EXPECT_FALSE(verifyHttpSignatureWithKeyRefresh(
+        c, *db, crypto, http, system, request, 100000).has_value());
+    ASSIGN_OR_FAIL(auto stored, db->getRemoteActorByUri(actor.uri));
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->public_key_id, actor.public_key_id);
+    EXPECT_EQ(stored->public_key_pem, old_keys.public_key);
 }
 
 TEST(FederationJobs, DeliveryJobSignsPostsAndCompletes)
@@ -2333,6 +2468,102 @@ TEST(InboxDispatch, TransientCreateRetainsActorWithPost)
     EXPECT_EQ(post->remote_author_id, stored_actor->id);
 }
 
+TEST(InboxDispatch, TransientRelevantAndIrrelevantActivitiesHaveNoLeak)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto local, db->createUser(testNewUser("alice")));
+    NewPost post;
+    post.local_author_id = local.id;
+    post.content_html = "local";
+    post.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(auto stored_post, db->insertPost(
+        post, {{0, std::string(AS_PUBLIC), "to"}}, c.url_root + "p/"));
+    NewPost private_post;
+    private_post.local_author_id = local.id;
+    private_post.content_html = "private";
+    private_post.visibility = Visibility::FOLLOWERS;
+    ASSIGN_OR_FAIL(auto stored_private_post, db->insertPost(
+        private_post, {}, c.url_root + "p/"));
+
+    const std::vector<std::string> relevant_types = {
+        "Like", "Announce", "EmojiReact",
+    };
+    for(size_t i = 0; i < relevant_types.size(); ++i)
+    {
+        RemoteActor actor = testRemoteActor(
+            std::format("https://remote.test/u/relevant-{}", i));
+        VerifiedSignature signature{
+            actor.uri, actor.public_key_id, actor, false, false};
+        nlohmann::json raw = {
+            {"id", std::format("https://remote.test/a/relevant-{}", i)},
+            {"type", relevant_types[i]},
+            {"actor", actor.uri},
+            {"object", stored_post.uri},
+        };
+        if(relevant_types[i] == "EmojiReact") raw["content"] = "👍";
+        ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+        ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+            c, *db, signature, activity, 100 + static_cast<int64_t>(i)));
+        EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+        EXPECT_TRUE(result.actor_retained);
+        ASSIGN_OR_FAIL(auto retained, db->getRemoteActorByUri(actor.uri));
+        EXPECT_TRUE(retained.has_value());
+    }
+
+    const std::vector<nlohmann::json> ignored_activities = {
+        {{"type", "Block"}, {"object", "https://remote.test/o/1"}},
+        {{"type", "Like"}, {"object", "https://remote.test/o/missing"}},
+        {{"type", "Announce"}, {"object", stored_private_post.uri}},
+        {{"type", "EmojiReact"}, {"object", stored_post.uri}},
+        {{"type", "Follow"}, {"object", "https://f.test/u/missing"}},
+    };
+    for(size_t i = 0; i < ignored_activities.size(); ++i)
+    {
+        RemoteActor actor = testRemoteActor(
+            std::format("https://remote.test/u/ignored-{}", i));
+        VerifiedSignature signature{
+            actor.uri, actor.public_key_id, actor, false, false};
+        nlohmann::json raw = ignored_activities[i];
+        raw["id"] = std::format("https://remote.test/a/ignored-{}", i);
+        raw["actor"] = actor.uri;
+        ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+        ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+            c, *db, signature, activity, 200 + static_cast<int64_t>(i)));
+        EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+        EXPECT_FALSE(result.actor_retained);
+        ASSIGN_OR_FAIL(auto retained, db->getRemoteActorByUri(actor.uri));
+        EXPECT_FALSE(retained.has_value());
+    }
+}
+
+TEST(InboxDispatch, TransientFollowRetainsActorAndQueuesAccept)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto local, db->createUser(testNewUser("alice")));
+    RemoteActor actor = testRemoteActor("https://remote.test/u/bob");
+    VerifiedSignature signature{
+        actor.uri, actor.public_key_id, actor, false, false};
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/follow/transient"},
+        {"type", "Follow"},
+        {"actor", actor.uri},
+        {"object", c.url_root + "u/alice"},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+        c, *db, signature, activity, 100));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+    EXPECT_TRUE(result.actor_retained);
+    ASSIGN_OR_FAIL(auto retained, db->getRemoteActorByUri(actor.uri));
+    EXPECT_TRUE(retained.has_value());
+    ASSIGN_OR_FAIL(auto job, db->claimJob(100));
+    ASSERT_TRUE(job.has_value());
+    EXPECT_NE(job->payload_json.find(actor.inbox), std::string::npos);
+    (void)local;
+}
+
 TEST(InboxDispatch, UnknownDeleteDoesNotRetainSigner)
 {
     Config c = testConfig();
@@ -2424,6 +2655,55 @@ TEST(InboxDispatch, DeleteRequiresStoredPostOwner)
     EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
     ASSIGN_OR_FAIL(auto remaining, db->getPostById(stored_post.id));
     EXPECT_TRUE(remaining.has_value());
+}
+
+TEST(InboxDispatch, RejectsUnauthorizedUpdateCreateAndUndo)
+{
+    Config c = testConfig();
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto owner, db->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/owner")));
+    RemoteActor attacker = testRemoteActor("https://remote.test/u/attacker");
+    NewPost post;
+    post.uri = "https://remote.test/o/owned";
+    post.remote_author_id = owner.id;
+    post.content_html = "original";
+    ASSIGN_OR_FAIL(auto stored_post, db->insertPost(
+        post, {{0, std::string(AS_PUBLIC), "to"}}, c.url_root + "p/"));
+    VerifiedSignature signature{
+        attacker.uri, attacker.public_key_id, attacker, false, false};
+    const std::vector<nlohmann::json> raw_activities = {
+        {{"id", "https://remote.test/a/update/attacker"},
+         {"type", "Update"},
+         {"actor", attacker.uri},
+         {"object", {{"id", stored_post.uri}, {"type", "Note"},
+                     {"attributedTo", attacker.uri}, {"content", "bad"}}}},
+        {{"id", "https://remote.test/a/create/mismatch"},
+         {"type", "Create"},
+         {"actor", attacker.uri},
+         {"object", {{"id", "https://remote.test/o/mismatched"},
+                     {"type", "Note"}, {"attributedTo", owner.uri},
+                     {"content", "bad"}}}},
+        {{"id", "https://remote.test/a/undo/mismatch"},
+         {"type", "Undo"},
+         {"actor", attacker.uri},
+         {"object", {{"id", "https://remote.test/a/like/owner"},
+                     {"type", "Like"}, {"actor", owner.uri},
+                     {"object", stored_post.uri}}}},
+    };
+    for(const auto& raw : raw_activities)
+    {
+        ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+        ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+            c, *db, signature, activity, 100));
+        EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+    }
+    ASSIGN_OR_FAIL(auto unchanged, db->getPostByUri(stored_post.uri));
+    ASSERT_TRUE(unchanged.has_value());
+    EXPECT_EQ(unchanged->content_html, "original");
+    ASSIGN_OR_FAIL(auto mismatched, db->getPostByUri(
+        "https://remote.test/o/mismatched"));
+    EXPECT_FALSE(mismatched.has_value());
 }
 
 TEST(InboxForwarding, ForwardsSignerActorMismatchWithoutRetainingForwarder)
@@ -2568,4 +2848,47 @@ TEST(InboxDispatch, PrunesIgnoredActivitiesWithoutRetainingSigners)
             c.inbox_processing_lease_seconds));
         EXPECT_EQ(claim, ActivityClaimResult::CLAIMED);
     }
+}
+
+TEST(InboxDispatch, SignedUnknownDeletesDoNotGrowActorCache)
+{
+    Config c = testConfig();
+    c.seen_activity_retention_seconds = 10;
+    c.maintenance_batch_size = 10;
+    mw::Crypto crypto;
+    ASSIGN_OR_FAIL(auto signer_keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    ASSIGN_OR_FAIL(auto system_keys,
+                   crypto.generateKeyPair(mw::KeyType::RSA));
+    SystemActor system{system_keys.private_key, system_keys.public_key};
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    FakeSession http;
+    constexpr int64_t NOW = 100000;
+    for(int i = 0; i < 4; ++i)
+    {
+        RemoteActor actor = testRemoteActor(
+            std::format("https://remote.test/u/delete-{}", i));
+        actor.public_key_pem = signer_keys.public_key;
+        http.responses.push_back(mw::HTTPResponse(
+            200, remoteActorDocument(actor).dump()));
+        nlohmann::json raw = {
+            {"id", std::format("https://remote.test/a/delete-{}", i)},
+            {"type", "Delete"},
+            {"actor", actor.uri},
+            {"object", std::format("https://remote.test/o/missing-{}", i)},
+        };
+        auto request = signedIncomingRequest(
+            crypto, signer_keys.private_key, actor.public_key_id,
+            "rsa-sha256", "post", "/inbox", raw.dump(), NOW, true, true);
+        ASSIGN_OR_FAIL(auto verified, verifyHttpSignatureWithKeyRefresh(
+            c, *db, crypto, http, system, request, NOW));
+        ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+        ASSIGN_OR_FAIL(auto result, dispatchIncomingActivity(
+            c, *db, verified, activity, NOW));
+        EXPECT_EQ(result.disposition, InboxDisposition::IGNORED);
+        ASSIGN_OR_FAIL(auto retained, db->getRemoteActorByUri(actor.uri));
+        EXPECT_FALSE(retained.has_value());
+    }
+    EXPECT_EQ(http.get_urls.size(), 4u);
+    ASSIGN_OR_FAIL(auto pruned, runInboxMaintenanceOnce(c, *db, NOW + 11));
+    EXPECT_EQ(pruned, 4);
 }
