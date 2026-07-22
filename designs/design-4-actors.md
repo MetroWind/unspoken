@@ -1,6 +1,6 @@
 # Design Document: Remote Actor Lifecycle
 
-**Status:** Draft
+**Status:** Implemented
 **Source requirements:** [`prd.md`](../prd.md), especially HTTP signature
 verification, signed remote fetches, SSRF protection, remote post storage,
 follows, interactions, deliveries, and activity deduplication.
