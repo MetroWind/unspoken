@@ -1,6 +1,6 @@
 # Design Document: Docker Federation Interop Test Harness
 
-**Status:** Draft
+**Status:** Implemented
 **Source requirements:** [`prd.md`](../prd.md), especially the
 ActivityPub federation, custom emoji, interaction, thread-fetching, and
 job-queue requirements.

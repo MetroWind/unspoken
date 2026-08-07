@@ -1,6 +1,6 @@
 # Design Document: Rich Actor Profiles
 
-**Status:** Draft
+**Status:** Implemented
 **Source requirements:** [`prd.md`](../prd.md), especially profile
 editing, ActivityPub actor documents, attachments, remote actor
 resolution, HTML sanitization, and local actor `Update` delivery.

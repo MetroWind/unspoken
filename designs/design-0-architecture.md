@@ -2,7 +2,7 @@
 
 **Server name:** `unspoken` (the executable, package, and NodeInfo
 software name). The repository directory is `actpub`.
-**Status:** Draft
+**Status:** Implemented
 **Source requirements:** [`prd.md`](../prd.md) and resolved decisions in [`prd_gaps.md`](../prd_gaps.md)
 **Audience:** The engineer(s) implementing this server from scratch.
 

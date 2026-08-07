@@ -1,6 +1,6 @@
 # Design Document: Tabbed Emoji Picker
 
-**Status:** Draft
+**Status:** Implemented
 **Source requirements:** [`prd.md`](../prd.md), especially emoji
 reactions and server-wide custom emoji.
 **Related design:** [`design-0-architecture.md`](design-0-architecture.md)
