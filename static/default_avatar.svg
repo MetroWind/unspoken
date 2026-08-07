@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 64 64"
+     width="64"
+     height="64"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Default avatar</title>
+  <desc id="desc">A neutral placeholder profile avatar</desc>
+  <rect width="64" height="64" fill="#23272e"/>
+  <circle cx="32" cy="23" r="11" fill="#8b93a1"/>
+  <path d="M12 57c1-13 9-21 20-21s19 8 20 21H12Z"
+        fill="#8b93a1"/>
+</svg>

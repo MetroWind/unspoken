@@ -6,6 +6,7 @@
 // in later phases — this module performs only local persistence and view
 // assembly, with no network egress.
 
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -106,6 +107,13 @@ public:
     const EmojiRegistry& emojiRegistry() const { return emoji; }
 
 private:
+    // Build one post view while reusing author views for one response.
+    mw::E<nlohmann::json>
+    postViewWithAuthorCache(
+        const Post& post, const std::optional<User>& viewer,
+        std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache)
+        const;
+
     const Config& config;
     const DataSourceInterface& data;
     const EmojiRegistry& emoji;

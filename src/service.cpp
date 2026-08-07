@@ -1,5 +1,6 @@
 #include "service.hpp"
 
+#include <cctype>
 #include <ctime>
 #include <format>
 #include <functional>
@@ -13,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 #include <mw/error.hpp>
+#include <mw/url.hpp>
 #include <mw/utils.hpp>
 
 #include "attachments.hpp"
@@ -79,6 +81,176 @@ std::string localAttachmentUrl(const Config& config, const Attachment& a)
     std::string filename = ext.empty() ? a.sha256 : (a.sha256 + "." + ext);
     return std::format("{}media/{}/{}", config.url_root,
                        a.sha256.substr(0, 1), filename);
+}
+
+std::string defaultAvatarUrl(const Config& config)
+{
+    return config.url_root + "static/default_avatar.svg";
+}
+
+bool safeLocalExtension(std::string_view extension)
+{
+    for(char c : extension)
+    {
+        if(!std::isalnum(static_cast<unsigned char>(c))) return false;
+    }
+    return true;
+}
+
+std::optional<std::string> localAvatarUrl(const Config& config,
+                                          const Attachment& attachment)
+{
+    if(attachment.remote_url.has_value() || !attachment.is_image
+       || !isHexLower(attachment.sha256))
+    {
+        return std::nullopt;
+    }
+
+    std::string extension = attachment.extension.empty()
+        ? extensionOf(attachment.original_name) : attachment.extension;
+    if(!extension.empty() && !safeLocalExtension(extension))
+        return std::nullopt;
+    return localAttachmentUrl(config, attachment);
+}
+
+bool isHttpScheme(std::string_view scheme)
+{
+    auto lower = [](char c) {
+        return static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c)));
+    };
+    if(scheme.size() == 4)
+    {
+        return lower(scheme[0]) == 'h' && lower(scheme[1]) == 't'
+            && lower(scheme[2]) == 't' && lower(scheme[3]) == 'p';
+    }
+    if(scheme.size() == 5)
+    {
+        return lower(scheme[0]) == 'h' && lower(scheme[1]) == 't'
+            && lower(scheme[2]) == 't' && lower(scheme[3]) == 'p'
+            && lower(scheme[4]) == 's';
+    }
+    return false;
+}
+
+std::string imageUrlFromObject(const nlohmann::json& object)
+{
+    if(!object.is_object()) return "";
+    if(auto it = object.find("url"); it != object.end()
+       && it->is_string())
+    {
+        return it->get<std::string>();
+    }
+    if(auto it = object.find("href"); it != object.end()
+       && it->is_string())
+    {
+        return it->get<std::string>();
+    }
+    return "";
+}
+
+std::string validatedRemoteImageUrl(std::string value)
+{
+    value = std::string(mw::strip(value));
+    if(value.empty()) return "";
+    auto parsed = mw::URL::fromStr(value);
+    if(!parsed.has_value() || parsed->host().empty()
+       || !isHttpScheme(parsed->scheme()))
+    {
+        return "";
+    }
+    return value;
+}
+
+std::string remoteImageUrl(const nlohmann::json& value)
+{
+    if(value.is_object())
+    {
+        return validatedRemoteImageUrl(imageUrlFromObject(value));
+    }
+    if(value.is_array())
+    {
+        for(const auto& item : value)
+        {
+            std::string url = validatedRemoteImageUrl(
+                imageUrlFromObject(item));
+            if(!url.empty()) return url;
+        }
+    }
+    return "";
+}
+
+nlohmann::json unknownAuthorView(const Config& config)
+{
+    return {
+        {"username", "unknown"},
+        {"display_name", "unknown"},
+        {"handle", ""},
+        {"profile_url", ""},
+        {"avatar_url", mw::escapeHTML(defaultAvatarUrl(config))},
+        {"avatar_is_placeholder", true},
+        {"is_local", false},
+    };
+}
+
+mw::E<nlohmann::json> localAuthorView(const Config& config,
+                                      const DataSourceInterface& data,
+                                      const User& user)
+{
+    auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
+    std::string display_name = user.display_name.empty()
+        ? user.username : user.display_name;
+    nlohmann::json author = {
+        {"username", esc(user.username)},
+        {"display_name", esc(display_name)},
+        {"handle", esc(std::format("@{}@{}", user.username,
+                                    config.public_domain))},
+        {"profile_url", esc(config.url_root + "u/" + user.username)},
+        {"avatar_url", esc(defaultAvatarUrl(config))},
+        {"avatar_is_placeholder", true},
+        {"is_local", true},
+    };
+
+    if(!user.avatar_attachment_id.has_value()) return author;
+    ASSIGN_OR_RETURN(auto attachment,
+                     data.getAttachmentById(*user.avatar_attachment_id));
+    if(!attachment.has_value()) return author;
+
+    auto avatar_url = localAvatarUrl(config, *attachment);
+    if(!avatar_url.has_value()) return author;
+    author["avatar_url"] = esc(*avatar_url);
+    author["avatar_is_placeholder"] = false;
+    return author;
+}
+
+nlohmann::json remoteAuthorView(const Config& config,
+                                const RemoteActor& actor)
+{
+    auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
+    std::string display_name = actor.display_name.empty()
+        ? actor.username : actor.display_name;
+    nlohmann::json author = {
+        {"username", esc(actor.username)},
+        {"display_name", esc(display_name)},
+        {"handle", esc(std::format("@{}@{}", actor.username,
+                                    actor.domain))},
+        {"profile_url", esc(actor.uri)},
+        {"avatar_url", esc(defaultAvatarUrl(config))},
+        {"avatar_is_placeholder", true},
+        {"is_local", false},
+    };
+
+    nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
+                                               false);
+    if(!doc.is_object()) return author;
+    auto icon = doc.find("icon");
+    if(icon == doc.end()) return author;
+
+    std::string avatar_url = remoteImageUrl(*icon);
+    if(avatar_url.empty()) return author;
+    author["avatar_url"] = esc(avatar_url);
+    author["avatar_is_placeholder"] = false;
+    return author;
 }
 
 mw::E<bool> canNonPublicActorViewPost(
@@ -595,41 +767,13 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
         j["bio_html"] = sanitizeRemoteHtml(it->get<std::string>());
     }
 
-    auto image_url = [](const nlohmann::json& value) -> std::string {
-        auto object_url = [](const nlohmann::json& object) -> std::string {
-            if(!object.is_object()) return "";
-            if(auto it = object.find("url");
-               it != object.end() && it->is_string())
-            {
-                return it->get<std::string>();
-            }
-            if(auto it = object.find("href");
-               it != object.end() && it->is_string())
-            {
-                return it->get<std::string>();
-            }
-            return "";
-        };
-
-        if(value.is_object()) return object_url(value);
-        if(value.is_array())
-        {
-            for(const auto& item : value)
-            {
-                std::string url = object_url(item);
-                if(!url.empty()) return url;
-            }
-        }
-        return "";
-    };
-
     if(auto it = doc.find("icon"); it != doc.end())
     {
-        j["avatar_url"] = esc(image_url(*it));
+        j["avatar_url"] = esc(remoteImageUrl(*it));
     }
     if(auto it = doc.find("image"); it != doc.end())
     {
-        j["banner_url"] = esc(image_url(*it));
+        j["banner_url"] = esc(remoteImageUrl(*it));
     }
 
     auto add_field = [&](const nlohmann::json& item) {
@@ -667,6 +811,15 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
 mw::E<nlohmann::json>
 Service::postView(const Post& p, const std::optional<User>& viewer) const
 {
+    std::map<std::pair<bool, int64_t>, nlohmann::json> author_cache;
+    return postViewWithAuthorCache(p, viewer, author_cache);
+}
+
+mw::E<nlohmann::json>
+Service::postViewWithAuthorCache(
+    const Post& p, const std::optional<User>& viewer,
+    std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache) const
+{
     auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
     nlohmann::json j;
     j["id"] = p.id;
@@ -685,43 +838,48 @@ Service::postView(const Post& p, const std::optional<User>& viewer) const
     nlohmann::json author;
     if(p.local_author_id.has_value())
     {
-        ASSIGN_OR_RETURN(auto u, data.getUserById(*p.local_author_id));
-        if(u.has_value())
+        const auto key = std::pair<bool, int64_t>{true, *p.local_author_id};
+        auto cached = author_cache.find(key);
+        if(cached != author_cache.end())
         {
-            author["username"] = esc(u->username);
-            author["display_name"] =
-                esc(u->display_name.empty() ? u->username : u->display_name);
-            author["handle"] = esc(handleFor(u->username));
-            author["profile_url"] = esc(actorUri(u->username));
-            author["is_local"] = true;
+            author = cached->second;
+        }
+        else
+        {
+            ASSIGN_OR_RETURN(auto u, data.getUserById(*p.local_author_id));
+            if(u.has_value())
+            {
+                ASSIGN_OR_RETURN(author, localAuthorView(config, data, *u));
+                author_cache.emplace(key, author);
+            }
         }
     }
     if(author.is_null())
     {
         if(p.remote_author_id.has_value())
         {
-            ASSIGN_OR_RETURN(auto a, data.getRemoteActorById(
-                *p.remote_author_id));
-            if(a.has_value())
+            const auto key = std::pair<bool, int64_t>{false,
+                                                       *p.remote_author_id};
+            auto cached = author_cache.find(key);
+            if(cached != author_cache.end())
             {
-                std::string display = a->display_name.empty()
-                    ? a->username : a->display_name;
-                author["username"] = esc(a->username);
-                author["display_name"] = esc(display);
-                author["handle"] =
-                    esc(std::format("@{}@{}", a->username, a->domain));
-                author["profile_url"] = esc(a->uri);
-                author["is_local"] = false;
+                author = cached->second;
+            }
+            else
+            {
+                ASSIGN_OR_RETURN(auto a, data.getRemoteActorById(
+                    *p.remote_author_id));
+                if(a.has_value())
+                {
+                    author = remoteAuthorView(config, *a);
+                    author_cache.emplace(key, author);
+                }
             }
         }
     }
     if(author.is_null())
     {
-        author["username"] = "unknown";
-        author["display_name"] = "unknown";
-        author["handle"] = "";
-        author["profile_url"] = "";
-        author["is_local"] = false;
+        author = unknownAuthorView(config);
     }
     j["author"] = author;
 
@@ -822,9 +980,11 @@ Service::postViews(const std::vector<Post>& posts,
                    const std::optional<User>& viewer) const
 {
     nlohmann::json arr = nlohmann::json::array();
+    std::map<std::pair<bool, int64_t>, nlohmann::json> author_cache;
     for(const auto& p : posts)
     {
-        ASSIGN_OR_RETURN(auto v, postView(p, viewer));
+        ASSIGN_OR_RETURN(auto v,
+                         postViewWithAuthorCache(p, viewer, author_cache));
         arr.push_back(std::move(v));
     }
     return arr;

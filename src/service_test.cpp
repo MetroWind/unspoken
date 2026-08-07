@@ -726,3 +726,248 @@ TEST(ServiceView, RemotePostShowsRemoteAuthor)
     EXPECT_EQ(view["author"]["profile_url"], remote.uri);
     EXPECT_FALSE(view["author"]["is_local"]);
 }
+
+TEST(ServiceView, LocalPostUsesAvatarOrDefaultAvatar)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(User bob, db->createUser(NewUser{
+        "bob", "Bob", "", "iss", "sub-b", "PRIV", "PUB"}));
+
+    Attachment avatar;
+    avatar.sha256 = "abc001";
+    avatar.extension = "png";
+    avatar.media_type = "image/png";
+    avatar.original_name = "avatar.png";
+    avatar.is_image = true;
+    ASSIGN_OR_FAIL(int64_t avatar_id, db->insertAttachment(avatar));
+
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+    UserProfileUpdate update;
+    update.display_name = "Alice";
+    update.avatar_attachment_id = avatar_id;
+    EXPECT_TRUE(mw::isExpected(svc.updateProfile(alice, update)));
+
+    NewPost alice_new;
+    alice_new.local_author_id = alice.id;
+    alice_new.content_html = "<p>alice</p>";
+    alice_new.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post alice_post, db->insertPost(
+        alice_new, svc.recipientsFor(Visibility::PUBLIC, "alice", {}),
+        "https://f.test/p/"));
+
+    NewPost bob_new;
+    bob_new.local_author_id = bob.id;
+    bob_new.content_html = "<p>bob</p>";
+    bob_new.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post bob_post, db->insertPost(
+        bob_new, svc.recipientsFor(Visibility::PUBLIC, "bob", {}),
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto views, svc.postViews(
+        std::vector<Post>{alice_post, bob_post}, std::nullopt));
+    EXPECT_EQ(views[0]["author"]["avatar_url"],
+              "https://f.test/media/a/abc001.png");
+    EXPECT_FALSE(views[0]["author"]["avatar_is_placeholder"]);
+    EXPECT_EQ(views[1]["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(views[1]["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, InvalidLocalAvatarUsesDefaultAvatar)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+
+    Attachment remote;
+    remote.media_type = "image/png";
+    remote.original_name = "remote.png";
+    remote.is_image = true;
+    remote.remote_url = "https://remote.test/avatar.png";
+    ASSIGN_OR_FAIL(int64_t remote_id, db->insertAttachment(remote));
+    EXPECT_TRUE(mw::isExpected(db->updateProfileMedia(
+        alice.id, remote_id, std::nullopt)));
+
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+    NewPost np;
+    np.local_author_id = alice.id;
+    np.content_html = "<p>post</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, svc.recipientsFor(Visibility::PUBLIC, "alice", {}),
+        "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, MissingLocalAvatarAttachmentUsesDefaultAvatar)
+{
+    DataSourceMock data;
+    User alice;
+    alice.id = 1;
+    alice.username = "alice";
+    alice.display_name = "Alice";
+    alice.avatar_attachment_id = 404;
+
+    Post post;
+    post.id = 1;
+    post.uri = "https://f.test/p/1";
+    post.local_author_id = alice.id;
+    post.content_html = "<p>post</p>";
+
+    EXPECT_CALL(data, getUserById(alice.id))
+        .WillOnce(testing::Return(
+            mw::E<std::optional<User>>{std::optional<User>{alice}}));
+    EXPECT_CALL(data, getAttachmentById(404))
+        .WillOnce(testing::Return(
+            mw::E<std::optional<Attachment>>{
+                std::optional<Attachment>{}}));
+    EXPECT_CALL(data, attachmentsForPost(post.id))
+        .WillOnce(testing::Return(
+            mw::E<std::vector<Attachment>>{std::vector<Attachment>{}}));
+    EXPECT_CALL(data, likesForPost(post.uri))
+        .WillOnce(testing::Return(
+            mw::E<std::vector<Like>>{std::vector<Like>{}}));
+    EXPECT_CALL(data, boostsForPost(post.uri))
+        .WillOnce(testing::Return(
+            mw::E<std::vector<Boost>>{std::vector<Boost>{}}));
+    EXPECT_CALL(data, reactionsForPost(post.uri))
+        .WillOnce(testing::Return(
+            mw::E<std::vector<Reaction>>{std::vector<Reaction>{}}));
+
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, data, emoji);
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, RemoteAuthorUsesValidatedIconUrlAndHref)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.display_name = "Bob";
+    remote.inbox = "https://remote.test/users/bob/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    remote.actor_json = R"json({
+        "icon": [
+            {"url": "javascript:alert(1)"},
+            {"href": "  https://cdn.test/avatar.png?x=1&y=2  "}
+        ]
+    })json";
+    ASSIGN_OR_FAIL(remote, db->upsertRemoteActor(remote));
+
+    NewPost np;
+    np.remote_author_id = remote.id;
+    np.uri = "https://remote.test/users/bob/statuses/1";
+    np.content_html = "<p>remote</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://cdn.test/avatar.png?x=1&amp;y=2");
+    EXPECT_FALSE(view["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, RemoteAuthorMalformedIconUsesDefaultAvatar)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.inbox = "https://remote.test/users/bob/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    remote.actor_json = R"({"icon": {"url": "ftp://remote.test/a"}})";
+    ASSIGN_OR_FAIL(remote, db->upsertRemoteActor(remote));
+
+    NewPost np;
+    np.remote_author_id = remote.id;
+    np.uri = "https://remote.test/users/bob/statuses/1";
+    np.content_html = "<p>remote</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, RemoteAuthorMalformedJsonUsesDefaultAvatar)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.inbox = "https://remote.test/users/bob/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    remote.actor_json = "{";
+    ASSIGN_OR_FAIL(remote, db->upsertRemoteActor(remote));
+
+    NewPost np;
+    np.remote_author_id = remote.id;
+    np.uri = "https://remote.test/users/bob/statuses/1";
+    np.content_html = "<p>remote</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
+}
+
+TEST(ServiceView, UnknownAuthorUsesDefaultAvatar)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    Config c = testConfig();
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+
+    NewPost np;
+    np.content_html = "<p>unknown</p>";
+    np.visibility = Visibility::PUBLIC;
+    ASSIGN_OR_FAIL(Post post, db->insertPost(
+        np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
+
+    ASSIGN_OR_FAIL(auto view, svc.postView(post, std::nullopt));
+    EXPECT_EQ(view["author"]["display_name"], "unknown");
+    EXPECT_EQ(view["author"]["avatar_url"],
+              "https://f.test/static/default_avatar.svg");
+    EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
+}

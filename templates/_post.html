@@ -1,8 +1,17 @@
 <article class="post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
   <div class="post-head">
     <a class="author" href="{{ post.author.profile_url }}">
-      <span class="dname">{{ post.author.display_name }}</span>
-      <span class="handle">{{ post.author.handle }}</span>
+      <img class="post-avatar"
+           src="{{ post.author.avatar_url }}"
+           alt=""
+           width="40"
+           height="40"
+           loading="lazy"
+           decoding="async">
+      <span class="author-copy">
+        <span class="dname">{{ post.author.display_name }}</span>
+        <span class="handle">{{ post.author.handle }}</span>
+      </span>
     </a>
     <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
     <span class="vis vis-{{ post.visibility }}">{{ post.visibility }}</span>
