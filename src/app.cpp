@@ -91,9 +91,7 @@ inja::Environment makeEnv(const Config& config)
 std::string param(const mw::HTTPServer::Request& req, const char* name)
 {
     if(req.has_param(name)) return req.get_param_value(name);
-    auto file = req.get_file_value(name);
-    if(file.filename.empty()) return file.content;
-    return "";
+    return req.form.get_field(name);
 }
 
 bool hasParam(const mw::HTTPServer::Request& req, const char* name)
@@ -1146,7 +1144,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
     // Attachments (multipart): store each file, create draft attachment rows.
     if(req.is_multipart_form_data())
     {
-        for(const auto& file : req.get_file_values("attachments"))
+        for(const auto& file : req.form.get_files("attachments"))
         {
             if(file.content.empty()) continue;
             if(static_cast<int64_t>(file.content.size())
@@ -1845,7 +1843,7 @@ void App::handleProfilePost(const Request& req, Response& res) const
     auto store_profile_image =
         [&](const char* field_name) -> mw::E<std::optional<int64_t>> {
         if(!req.is_multipart_form_data()) return std::nullopt;
-        auto files = req.get_file_values(field_name);
+        auto files = req.form.get_files(field_name);
         if(files.empty() || files.front().content.empty())
             return std::nullopt;
         const auto& file = files.front();
