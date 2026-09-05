@@ -2444,6 +2444,11 @@ void App::handleOutbox(const Request& req, Response& res) const
 
 void App::handleFollowersCollection(const Request& req, Response& res) const
 {
+    if(!unspoken::wantsActivityJson(headerValue(req, "Accept")))
+    {
+        handleFollowList(req, res, true);
+        return;
+    }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     std::string username = req.path_params.at("username");
     ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
@@ -2482,6 +2487,11 @@ void App::handleFollowersCollection(const Request& req, Response& res) const
 
 void App::handleFollowingCollection(const Request& req, Response& res) const
 {
+    if(!unspoken::wantsActivityJson(headerValue(req, "Accept")))
+    {
+        handleFollowList(req, res, false);
+        return;
+    }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     std::string username = req.path_params.at("username");
     ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
@@ -2516,6 +2526,58 @@ void App::handleFollowingCollection(const Request& req, Response& res) const
     }
     setJson(res, collectionPageJson(collection_uri, req.target, items,
                                     next, prev));
+}
+
+void App::handleFollowList(const Request& req, Response& res,
+                          bool followers) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto user,
+        ds->getUserByUsername(req.path_params.at("username")), res);
+    if(!user.has_value())
+    {
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+        return;
+    }
+    auto cursor = cursorFromRequest(req, res, true);
+    if(!cursor.has_value()) return;
+    ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
+    Service svc(config, *ds, emoji);
+    const std::string actor_uri = svc.actorUri(user->username);
+    ASSIGN_OR_RESPOND_ERROR(auto items,
+        followers ? ds->followerPage(actor_uri, *cursor,
+                                     config.posts_per_page)
+                  : ds->followingPage(actor_uri, *cursor,
+                                      config.posts_per_page), res);
+    auto ctx = baseContext(req, viewer);
+    ASSIGN_OR_RESPOND_ERROR(auto profile, svc.userView(*user), res);
+    ASSIGN_OR_RESPOND_ERROR(auto views, svc.followViews(items), res);
+    ctx["profile"] = std::move(profile);
+    ctx["results"] = std::move(views);
+    ctx["list_title"] = followers ? "Followers" : "Following";
+    ctx["list_url"] = mw::escapeHTML(actor_uri
+        + (followers ? "/followers" : "/following"));
+    ctx["has_previous"] = false;
+    ctx["has_next"] = false;
+    if(!items.empty())
+    {
+        unspoken::Cursor newer;
+        newer.min_id = items.front().id;
+        unspoken::Cursor older;
+        older.max_id = items.back().id;
+        ASSIGN_OR_RESPOND_ERROR(auto previous,
+            followers ? ds->followerPage(actor_uri, newer, 1)
+                      : ds->followingPage(actor_uri, newer, 1), res);
+        ASSIGN_OR_RESPOND_ERROR(auto next,
+            followers ? ds->followerPage(actor_uri, older, 1)
+                      : ds->followingPage(actor_uri, older, 1), res);
+        ctx["has_previous"] = !previous.empty();
+        ctx["has_next"] = !next.empty();
+        ctx["previous_id"] = items.front().id;
+        ctx["next_id"] = items.back().id;
+    }
+    render(res, 200, "follow_list.html", ctx);
 }
 
 // ─── Routing ───────────────────────────────────────────────────────────

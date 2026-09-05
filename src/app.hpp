@@ -104,6 +104,8 @@ private:
     void handleOutbox(const Request& req, Response& res) const;
     void handleFollowersCollection(const Request& req, Response& res) const;
     void handleFollowingCollection(const Request& req, Response& res) const;
+    void handleFollowList(const Request& req, Response& res,
+                          bool followers) const;
 
     mw::E<unspoken::SystemActor> systemActor() const;
     void startJobWorkers();

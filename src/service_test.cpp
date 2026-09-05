@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <mw/error.hpp>
 #include <mw/test_utils.hpp>
+#include <inja.hpp>
 
 #include "attachments.hpp"
 #include "config.hpp"
@@ -118,6 +119,66 @@ TEST(ServiceUri, ActorAndHandle)
     EXPECT_EQ(svc.actorUri("alice"), "https://f.test/u/alice");
     EXPECT_EQ(svc.followersUri("alice"), "https://f.test/u/alice/followers");
     EXPECT_EQ(svc.handleFor("alice"), "@alice@f.test");
+}
+
+TEST(ServiceProfile, FollowListsRenderLocalRemoteAndMissingAccounts)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto alice, db->createUser(NewUser{
+        "alice", "Alice <Local>", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config c = testConfig();
+    c.url_root = "https://f.test/social/";
+    EmojiRegistry emoji;
+    Service svc(c, *db, emoji);
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.display_name = "Bob <Remote>";
+    remote.actor_json = "{}";
+    ASSIGN_OR_FAIL(auto stored, db->upsertRemoteActor(remote));
+    ASSIGN_OR_FAIL(auto views, svc.followViews({
+        {4, svc.actorUri("alice")}, {3, stored.uri},
+        {2, "https://missing.test/user?a=1&b=2"},
+        {1, "javascript:alert(1)"}}));
+    ASSERT_EQ(views.size(), 4);
+    EXPECT_EQ(views[0]["profile_url"], svc.actorUri("alice"));
+    EXPECT_EQ(views[0]["display_name"], "Alice &lt;Local&gt;");
+    EXPECT_EQ(views[1]["handle"], "@bob@remote.test");
+    EXPECT_EQ(views[1]["display_name"], "Bob &lt;Remote&gt;");
+    EXPECT_EQ(views[2]["profile_url"],
+              "https://missing.test/user?a=1&amp;b=2");
+    EXPECT_EQ(views[3]["profile_url"], "");
+
+    ASSIGN_OR_FAIL(auto profile, svc.userView(alice));
+    nlohmann::json ctx = {
+        {"site", {{"title", "Test"}, {"root", c.url_root},
+                  {"commit", "test"}}},
+        {"logged_in", false}, {"error", ""}, {"profile", profile},
+        {"results", views}, {"list_title", "Followers"},
+        {"list_url", svc.actorUri("alice") + "/followers"},
+        {"has_previous", true}, {"has_next", true},
+        {"previous_id", 4}, {"next_id", 1},
+    };
+    inja::Environment templates("templates/");
+    auto html = templates.render_file("follow_list.html", ctx);
+    EXPECT_NE(html.find("Alice &lt;Local&gt;"), std::string::npos);
+    EXPECT_NE(html.find("/social/u/alice/followers?max_id=1"),
+              std::string::npos);
+    EXPECT_NE(html.find("/social/u/alice/followers?min_id=4"),
+              std::string::npos);
+    ctx["results"] = nlohmann::json::array();
+    ctx["has_previous"] = false;
+    ctx["has_next"] = false;
+    html = templates.render_file("follow_list.html", ctx);
+    EXPECT_NE(html.find("No accounts to show."), std::string::npos);
+    EXPECT_EQ(html.find("?max_id="), std::string::npos);
+    ctx["posts"] = nlohmann::json::array();
+    html = templates.render_file("profile.html", ctx);
+    EXPECT_NE(html.find("/social/u/alice/followers\""),
+              std::string::npos);
+    EXPECT_NE(html.find("/social/u/alice/following\""),
+              std::string::npos);
 }
 
 TEST(ServiceProfile, LocalRichProfileViewRendersMediaAndFields)

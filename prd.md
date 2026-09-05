@@ -45,6 +45,8 @@ Basically just standard micro blog features.
   bio.
 * User can follow other users, both remote users and local users (on
   the same server)
+* User profile pages link to paginated followers and following lists,
+  showing accepted relationships with local and remote accounts.
 * Follow request are accepted automatically (and `Accept` activities
   should be sent automatically).
 * When user is viewing a single post, it’s display in its thread.

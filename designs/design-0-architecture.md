@@ -1357,10 +1357,16 @@ logic in handler bodies.**
 
 ### 16.2 Content negotiation
 
-For `/u/<username>` and `/p/<id>`, inspect the `Accept` header: if it
+For `/u/<username>`, its `/followers` and `/following` collections,
+and `/p/<id>`, inspect the `Accept` header: if it
 prefers `application/activity+json` (or `application/ld+json`), return the
 AP JSON; otherwise return HTML. This is how the same URL serves browsers
 and servers (PRD line 194).
+
+Profile HTML links to both connection lists. Their HTML pages show accepted
+relationships using stored local and remote account views, with links to
+each account's profile and cursor-based newer/older navigation. Rendering
+these lists does not fetch remote accounts.
 
 ### 16.3 Pagination (decision C4)
 

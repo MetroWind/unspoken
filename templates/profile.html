@@ -19,6 +19,10 @@
       <p class="handle">{{ profile.handle }}</p>
     </div>
     <div class="bio">{{ profile.bio_html }}</div>
+    <nav aria-label="Connections">
+      <a href="{{ profile.profile_url }}/followers">Followers</a>
+      · <a href="{{ profile.profile_url }}/following">Following</a>
+    </nav>
 {% if length(profile.fields) > 0 %}
     <dl class="profile-fields">
 {% for field in profile.fields %}

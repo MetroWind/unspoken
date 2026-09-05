@@ -100,6 +100,9 @@ public:
     mw::E<nlohmann::json> userView(const User& u) const;
     // A remote actor profile view built from cached actor JSON.
     nlohmann::json remoteActorView(const RemoteActor& actor) const;
+    // Render stored follow identities without fetching remote accounts.
+    mw::E<nlohmann::json> followViews(
+        const std::vector<ActorCollectionItem>& items) const;
     // Render local profile metadata rows for ActivityPub output.
     mw::E<std::vector<RenderedProfileField>>
     renderedProfileFields(const User& user) const;

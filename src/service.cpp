@@ -149,7 +149,7 @@ std::string imageUrlFromObject(const nlohmann::json& object)
     return "";
 }
 
-std::string validatedRemoteImageUrl(std::string value)
+std::string validatedRemoteUrl(std::string value)
 {
     value = std::string(mw::strip(value));
     if(value.empty()) return "";
@@ -166,13 +166,13 @@ std::string remoteImageUrl(const nlohmann::json& value)
 {
     if(value.is_object())
     {
-        return validatedRemoteImageUrl(imageUrlFromObject(value));
+        return validatedRemoteUrl(imageUrlFromObject(value));
     }
     if(value.is_array())
     {
         for(const auto& item : value)
         {
-            std::string url = validatedRemoteImageUrl(
+            std::string url = validatedRemoteUrl(
                 imageUrlFromObject(item));
             if(!url.empty()) return url;
         }
@@ -661,6 +661,43 @@ Service::renderedProfileFields(const User& user) const
         });
     }
     return out;
+}
+
+mw::E<nlohmann::json> Service::followViews(
+    const std::vector<ActorCollectionItem>& items) const
+{
+    auto views = nlohmann::json::array();
+    const std::string local_prefix = config.url_root + "u/";
+    for(const auto& item : items)
+    {
+        if(item.actor_uri.starts_with(local_prefix))
+        {
+            ASSIGN_OR_RETURN(auto user, data.getUserByUsername(
+                item.actor_uri.substr(local_prefix.size())));
+            if(user.has_value())
+            {
+                ASSIGN_OR_RETURN(auto view, userView(*user));
+                views.push_back(std::move(view));
+                continue;
+            }
+        }
+        ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(item.actor_uri));
+        if(actor.has_value())
+        {
+            views.push_back(remoteActorView(*actor));
+            continue;
+        }
+        // A missing cached actor should not hide a relationship.
+        views.push_back({
+            {"display_name", mw::escapeHTML(item.actor_uri)},
+            {"handle", ""},
+            {"profile_url", mw::escapeHTML(
+                validatedRemoteUrl(item.actor_uri))},
+            {"avatar_url", ""},
+            {"avatar_alt", ""},
+        });
+    }
+    return views;
 }
 
 mw::E<nlohmann::json> Service::userView(const User& u) const

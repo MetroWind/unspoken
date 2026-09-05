@@ -1,0 +1,37 @@
+{% include "_header.html" %}
+<section class="narrow">
+  <h1>{{ list_title }} · {{ profile.display_name }}</h1>
+  <p><a href="{{ profile.profile_url }}">Back to profile</a></p>
+  <nav aria-label="Connections">
+    <a href="{{ profile.profile_url }}/followers">Followers</a>
+    · <a href="{{ profile.profile_url }}/following">Following</a>
+  </nav>
+</section>
+<div class="results">
+{% if length(results) == 0 %}
+  <p class="empty">No accounts to show.</p>
+{% endif %}
+{% for u in results %}
+  <div class="result">
+    <div class="result-head">
+      <a class="author" href="{{ u.profile_url }}">
+{% if length(u.avatar_url) > 0 %}
+        <img class="result-avatar" src="{{ u.avatar_url }}"
+             alt="{{ u.avatar_alt }}">
+{% endif %}
+        <span class="dname">{{ u.display_name }}</span>
+        <span class="handle">{{ u.handle }}</span>
+      </a>
+    </div>
+  </div>
+{% endfor %}
+</div>
+<nav class="pager" aria-label="Pagination">
+{% if has_previous %}
+  <a href="{{ list_url }}?min_id={{ previous_id }}">← newer</a>
+{% endif %}
+{% if has_next %}
+  <a href="{{ list_url }}?max_id={{ next_id }}">older →</a>
+{% endif %}
+</nav>
+{% include "_footer.html" %}
