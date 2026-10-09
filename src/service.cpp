@@ -3,7 +3,6 @@
 #include <cctype>
 #include <ctime>
 #include <format>
-#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -13,6 +12,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <mw/crypto.hpp>
 #include <mw/error.hpp>
 #include <mw/url.hpp>
 #include <mw/utils.hpp>
@@ -31,6 +31,19 @@ namespace
 int64_t nowSeconds()
 {
     return static_cast<int64_t>(std::time(nullptr));
+}
+
+// Give each new interaction a durable ID independent of clock resolution.
+mw::E<std::string> interactionActivityUri(
+    const Config& config, std::string_view kind)
+{
+    mw::Crypto crypto;
+    ASSIGN_OR_RETURN(auto bytes, crypto.randomBytes(16));
+    std::string token;
+    token.reserve(bytes.size() * 2);
+    for(auto byte : bytes)
+        token += std::format("{:02x}", std::to_integer<unsigned int>(byte));
+    return std::format("{}activities/{}/{}", config.url_root, kind, token);
 }
 
 struct ReactionGroup
@@ -475,8 +488,8 @@ mw::E<void> Service::setLike(const User& viewer, const Post& p, bool on) const
         Like l;
         l.actor_uri = actor;
         l.post_uri = p.uri;
-        l.activity_uri = std::format("{}activities/like/{}/{}",
-                                     config.url_root, viewer.id, p.id);
+        ASSIGN_OR_RETURN(l.activity_uri,
+                         interactionActivityUri(config, "like"));
         l.created_at = nowSeconds();
         return data.addLike(l);
     }
@@ -498,8 +511,8 @@ mw::E<void> Service::setBoost(const User& viewer, const Post& p, bool on) const
         Boost b;
         b.actor_uri = actor;
         b.post_uri = p.uri;
-        b.activity_uri = std::format("{}activities/boost/{}/{}",
-                                     config.url_root, viewer.id, p.id);
+        ASSIGN_OR_RETURN(b.activity_uri,
+                         interactionActivityUri(config, "boost"));
         b.created_at = nowSeconds();
         return data.addBoost(b);
     }
@@ -516,9 +529,8 @@ mw::E<void> Service::setReaction(const User& viewer, const Post& p,
         r.actor_uri = actor;
         r.post_uri = p.uri;
         r.emoji = std::string(emoji_str);
-        r.activity_uri = std::format("{}activities/react/{}/{}/{:x}",
-                                     config.url_root, viewer.id, p.id,
-                                     std::hash<std::string>{}(r.emoji));
+        ASSIGN_OR_RETURN(r.activity_uri,
+                         interactionActivityUri(config, "react"));
         r.created_at = nowSeconds();
         return data.addReaction(r);
     }

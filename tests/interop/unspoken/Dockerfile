@@ -7,6 +7,7 @@ RUN pacman -Sy --needed --noconfirm \
         curl \
         gcc-libs \
         icu \
+        libxml2 \
         openssl \
         sqlite \
     && pacman -Scc --noconfirm < /dev/null

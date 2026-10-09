@@ -2,6 +2,8 @@
 
 #include <cctype>
 #include <format>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -9,6 +11,9 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <libxml/HTMLparser.h>
+#include <libxml/tree.h>
 
 #include <mw/utils.hpp>
 #include <macrodown.h>
@@ -33,12 +38,6 @@ std::string lowerAscii(std::string_view s)
     return out;
 }
 
-bool isNameChar(char c)
-{
-    return std::isalnum(static_cast<unsigned char>(c)) || c == '-'
-        || c == '_';
-}
-
 bool isSpace(char c)
 {
     return std::isspace(static_cast<unsigned char>(c));
@@ -60,47 +59,13 @@ bool isAllowedTag(std::string_view tag)
     return TAGS.contains(tag);
 }
 
-std::string readAttrValue(std::string_view tag, size_t& pos)
+// Read decoded attribute text; ownership stays within this translation unit.
+std::optional<std::string> attrValue(const xmlNode* node, const char* name)
 {
-    while(pos < tag.size() && isSpace(tag[pos])) ++pos;
-    if(pos >= tag.size()) return "";
-    char quote = tag[pos];
-    if(quote == '"' || quote == '\'')
-    {
-        ++pos;
-        size_t start = pos;
-        while(pos < tag.size() && tag[pos] != quote) ++pos;
-        std::string out(tag.substr(start, pos - start));
-        if(pos < tag.size()) ++pos;
-        return out;
-    }
-
-    size_t start = pos;
-    while(pos < tag.size() && !isSpace(tag[pos]) && tag[pos] != '>')
-        ++pos;
-    return std::string(tag.substr(start, pos - start));
-}
-
-std::optional<std::string> attrValue(std::string_view tag,
-                                     std::string_view wanted)
-{
-    size_t pos = 0;
-    while(pos < tag.size() && !isSpace(tag[pos])) ++pos;
-    while(pos < tag.size())
-    {
-        while(pos < tag.size() && isSpace(tag[pos])) ++pos;
-        size_t name_start = pos;
-        while(pos < tag.size() && isNameChar(tag[pos])) ++pos;
-        if(pos == name_start) break;
-        std::string name = lowerAscii(tag.substr(name_start,
-                                                 pos - name_start));
-        while(pos < tag.size() && isSpace(tag[pos])) ++pos;
-        if(pos >= tag.size() || tag[pos] != '=') continue;
-        ++pos;
-        std::string value = readAttrValue(tag, pos);
-        if(name == wanted) return value;
-    }
-    return std::nullopt;
+    std::unique_ptr<xmlChar, decltype(xmlFree)> value(
+        xmlGetNoNsProp(node, reinterpret_cast<const xmlChar*>(name)), xmlFree);
+    if(!value) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(value.get()));
 }
 
 bool safeHref(std::string_view href)
@@ -121,55 +86,31 @@ bool safeSpanClass(std::string_view cls)
     return cls == "mention" || cls == "hashtag";
 }
 
-std::optional<std::string> sanitizeTag(std::string_view raw_tag)
+// Emit only allowed attributes, escaping the parser's decoded values once.
+std::optional<std::string> sanitizedStartTag(
+    const xmlNode* node, std::string_view name)
 {
-    std::string tag = trimAscii(raw_tag);
-    if(tag.empty()) return std::nullopt;
-
-    bool closing = false;
-    if(tag.front() == '/')
-    {
-        closing = true;
-        tag.erase(tag.begin());
-        tag = trimAscii(tag);
-    }
-    if(tag.empty()) return std::nullopt;
-
-    bool self_closing = false;
-    if(tag.back() == '/')
-    {
-        self_closing = true;
-        tag.pop_back();
-        tag = trimAscii(tag);
-    }
-
-    size_t name_end = 0;
-    while(name_end < tag.size() && isNameChar(tag[name_end])) ++name_end;
-    if(name_end == 0) return std::nullopt;
-    std::string name = lowerAscii(std::string_view(tag).substr(0, name_end));
     if(!isAllowedTag(name)) return std::nullopt;
-
-    if(closing) return "</" + name + ">";
     if(name == "br") return "<br>";
 
-    std::string out = "<" + name;
+    std::string out = "<" + std::string(name);
     if(name == "a")
     {
-        auto href = attrValue(tag, "href");
+        auto href = attrValue(node, "href");
         if(!href.has_value() || !safeHref(*href)) return std::nullopt;
         out += " href=\"" + mw::escapeHTML(*href) + "\"";
         out += " rel=\"nofollow noopener noreferrer\"";
     }
     else if(name == "span")
     {
-        auto cls = attrValue(tag, "class");
+        auto cls = attrValue(node, "class");
         if(cls.has_value() && safeSpanClass(*cls))
             out += " class=\"" + *cls + "\"";
     }
     else if(name == "img")
     {
-        auto src = attrValue(tag, "src");
-        auto cls = attrValue(tag, "class");
+        auto src = attrValue(node, "src");
+        auto cls = attrValue(node, "class");
         if(!src.has_value() || !safeImageSrc(*src)
            || !cls.has_value() || *cls != "emoji")
         {
@@ -177,41 +118,38 @@ std::optional<std::string> sanitizeTag(std::string_view raw_tag)
         }
         out += " class=\"emoji\"";
         out += " src=\"" + mw::escapeHTML(*src) + "\"";
-        if(auto alt = attrValue(tag, "alt"); alt.has_value())
+        if(auto alt = attrValue(node, "alt"); alt.has_value())
             out += " alt=\"" + mw::escapeHTML(*alt) + "\"";
-        if(auto title = attrValue(tag, "title"); title.has_value())
+        if(auto title = attrValue(node, "title"); title.has_value())
             out += " title=\"" + mw::escapeHTML(*title) + "\"";
     }
-    out += self_closing ? "/>" : ">";
+    out += ">";
     return out;
 }
 
-std::optional<std::string> tagName(std::string_view raw_tag)
+// Rebuild the tree without copying untrusted markup or serializer options.
+void appendSanitizedNodes(const xmlNode* node, std::string& out)
 {
-    std::string tag = trimAscii(raw_tag);
-    if(tag.empty()) return std::nullopt;
-    if(tag.front() == '/')
+    for(; node != nullptr; node = node->next)
     {
-        tag.erase(tag.begin());
-        tag = trimAscii(tag);
+        if(node->type == XML_TEXT_NODE || node->type == XML_CDATA_SECTION_NODE)
+        {
+            if(node->content != nullptr)
+                out += mw::escapeHTML(
+                    reinterpret_cast<const char*>(node->content));
+            continue;
+        }
+        if(node->type != XML_ELEMENT_NODE) continue;
+        std::string name = lowerAscii(
+            reinterpret_cast<const char*>(node->name));
+        if(name == "script" || name == "style") continue;
+
+        auto start_tag = sanitizedStartTag(node, name);
+        if(start_tag.has_value()) out += *start_tag;
+        appendSanitizedNodes(node->children, out);
+        if(start_tag.has_value() && name != "br" && name != "img")
+            out += "</" + name + ">";
     }
-    if(tag.empty()) return std::nullopt;
-    size_t name_end = 0;
-    while(name_end < tag.size() && isNameChar(tag[name_end])) ++name_end;
-    if(name_end == 0) return std::nullopt;
-    return lowerAscii(tag.substr(0, name_end));
-}
-
-bool isClosingTag(std::string_view raw_tag)
-{
-    std::string tag = trimAscii(raw_tag);
-    return !tag.empty() && tag.front() == '/';
-}
-
-bool isSelfClosingTag(std::string_view raw_tag)
-{
-    std::string tag = trimAscii(raw_tag);
-    return !tag.empty() && tag.back() == '/';
 }
 
 std::string nodePlainText(const macrodown::Node& node)
@@ -398,67 +336,28 @@ RenderedPostContent parsePostContent(const std::string& source,
 
 std::string sanitizeRemoteHtml(std::string_view html)
 {
+    if(html.empty()) return "";
+    // The container keeps leading text and sibling elements in a fragment.
+    // All document/container tags are unwrapped by the allowlist traversal.
+    constexpr std::string_view PREFIX = "<html><body><div>";
+    constexpr std::string_view SUFFIX = "</div></body></html>";
+    if(html.size() > static_cast<size_t>(std::numeric_limits<int>::max())
+                     - PREFIX.size() - SUFFIX.size())
+    {
+        return mw::escapeHTML(html);
+    }
+    std::string input = std::string(PREFIX) + std::string(html)
+        + std::string(SUFFIX);
+    std::unique_ptr<xmlDoc, decltype(&xmlFreeDoc)> doc(
+        htmlReadMemory(input.data(), static_cast<int>(input.size()), nullptr,
+                       "UTF-8", HTML_PARSE_NODEFDTD | HTML_PARSE_NOERROR
+                       | HTML_PARSE_NOWARNING),
+        &xmlFreeDoc);
+    if(!doc) return mw::escapeHTML(html);
+
     std::string out;
     out.reserve(html.size());
-    std::vector<std::string> open_tags;
-    size_t pos = 0;
-    while(pos < html.size())
-    {
-        size_t lt = html.find('<', pos);
-        if(lt == std::string_view::npos)
-        {
-            out += mw::escapeHTML(html.substr(pos));
-            break;
-        }
-        out += mw::escapeHTML(html.substr(pos, lt - pos));
-
-        size_t gt = html.find('>', lt + 1);
-        if(gt == std::string_view::npos)
-        {
-            out += "&lt;";
-            pos = lt + 1;
-            continue;
-        }
-
-        std::string raw = trimAscii(html.substr(lt + 1, gt - lt - 1));
-        std::string lowered = lowerAscii(raw);
-        if(lowered.starts_with("script")
-           || lowered.starts_with("style"))
-        {
-            std::string close = lowered.starts_with("script")
-                ? "</script>" : "</style>";
-            std::string rest = lowerAscii(html.substr(gt + 1));
-            size_t end = rest.find(close);
-            pos = end == std::string::npos
-                ? html.size()
-                : gt + 1 + end + close.size();
-            continue;
-        }
-
-        auto name = tagName(raw);
-        if(auto safe = sanitizeTag(raw); safe.has_value())
-        {
-            if(isClosingTag(raw))
-            {
-                if(name.has_value() && !open_tags.empty()
-                   && open_tags.back() == *name)
-                {
-                    open_tags.pop_back();
-                    out += *safe;
-                }
-            }
-            else
-            {
-                out += *safe;
-                if(name.has_value() && *name != "br" && *name != "img"
-                   && !isSelfClosingTag(raw))
-                {
-                    open_tags.push_back(*name);
-                }
-            }
-        }
-        pos = gt + 1;
-    }
+    appendSanitizedNodes(doc->children, out);
     return out;
 }
 

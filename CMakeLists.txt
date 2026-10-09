@@ -8,6 +8,7 @@ option(UNSPOKEN_BUILD_TESTS "Build unit tests" OFF)
 
 include(FetchContent)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(LibXml2 2.14 REQUIRED)
 
 FetchContent_Declare(
   libmw
@@ -138,6 +139,7 @@ set(SOURCE_FILES
 )
 
 set(LIBS
+  LibXml2::LibXml2
   cxxopts
   mw::mw
   mw::url

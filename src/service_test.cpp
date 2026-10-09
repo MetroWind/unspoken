@@ -1032,3 +1032,145 @@ TEST(ServiceView, UnknownAuthorUsesDefaultAvatar)
               "https://f.test/static/default_avatar.svg");
     EXPECT_TRUE(view["author"]["avatar_is_placeholder"]);
 }
+
+// Exercise each interaction's identity across idempotent writes and Undo.
+class ServiceInteractionIdentity : public ::testing::TestWithParam<int>
+{
+protected:
+    mw::E<void> set(const Service& svc, const User& user, const Post& post,
+                    bool on) const
+    {
+        switch(GetParam())
+        {
+        case 0: return svc.setLike(user, post, on);
+        case 1: return svc.setBoost(user, post, on);
+        default: return svc.setReaction(user, post, "👍", on);
+        }
+    }
+
+    mw::E<std::optional<std::string>> activityUri(
+        const DataSourceSQLite& db, const Post& post) const
+    {
+        switch(GetParam())
+        {
+        case 0:
+        {
+            ASSIGN_OR_RETURN(auto rows, db.likesForPost(post.uri));
+            if(rows.empty()) return std::nullopt;
+            return rows.front().activity_uri;
+        }
+        case 1:
+        {
+            ASSIGN_OR_RETURN(auto rows, db.boostsForPost(post.uri));
+            if(rows.empty()) return std::nullopt;
+            return rows.front().activity_uri;
+        }
+        default:
+        {
+            ASSIGN_OR_RETURN(auto rows, db.reactionsForPost(post.uri));
+            if(rows.empty()) return std::nullopt;
+            return rows.front().activity_uri;
+        }
+        }
+    }
+};
+
+TEST_P(ServiceInteractionIdentity, RecreatedInteractionGetsFreshActivityId)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service svc(config, *db, emoji);
+    ComposeParams params;
+    params.source = "public post";
+    ASSIGN_OR_FAIL(auto post, svc.createPost(alice, params));
+
+    EXPECT_TRUE(set(svc, alice, post, true).has_value());
+    ASSIGN_OR_FAIL(auto first_uri, activityUri(*db, post));
+    ASSERT_TRUE(first_uri.has_value());
+    EXPECT_TRUE(first_uri->starts_with(config.url_root + "activities/"));
+
+    // A repeated enable keeps the persisted ID used by outbound delivery.
+    EXPECT_TRUE(set(svc, alice, post, true).has_value());
+    ASSIGN_OR_FAIL(auto repeated_uri, activityUri(*db, post));
+    EXPECT_EQ(first_uri, repeated_uri);
+
+    EXPECT_TRUE(set(svc, alice, post, false).has_value());
+    ASSIGN_OR_FAIL(auto removed_uri, activityUri(*db, post));
+    EXPECT_FALSE(removed_uri.has_value());
+    EXPECT_TRUE(set(svc, alice, post, true).has_value());
+    ASSIGN_OR_FAIL(auto second_uri, activityUri(*db, post));
+    ASSERT_TRUE(second_uri.has_value());
+    EXPECT_NE(first_uri, second_uri);
+
+    EXPECT_TRUE(set(svc, alice, post, false).has_value());
+    EXPECT_TRUE(set(svc, alice, post, true).has_value());
+    ASSIGN_OR_FAIL(auto third_uri, activityUri(*db, post));
+    ASSERT_TRUE(third_uri.has_value());
+    EXPECT_NE(first_uri, third_uri);
+    EXPECT_NE(second_uri, third_uri);
+}
+
+INSTANTIATE_TEST_SUITE_P(LikeBoostReaction, ServiceInteractionIdentity,
+                         ::testing::Values(0, 1, 2));
+
+TEST(Render, RemoteHtmlDecodesEntitiesAndEscapesOnce)
+{
+    EXPECT_EQ(sanitizeRemoteHtml(
+        "<p>A &amp; B &#38; C &#x1F600; &copy; &NotEqualTilde;</p>"),
+        "<p>A &amp; B &amp; C 😀 © ≂̸</p>");
+    EXPECT_EQ(sanitizeRemoteHtml("&lt;script&gt; &amp;amp; &unknown;"),
+              "&lt;script&gt; &amp;amp; &amp;unknown;");
+    EXPECT_EQ(sanitizeRemoteHtml(
+        "<a href='https://remote.test/?a=1&amp;b=2'>link</a>"),
+        "<a href=\"https://remote.test/?a=1&amp;b=2\" "
+        "rel=\"nofollow noopener noreferrer\">link</a>");
+}
+
+TEST(Render, RemoteHtmlHandlesQuotedAnglesAndEmojiAttributes)
+{
+    EXPECT_EQ(sanitizeRemoteHtml(
+        "<img class='emoji' src='https://remote.test/e?a=1&amp;b=2' "
+        "alt='a > b &quot; c' title='A &amp; B' onerror='bad()'>"),
+        "<img class=\"emoji\" src=\"https://remote.test/e?a=1&amp;b=2\" "
+        "alt=\"a &gt; b &quot; c\" title=\"A &amp; B\">");
+}
+
+TEST(Render, RemoteHtmlRejectsEncodedUnsafeUrls)
+{
+    EXPECT_EQ(sanitizeRemoteHtml(
+        "<a href='java&#x73;cript:alert(1)'>one</a>"
+        "<a href='java&#9;script:alert(1)'>two</a>"
+        "<a href='&#100;ata:text/html,bad'>three</a>"
+        "<img class='emoji' src='javascript:bad()'>"
+        "<img class='emoji' src='data:image/svg+xml,bad'>"),
+        "onetwothree");
+}
+
+TEST(Render, RemoteHtmlPreservesFragmentsWhitespaceAndUtf8)
+{
+    EXPECT_EQ(sanitizeRemoteHtml(""), "");
+    EXPECT_EQ(sanitizeRemoteHtml("hello café 世界 😀"), "hello café 世界 😀");
+    EXPECT_EQ(sanitizeRemoteHtml("before <b>bold</b> after<br>tail"),
+              "before <b>bold</b> after<br>tail");
+    EXPECT_EQ(sanitizeRemoteHtml("<pre>  a\n b\t&amp;\n</pre>"),
+              "<pre>  a\n b\t&amp;\n</pre>");
+}
+
+TEST(Render, RemoteHtmlRepairsNestingAndDropsActiveContent)
+{
+    EXPECT_EQ(sanitizeRemoteHtml("<p><strong>bold"),
+              "<p><strong>bold</strong></p>");
+    EXPECT_EQ(sanitizeRemoteHtml("<b>one</b><i>two</i>"),
+              "<b>one</b><i>two</i>");
+    EXPECT_EQ(sanitizeRemoteHtml(
+        "<div>before<!-- comment --><script>bad()</script>"
+        "<style>bad{}</style><span onclick='bad()'>after</span></div>"),
+        "before<span>after</span>");
+    std::string clean = sanitizeRemoteHtml(
+        "<p>A &amp; B <a href='https://remote.test/?a=1&amp;b=2'>"
+        "link</a><img class='emoji' src='/emoji/a.png' alt='&quot;'></p>");
+    EXPECT_EQ(sanitizeRemoteHtml(clean), clean);
+}

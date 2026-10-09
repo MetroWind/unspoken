@@ -56,8 +56,8 @@ std::string renderPostContent(const std::string& source,
 RenderedPostContent parsePostContent(const std::string& source,
                                      const EmojiRegistry& emoji);
 
-// Sanitize untrusted HTML from remote ActivityPub objects before it is
-// stored or displayed.
+// Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
+// escaping decoded text and attributes once before storage or display.
 std::string sanitizeRemoteHtml(std::string_view html);
 
 } // namespace unspoken

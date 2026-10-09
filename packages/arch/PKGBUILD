@@ -7,7 +7,7 @@ pkgdesc='Micro-blog server that federates over ActivityPub'
 arch=('x86_64')
 url='https://github.com/MetroWind/unspoken'
 license=('unknown')
-depends=('curl' 'gcc-libs' 'glibc' 'openssl' 'sqlite')
+depends=('curl' 'gcc-libs' 'glibc' 'libxml2>=2.14' 'openssl' 'sqlite')
 makedepends=('cmake' 'git')
 provides=('unspoken')
 conflicts=('unspoken')
