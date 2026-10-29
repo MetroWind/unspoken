@@ -78,6 +78,16 @@ int main(int argc, char** argv)
                       mw::errorMsg(db_init.error()));
         return 1;
     }
+    mw::Crypto federation_crypto;
+    mw::HTTPSession federation_http;
+    auto federation_init = unspoken::initializeFederationLibrary(
+        *config, **db_init, federation_crypto, federation_http);
+    if(!federation_init)
+    {
+        spdlog::error("Failed to initialize federation: {}",
+                      mw::errorMsg(federation_init.error()));
+        return 1;
+    }
     int64_t maintenance_now = mw::timeToSeconds(mw::Clock::now());
     auto pruned = unspoken::runInboxMaintenanceOnce(
         *config, **db_init, maintenance_now);

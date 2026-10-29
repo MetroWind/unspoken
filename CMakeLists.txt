@@ -61,6 +61,8 @@ set(INJA_USE_EMBEDDED_JSON FALSE)
 set(INJA_BUILD_TESTS FALSE)
 FetchContent_MakeAvailable(libmw ryml spdlog cxxopts json inja macrodown)
 
+add_subdirectory(lib/actpub)
+
 set(UNSPOKEN_UNICODE_EMOJI_VERSION "17.0.0"
     CACHE STRING "Unicode emoji data version")
 set(UNSPOKEN_EMOJI_TEST_INPUT "" CACHE FILEPATH
@@ -139,6 +141,7 @@ set(SOURCE_FILES
 )
 
 set(LIBS
+  ActPub::actpub
   LibXml2::LibXml2
   cxxopts
   mw::mw
@@ -184,6 +187,7 @@ target_compile_options(fake_oidc PRIVATE
   -Wall -Wextra -Wpedantic -Wno-error=deprecated-literal-operator)
 target_include_directories(fake_oidc PRIVATE ${INCLUDES} src)
 target_link_libraries(fake_oidc PRIVATE
+  ActPub::actpub
   mw::mw
   mw::url
   mw::http-server
@@ -192,6 +196,9 @@ target_link_libraries(fake_oidc PRIVATE
 
 if(UNSPOKEN_BUILD_TESTS)
   set(TEST_FILES
+    lib/actpub/tests/transaction_test.cpp
+    lib/actpub/tests/store_test.cpp
+    lib/actpub/tests/engine_test.cpp
     src/config_test.cpp
     src/data_test.cpp
     src/auth_test.cpp

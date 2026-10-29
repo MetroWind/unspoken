@@ -12,6 +12,9 @@
 #include <mw/error.hpp>
 #include <mw/test_utils.hpp>
 
+#include <actpub/transaction.hpp>
+#include <actpub/store.hpp>
+
 #include "data.hpp"
 #include "data_mock.hpp"
 #include "structs.hpp"
@@ -67,11 +70,11 @@ RemoteActor sampleRemoteActor(const std::string& uri)
 
 } // namespace
 
-TEST(Data, SchemaVersionIsThree)
+TEST(Data, SchemaVersionIsFour)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 3);
+    EXPECT_EQ(v, 4);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -96,7 +99,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 3);
+    EXPECT_EQ(version, 4);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -170,7 +173,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 3);
+    EXPECT_EQ(version, 4);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -1189,4 +1192,184 @@ TEST(WriteRetry, GivesUpAfterMaxRetries)
     };
     EXPECT_FALSE(withWriteRetry(txn, 3).has_value());
     EXPECT_EQ(calls, 4); // initial + 3 retries
+}
+
+TEST(Data, BorrowedConnectionComposesWithHostTransaction)
+{
+    // Initialize through the normal factory, then use its existing schema.
+    ASSIGN_OR_FAIL(auto owner, DataSourceSQLite::newFromMemory());
+    DataSourceSQLite borrowed(owner->connection());
+    {
+        ASSIGN_OR_FAIL(auto tx, ap::Transaction::begin(owner->connection()));
+        ASSIGN_OR_FAIL(auto alice, borrowed.createUser(sampleUser("alice")));
+        NewPost params;
+        params.local_author_id = alice.id;
+        params.content_html = "draft";
+        ASSIGN_OR_FAIL(auto post,
+                       borrowed.insertPost(params, {}, "https://f.test/p/"));
+        EXPECT_TRUE(borrowed.getPostById(post.id).value().has_value());
+        // No commit: both account and post must disappear together.
+    }
+    EXPECT_FALSE(owner->getUserByUsername("alice").value().has_value());
+    EXPECT_EQ(owner->countLocalPosts().value(), 0);
+}
+
+TEST(Data, FederationMigrationRollsBackAndPreservesQueuedIdentities)
+{
+    namespace fs = std::filesystem;
+    auto path =
+        fs::temp_directory_path() / "unspoken_federation_bridge_test.sqlite";
+    std::error_code ignored;
+    fs::remove(path, ignored);
+    fs::copy_file("tests/fixtures/db/v1.sqlite", path);
+    {
+        ASSIGN_OR_FAIL(auto connection, mw::SQLite::connectFile(path.string()));
+        DataSourceSQLite source(*connection);
+        ASSERT_TRUE(source.migrate1To2().has_value());
+        ASSERT_TRUE(source.migrate2To3().has_value());
+        nlohmann::json payload = {
+            {"activity", {{"id", "https://remote.test/original"}}},
+            {"target_inbox", "https://remote.test/inbox"},
+            {"signer_actor", "https://local.test/writer"}};
+        ASSIGN_OR_FAIL(auto insert,
+                       connection->statementFromStr(
+                           "INSERT INTO "
+                           "jobs(id,kind,payload_json,state,attempts,run_after,"
+                           "created_at) "
+                           "VALUES (2001,'deliver',?,'running',2,100,1)"));
+        ASSERT_TRUE(insert.bind<std::string>(payload.dump()).has_value());
+        ASSERT_TRUE(connection->execute(std::move(insert)).has_value());
+        ASSIGN_OR_FAIL(auto actor_count,
+                       connection->evalToValue<int64_t>(
+                           "SELECT count(*) FROM remote_actors"));
+        ASSERT_GT(actor_count, 0);
+        ASSERT_TRUE(ap::Store(*connection).migrate().has_value());
+        ASSERT_TRUE(
+            connection
+                ->execute(
+                    "CREATE TRIGGER fail_bridge BEFORE INSERT ON "
+                    "ap_remote_actors "
+                    "BEGIN SELECT RAISE(ABORT,'injected bridge failure'); END")
+                .has_value());
+        EXPECT_FALSE(source.migrate3To4().has_value());
+        EXPECT_EQ(source.getSchemaVersion().value(), 3);
+        EXPECT_EQ(
+            connection
+                ->evalToValue<std::string>(
+                    "SELECT type FROM sqlite_master WHERE name='remote_actors'")
+                .value(),
+            "table");
+        EXPECT_EQ(
+            connection
+                ->evalToValue<int64_t>("SELECT count(*) FROM remote_actors")
+                .value(),
+            actor_count);
+        EXPECT_EQ(
+            connection
+                ->evalToValue<int64_t>("SELECT count(*) FROM ap_remote_actors")
+                .value(),
+            0);
+        ASSERT_TRUE(
+            connection->execute("DROP TRIGGER fail_bridge").has_value());
+        ASSERT_TRUE(source.migrate3To4().has_value());
+        EXPECT_EQ(source.getSchemaVersion().value(), 4);
+        EXPECT_EQ(
+            connection
+                ->evalToValue<int64_t>("SELECT count(*) FROM ap_remote_actors")
+                .value(),
+            actor_count);
+        EXPECT_EQ(
+            connection
+                ->evalToValue<std::string>(
+                    "SELECT type FROM sqlite_master WHERE name='remote_actors'")
+                .value(),
+            "view");
+        EXPECT_EQ(connection
+                      ->evalToValue<std::string>(
+                          "SELECT payload_json FROM ap_jobs WHERE id=2001")
+                      .value(),
+                  payload.dump());
+        EXPECT_EQ(connection
+                      ->evalToValue<std::string>(
+                          "SELECT state FROM ap_jobs WHERE id=2001")
+                      .value(),
+                  "pending");
+        EXPECT_EQ(connection
+                      ->evalToValue<int64_t>(
+                          "SELECT attempts FROM ap_jobs WHERE id=2001")
+                      .value(),
+                  2);
+    }
+    fs::remove(path, ignored);
+    fs::remove(path.string() + "-wal", ignored);
+    fs::remove(path.string() + "-shm", ignored);
+}
+
+TEST(Data, OpensOlderVersionThreeSchema)
+{
+    namespace fs = std::filesystem;
+    auto path =
+        fs::temp_directory_path() / "unspoken_missing_system_actor_test.sqlite";
+    std::error_code ignored;
+    fs::remove(path, ignored);
+    fs::copy_file("tests/fixtures/db/v1.sqlite", path);
+    std::vector<std::tuple<std::string, std::string>> keys;
+    {
+        ASSIGN_OR_FAIL(auto connection, mw::SQLite::connectFile(path.string()));
+        DataSourceSQLite source(*connection);
+        ASSERT_TRUE(source.migrate1To2().has_value());
+        ASSERT_TRUE(source.migrate2To3().has_value());
+        ASSERT_TRUE(connection->execute("DROP TABLE system_actor").has_value());
+        ASSERT_TRUE(
+            connection
+                ->execute("ALTER TABLE reactions DROP COLUMN remote_emoji_url")
+                .has_value());
+        ASSERT_TRUE(
+            connection
+                ->execute(
+                    "ALTER TABLE reactions DROP COLUMN remote_emoji_media_type")
+                .has_value());
+        ASSERT_TRUE(
+            connection
+                ->execute(
+                    "INSERT INTO "
+                    "reactions(id,actor_uri,post_uri,emoji,activity_uri,"
+                    "created_at) VALUES (4567,'https://remote.test/writer',"
+                    "'https://local.test/post',':blob:',"
+                    "'https://remote.test/original',123)")
+                .has_value());
+        ASSIGN_OR_FAIL(keys, (connection->eval<std::string, std::string>(
+                                 "SELECT private_key_pem,public_key_pem FROM "
+                                 "users ORDER BY id")));
+        ASSERT_FALSE(keys.empty());
+    }
+    {
+        ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
+        EXPECT_EQ(source->getSchemaVersion().value(), 4);
+        ASSIGN_OR_FAIL(auto system, source->getSystemActor());
+        EXPECT_FALSE(system.has_value());
+        ASSIGN_OR_FAIL(auto migrated_keys,
+                       (source->connection().eval<std::string, std::string>(
+                           "SELECT private_key_pem,public_key_pem FROM users "
+                           "ORDER BY id")));
+        EXPECT_EQ(migrated_keys, keys);
+        ASSIGN_OR_FAIL(auto reaction,
+                       source->reactionsForPost("https://local.test/post"));
+        ASSERT_EQ(reaction.size(), 1u);
+        EXPECT_EQ(reaction.front().id, 4567);
+        EXPECT_EQ(reaction.front().activity_uri,
+                  "https://remote.test/original");
+        EXPECT_EQ(reaction.front().created_at, 123);
+        EXPECT_FALSE(reaction.front().remote_emoji_url.has_value());
+        EXPECT_FALSE(reaction.front().remote_emoji_media_type.has_value());
+        EXPECT_EQ(
+            source->connection()
+                .evalToValue<std::string>(
+                    "SELECT type FROM sqlite_master WHERE name='system_actor'")
+                .value(),
+            "view");
+    }
+    fs::remove(path, ignored);
+    fs::remove(path.string() + "-wal", ignored);
+    fs::remove(path.string() + "-shm", ignored);
 }

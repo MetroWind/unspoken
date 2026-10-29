@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <actpub/types.hpp>
 
 namespace unspoken
 {
@@ -20,8 +21,7 @@ namespace unspoken
 // silently break public-visibility detection. The full IRI is always
 // what we emit on output; isPublicAddress() (JSON-LD layer) recognizes
 // the compact/bare input forms.
-inline constexpr std::string_view AS_PUBLIC =
-    "https://www.w3.org/ns/activitystreams#Public";
+using ap::AS_PUBLIC;
 
 enum class Visibility
 {
@@ -54,28 +54,9 @@ inline std::optional<Visibility> visibilityFromStr(std::string_view s)
     return std::nullopt;
 }
 
-enum class FollowState
-{
-    PENDING,
-    ACCEPTED,
-};
-
-inline std::string_view followStateToStr(FollowState s)
-{
-    switch(s)
-    {
-    case FollowState::PENDING:  return "pending";
-    case FollowState::ACCEPTED: return "accepted";
-    }
-    return "pending";
-}
-
-inline std::optional<FollowState> followStateFromStr(std::string_view s)
-{
-    if(s == "pending")  return FollowState::PENDING;
-    if(s == "accepted") return FollowState::ACCEPTED;
-    return std::nullopt;
-}
+using ap::FollowState;
+using ap::followStateFromStr;
+using ap::followStateToStr;
 
 // A local account. One row per OIDC subject that finished username
 // setup.
@@ -108,40 +89,12 @@ struct NewUser
 
 // Server-wide ActivityPub actor for keyless server operations. Its
 // keypair is persisted once and reused across restarts.
-struct SystemActor
-{
-    std::string private_key_pem;
-    std::string public_key_pem;
-    int64_t created_at = 0;
-};
-
+using ap::SystemActor;
 // A remote actor document. Values fetched only for one operation have id ==
 // 0; values retained by the data layer have id > 0.
-struct RemoteActor
-{
-    int64_t id = 0;
-    std::string uri;            // the actor id
-    std::string username;       // preferredUsername
-    std::string domain;         // for @user@domain handle
-    std::string display_name;
-    std::string inbox;
-    std::optional<std::string> shared_inbox;
-    std::string public_key_pem;
-    std::string public_key_id;  // the keyId in signatures
-    std::string actor_json;     // raw cached actor doc
-    int64_t fetched_at = 0;
-    int64_t retained_at = 0;    // latest local-reference transition
-};
-
+using ap::RemoteActor;
 // A remote actor lookup result and whether it was retained before lookup.
-struct RemoteActorResolution
-{
-    // The retained or transient document selected by lookup.
-    RemoteActor actor;
-    // Whether the document was retained before this lookup began.
-    bool retained = false;
-};
-
+using ap::RemoteActorResolution;
 // A post. BOTH local and remote posts live in one table (PRD line 207).
 struct Post
 {
@@ -231,82 +184,15 @@ struct RenderedProfileField
 
 // A follow relationship. Stores actor URIs so it uniformly covers local
 // and remote on both sides.
-struct Follow
-{
-    int64_t id = 0;
-    std::string follower_uri;
-    std::string followee_uri;
-    FollowState state = FollowState::PENDING;
-    std::optional<std::string> follow_activity_uri;
-    int64_t created_at = 0;
-};
-
-struct ActorCollectionItem
-{
-    int64_t id = 0;
-    std::string actor_uri;
-};
-
-struct Like
-{
-    int64_t id = 0;
-    std::string actor_uri;
-    std::string post_uri;
-    std::optional<std::string> activity_uri;
-    int64_t created_at = 0;
-};
-
-struct Boost
-{
-    int64_t id = 0;
-    std::string actor_uri;
-    std::string post_uri;
-    std::optional<std::string> activity_uri;
-    int64_t created_at = 0;
-};
-
-struct Reaction
-{
-    int64_t id = 0;
-    std::string actor_uri;
-    std::string post_uri;
-    std::string emoji;          // unicode emoji or :shortcode:
-    std::optional<std::string> remote_emoji_url;
-    std::optional<std::string> remote_emoji_media_type;
-    std::optional<std::string> activity_uri;
-    int64_t created_at = 0;
-};
-
+using ap::ActorCollectionItem;
+using ap::Boost;
+using ap::Follow;
+using ap::Like;
+using ap::Reaction;
 // A persisted background job (design §14).
-struct Job
-{
-    int64_t id = 0;
-    std::string kind;           // 'deliver' | 'resolve_actor' | ...
-    std::string payload_json;
-    std::string state;          // 'pending' | 'running' | 'done' | 'failed'
-    int64_t attempts = 0;
-    int64_t run_after = 0;      // earliest unix time to run
-    std::optional<std::string> last_error;
-    int64_t created_at = 0;
-};
-
+using ap::Job;
 // A normalized, parser-friendly view of an incoming activity (§9).
-struct Activity
-{
-    std::string id;             // canonical URI
-    std::string type;           // "Create", "Follow", ...
-    std::string actor;          // canonical actor URI
-    nlohmann::json object;      // embedded object or {"id": "..."}
-    std::vector<std::string> to;
-    std::vector<std::string> cc;
-    nlohmann::json raw;         // the original, for forwarding verbatim
-};
-
+using ap::Activity;
 // Cursor pagination (decision C4). Keyed on the integer id.
-struct Cursor
-{
-    std::optional<int64_t> max_id; // items with id < max_id (older)
-    std::optional<int64_t> min_id; // items with id > min_id (newer)
-};
-
+using ap::Cursor;
 } // namespace unspoken

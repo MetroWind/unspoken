@@ -49,8 +49,9 @@ Common optional keys and defaults:
 - `sqlite_busy_timeout_ms`: `5000`.
 - `seen_activity_retention_seconds`: `2592000` (30 days). Completed inbox
   activity IDs older than this are eligible for pruning.
-- `inbox_processing_lease_seconds`: `300` (5 minutes). A redelivery may
-  reclaim an unfinished inbox activity after this interval.
+- `inbox_processing_lease_seconds`: `300` (5 minutes). Retained for legacy
+  receipt APIs. The migrated HTTP inbox commits effects and receipts in one
+  transaction and does not use a separate processing lease.
 - `maintenance_batch_size`: `1000`. The maximum completed activity IDs
   removed in one SQLite maintenance transaction.
 - `remote_actor_gc_grace_seconds`: `2592000` (30 days). Unreferenced remote
@@ -209,3 +210,35 @@ Record the peer name/version, the local commit, the test account handles,
 and any quirk or failed activity ID. Check the phase 7 interop item in
 `plan.md` only after Mastodon, Akkoma or Pleroma, and Misskey all pass
 or have documented fixes committed.
+
+## Federation library migration
+
+Unspoken's application schema version 4 moves federation persistence into
+library-owned `ap_*` tables. Startup migrates older databases before serving
+requests or starting workers. Actor keys, actor/object/activity URIs,
+relationship IDs, and queued delivery payloads are preserved. Previously
+running jobs are requeued because the old workers must be stopped before
+upgrade. New claims use lease expiry and claimant tokens for crash recovery. Older v3
+databases without the system-actor table or optional remote-emoji columns
+are supported; missing optional fields receive their library defaults.
+
+Stop Unspoken and take a consistent SQLite backup before upgrading. For the
+standard package paths, for example:
+
+```sh
+sudo systemctl stop unspoken
+sudo -u unspoken sqlite3 /var/lib/unspoken/unspoken.db \
+    ".backup '/var/lib/unspoken/pre_library.db'"
+```
+
+Start the new binary only after the backup succeeds. The application schema
+version and the library's `ap_schema` version are independent. Old federation
+table names remain read-only compatibility views for application queries
+and inspection; new SQL writes belong to the library. Do not run the old
+binary against the migrated database. Downgrade requires restoring the
+pre-upgrade backup, which discards writes received after the upgrade.
+
+Unspoken retains responsibility for HTML sanitization and media serving.
+The library stores protocol snapshots independently of display projections.
+Private outbox activities are not publicly enumerable, and deleted public
+objects retain protocol tombstones after their application post is removed.

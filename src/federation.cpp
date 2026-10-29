@@ -1,4 +1,6 @@
 #include "federation.hpp"
+#include <actpub/engine.hpp>
+#include <actpub/identity.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -31,6 +33,7 @@
 #include "data.hpp"
 #include "emoji.hpp"
 #include "render.hpp"
+#include "service.hpp"
 #include "structs.hpp"
 
 namespace unspoken
@@ -86,42 +89,6 @@ std::optional<nlohmann::json> actorImageJson(
     };
 }
 
-std::string httpDate()
-{
-    std::time_t t = std::time(nullptr);
-    std::tm tm{};
-#if defined(_WIN32)
-    gmtime_s(&tm, &t);
-#else
-    gmtime_r(&t, &tm);
-#endif
-    char buf[40];
-    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
-    return std::string(buf);
-}
-
-std::string requestTarget(const mw::URL& url)
-{
-    std::string path = url.path();
-    if(path.empty()) path = "/";
-    std::string query = url.query();
-    if(!query.empty()) path += "?" + query;
-    return path;
-}
-
-std::string requestAuthority(const mw::URL& url)
-{
-    std::string host = url.host();
-    std::string port = url.port();
-    if(port.empty()) return host;
-    if((url.scheme() == "https" && port == "443")
-       || (url.scheme() == "http" && port == "80"))
-    {
-        return host;
-    }
-    return host + ":" + port;
-}
-
 nlohmann::json headersJson(
     const std::unordered_map<std::string, std::string>& headers)
 {
@@ -153,95 +120,9 @@ void logOutgoingFederationResponse(std::string_view method,
                   res.payloadAsStr());
 }
 
-bool ipv4In(const std::vector<uint8_t>& a, uint8_t b0)
+ap::TransportConfig transportConfig(const Config& config)
 {
-    return a.size() == 4 && a[0] == b0;
-}
-
-bool ipv4In(const std::vector<uint8_t>& a, uint8_t b0, uint8_t b1)
-{
-    return a.size() == 4 && a[0] == b0 && a[1] == b1;
-}
-
-bool ipv6AllZeroUntilLast(const std::vector<uint8_t>& a, uint8_t last)
-{
-    if(a.size() != 16 || a[15] != last) return false;
-    for(size_t i = 0; i < 15; ++i) if(a[i] != 0) return false;
-    return true;
-}
-
-std::string lower(std::string_view s)
-{
-    std::string out;
-    out.reserve(s.size());
-    for(char c : s)
-    {
-        out.push_back(static_cast<char>(std::tolower(
-            static_cast<unsigned char>(c))));
-    }
-    return out;
-}
-
-bool hostMatches(std::string_view host,
-                 const std::vector<std::string>& allowed_hosts)
-{
-    std::string needle = lower(host);
-    for(const auto& allowed : allowed_hosts)
-    {
-        if(needle == lower(allowed)) return true;
-    }
-    return false;
-}
-
-bool isMetadataAddress(const mw::SockAddr& addr)
-{
-    const auto& a = addr.address;
-    return addr.family == mw::AddressFamily::IPV4 && a.size() == 4
-        && a[0] == 169 && a[1] == 254 && a[2] == 169 && a[3] == 254;
-}
-
-std::string addressForLog(const mw::SockAddr& addr)
-{
-    const auto& a = addr.address;
-    if(addr.family == mw::AddressFamily::IPV4 && a.size() == 4)
-    {
-        return std::format("{}.{}.{}.{}:{}", a[0], a[1], a[2], a[3],
-                           addr.port);
-    }
-    std::ostringstream out;
-    out << "[";
-    for(size_t i = 0; i < a.size(); i += 2)
-    {
-        if(i > 0) out << ":";
-        uint16_t part = static_cast<uint16_t>(a[i]) << 8;
-        if(i + 1 < a.size()) part |= a[i + 1];
-        out << std::hex << part;
-    }
-    out << "]:" << std::dec << addr.port;
-    return out.str();
-}
-
-std::string percentEncode(std::string_view s)
-{
-    constexpr char HEX[] = "0123456789ABCDEF";
-    std::string out;
-    for(unsigned char c : s)
-    {
-        bool keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-            || (c >= '0' && c <= '9') || c == '-' || c == '_'
-            || c == '.' || c == '~';
-        if(keep)
-        {
-            out.push_back(static_cast<char>(c));
-        }
-        else
-        {
-            out.push_back('%');
-            out.push_back(HEX[c >> 4]);
-            out.push_back(HEX[c & 0x0f]);
-        }
-    }
-    return out;
+    return {config.dev, config.http_signature_skew_seconds};
 }
 
 std::optional<std::pair<std::string, std::string>>
@@ -264,314 +145,19 @@ parseHandle(std::string_view handle)
     return std::make_pair(username, domain);
 }
 
-std::unordered_map<std::string, std::string>
-lowerHeaders(const std::unordered_map<std::string, std::string>& headers)
-{
-    std::unordered_map<std::string, std::string> out;
-    for(const auto& [k, v] : headers) out[lower(k)] = v;
-    return out;
-}
-
-std::optional<std::string> header(
-    const std::unordered_map<std::string, std::string>& headers,
-    std::string_view name)
-{
-    auto it = headers.find(std::string(name));
-    if(it == headers.end()) return std::nullopt;
-    return it->second;
-}
-
-std::vector<std::string> splitWords(std::string_view s)
-{
-    std::istringstream in{std::string(s)};
-    std::vector<std::string> out;
-    std::string item;
-    while(in >> item) out.push_back(item);
-    return out;
-}
-
-std::unordered_map<std::string, std::string>
-parseSignatureParams(std::string_view sig)
-{
-    std::unordered_map<std::string, std::string> out;
-    size_t pos = 0;
-    while(pos < sig.size())
-    {
-        while(pos < sig.size() && (sig[pos] == ' ' || sig[pos] == ','))
-            ++pos;
-        size_t eq = sig.find('=', pos);
-        if(eq == std::string_view::npos) break;
-        std::string key = lower(sig.substr(pos, eq - pos));
-        pos = eq + 1;
-        std::string value;
-        if(pos < sig.size() && sig[pos] == '"')
-        {
-            ++pos;
-            while(pos < sig.size())
-            {
-                if(sig[pos] == '\\' && pos + 1 < sig.size())
-                {
-                    value.push_back(sig[pos + 1]);
-                    pos += 2;
-                    continue;
-                }
-                if(sig[pos] == '"')
-                {
-                    ++pos;
-                    break;
-                }
-                value.push_back(sig[pos++]);
-            }
-        }
-        else
-        {
-            size_t comma = sig.find(',', pos);
-            value = std::string(sig.substr(
-                pos, comma == std::string_view::npos ? comma : comma - pos));
-            pos = comma == std::string_view::npos ? sig.size() : comma + 1;
-        }
-        out[key] = value;
-    }
-    return out;
-}
-
-struct ParsedHttpSignature
-{
-    std::string key_id;
-    std::string actor_uri;
-    std::vector<std::string> signed_headers;
-    std::vector<unsigned char> signature;
-    std::string signing_input;
-};
-
-std::optional<int64_t> parseHttpDate(std::string_view date)
-{
-    std::tm tm{};
-    std::istringstream in{std::string(date)};
-    in.imbue(std::locale::classic());
-    in >> std::get_time(&tm, "%a, %d %b %Y %H:%M:%S GMT");
-    if(in.fail()) return std::nullopt;
-#if defined(_WIN32)
-    return static_cast<int64_t>(_mkgmtime(&tm));
-#else
-    return static_cast<int64_t>(timegm(&tm));
-#endif
-}
-
-mw::E<std::string> digestHeaderFor(std::string_view body)
-{
-    mw::SHA256Hasher hasher;
-    ASSIGN_OR_RETURN(auto digest, hasher.hashToBytes(std::string(body)));
-    return "SHA-256=" + mw::base64Encode(
-        std::span<unsigned char>(digest.data(), digest.size()), false, true);
-}
-
-mw::E<bool> verifyDigestHeader(std::string_view header_value,
-                               std::string_view body)
-{
-    mw::SHA256Hasher hasher;
-    ASSIGN_OR_RETURN(auto expected, hasher.hashToBytes(std::string(body)));
-
-    size_t pos = 0;
-    while(pos < header_value.size())
-    {
-        size_t comma = header_value.find(',', pos);
-        std::string_view part = comma == std::string_view::npos
-            ? header_value.substr(pos)
-            : header_value.substr(pos, comma - pos);
-        pos = comma == std::string_view::npos ? header_value.size()
-                                              : comma + 1;
-
-        size_t eq = part.find('=');
-        if(eq == std::string_view::npos) continue;
-        std::string algorithm(lower(mw::strip(part.substr(0, eq))));
-        if(algorithm != "sha-256") continue;
-
-        std::string encoded(mw::strip(part.substr(eq + 1)));
-        ASSIGN_OR_RETURN(auto actual, mw::base64Decode(encoded));
-        return actual.size() == expected.size()
-            && std::equal(actual.begin(), actual.end(), expected.begin());
-    }
-    return false;
-}
-
-bool containsHeader(const std::vector<std::string>& headers,
-                    std::string_view name)
-{
-    for(const auto& h : headers) if(lower(h) == name) return true;
-    return false;
-}
-
-std::string firstForwardedValue(std::string_view value)
-{
-    size_t comma = value.find(',');
-    return std::string(mw::strip(
-        comma == std::string_view::npos ? value : value.substr(0, comma)));
-}
-
-std::unordered_map<std::string, std::string> signatureHeaders(
-    const std::unordered_map<std::string, std::string>& raw_headers)
-{
-    auto headers = lowerHeaders(raw_headers);
-    auto forwarded_host = header(headers, "x-forwarded-host");
-    if(forwarded_host.has_value() && !forwarded_host->empty())
-    {
-        headers["host"] = firstForwardedValue(*forwarded_host);
-    }
-    return headers;
-}
-
-mw::E<std::string> signingString(
-    const IncomingHttpRequest& req,
-    const std::unordered_map<std::string, std::string>& headers,
-    const std::vector<std::string>& signed_headers)
-{
-    std::vector<std::string> lines;
-    for(const auto& raw_name : signed_headers)
-    {
-        std::string name = lower(raw_name);
-        if(name == "(request-target)")
-        {
-            lines.push_back(std::format("(request-target): {} {}",
-                                        lower(req.method), req.target));
-            continue;
-        }
-        auto value = header(headers, name);
-        if(!value.has_value())
-        {
-            return std::unexpected(mw::runtimeError(
-                std::format("Signed header missing: {}", name)));
-        }
-        lines.push_back(std::format("{}: {}", name, *value));
-    }
-
-    std::string out;
-    for(size_t i = 0; i < lines.size(); ++i)
-    {
-        if(i > 0) out.push_back('\n');
-        out += lines[i];
-    }
-    return out;
-}
-
-mw::E<ParsedHttpSignature> parseHttpSignature(
-    const Config& config, const IncomingHttpRequest& req,
-    int64_t now_seconds)
-{
-    auto headers = signatureHeaders(req.headers);
-    auto sig_header = header(headers, "signature");
-    if(!sig_header.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Missing Signature"));
-    }
-    auto params = parseSignatureParams(*sig_header);
-    if(!params.contains("keyid") || !params.contains("signature")
-       || params["keyid"].empty() || params["signature"].empty())
-    {
-        return std::unexpected(mw::httpError(401, "Bad Signature header"));
-    }
-
-    std::string algorithm = lower(params.contains("algorithm")
-        ? params["algorithm"] : "rsa-sha256");
-    if(algorithm != "rsa-sha256" && algorithm != "hs2019")
-    {
-        return std::unexpected(mw::httpError(
-            401, "Unsupported signature algorithm"));
-    }
-
-    std::vector<std::string> signed_headers = params.contains("headers")
-        ? splitWords(params["headers"])
-        : std::vector<std::string>{"date"};
-    if(!containsHeader(signed_headers, "date"))
-    {
-        return std::unexpected(mw::httpError(401, "Date is not signed"));
-    }
-    if(!containsHeader(signed_headers, "(request-target)"))
-    {
-        return std::unexpected(mw::httpError(
-            401, "Request target is not signed"));
-    }
-
-    auto date = header(headers, "date");
-    if(!date.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Missing Date"));
-    }
-    auto request_time = parseHttpDate(*date);
-    if(!request_time.has_value()
-       || std::llabs(now_seconds - *request_time)
-              > config.http_signature_skew_seconds)
-    {
-        return std::unexpected(mw::httpError(401, "Date skew too large"));
-    }
-
-    std::string method = lower(req.method);
-    if(method == "post" || method == "put")
-    {
-        if(!containsHeader(signed_headers, "digest"))
-        {
-            return std::unexpected(mw::httpError(
-                401, "Digest is not signed"));
-        }
-        auto digest = header(headers, "digest");
-        if(!digest.has_value())
-        {
-            return std::unexpected(mw::httpError(401, "Missing Digest"));
-        }
-        auto digest_ok = verifyDigestHeader(*digest, req.body);
-        if(!digest_ok.has_value() || !*digest_ok)
-        {
-            return std::unexpected(mw::httpError(401, "Digest mismatch"));
-        }
-    }
-
-    auto signature = mw::base64Decode(params["signature"]);
-    if(!signature.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Bad Signature header"));
-    }
-    auto signing_input = signingString(req, headers, signed_headers);
-    if(!signing_input.has_value())
-    {
-        return std::unexpected(mw::httpError(401, "Bad Signature header"));
-    }
-
-    std::string actor_uri = params["keyid"];
-    size_t hash = actor_uri.find('#');
-    if(hash != std::string::npos) actor_uri.resize(hash);
-    if(actor_uri.empty() || !isValidRemoteUrl(config.dev, actor_uri))
-    {
-        return std::unexpected(mw::httpError(401, "Invalid signature key"));
-    }
-
-    return ParsedHttpSignature{
-        std::move(params["keyid"]),
-        std::move(actor_uri),
-        std::move(signed_headers),
-        std::move(*signature),
-        std::move(*signing_input),
-    };
-}
-
-mw::E<bool> verifyParsedHttpSignature(
-    mw::CryptoInterface& crypto, const ParsedHttpSignature& signature,
-    const RemoteActor& actor)
-{
-    if(actor.uri != signature.actor_uri
-       || actor.public_key_id != signature.key_id)
-    {
-        return false;
-    }
-    return crypto.verifySignature(mw::SignatureAlgorithm::RSA_V1_5_SHA256,
-                                  actor.public_key_pem,
-                                  signature.signature,
-                                  signature.signing_input);
-}
-
 void appendAll(std::vector<std::string>& out,
                const std::vector<std::string>& in)
 {
     out.insert(out.end(), in.begin(), in.end());
+}
+
+std::string jsonString(const nlohmann::json& object, const char* key,
+                       std::string_view fallback = "")
+{
+    auto field = object.find(key);
+    if(field == object.end() || !field->is_string())
+        return std::string(fallback);
+    return field->get<std::string>();
 }
 
 bool boolField(const nlohmann::json& object, std::string_view key)
@@ -761,7 +347,7 @@ mw::E<void> fetchThreadObject(
         return {};
     }
 
-    if(doc.value("type", std::string()) == "Note")
+    if(jsonString(doc, "type") == "Note")
     {
         auto object_uri = normalizeRef(doc);
         if(!object_uri.has_value()) return {};
@@ -957,8 +543,10 @@ mw::E<std::optional<ForwardingPlan>> prepareIncomingForwarding(
     if(!object_uri.has_value()) return std::optional<ForwardingPlan>{};
 
     std::vector<std::string> claimed_addresses;
-    appendAll(claimed_addresses, activity.to);
-    appendAll(claimed_addresses, activity.cc);
+    claimed_addresses.insert(claimed_addresses.end(), activity.to.begin(),
+                             activity.to.end());
+    claimed_addresses.insert(claimed_addresses.end(), activity.cc.begin(),
+                             activity.cc.end());
     std::set<std::string> claimed_collections;
     for(const auto& address : claimed_addresses)
     {
@@ -1081,9 +669,9 @@ std::map<std::string, EmojiInfo> emojiTagsForObject(
 
     for(const auto& tag : tags)
     {
-        if(!tag.is_object() || tag.value("type", std::string()) != "Emoji")
+        if(!tag.is_object() || jsonString(tag, "type") != "Emoji")
             continue;
-        std::string shortcode = tag.value("name", std::string());
+        std::string shortcode = jsonString(tag, "name");
         if(shortcode.size() >= 3 && shortcode.front() == ':'
            && shortcode.back() == ':')
         {
@@ -1100,7 +688,7 @@ std::map<std::string, EmojiInfo> emojiTagsForObject(
         EmojiInfo info;
         info.shortcode = shortcode;
         info.image_url = url;
-        info.media_type = icon.value("mediaType", std::string("image/png"));
+        info.media_type = jsonString(icon, "mediaType", "image/png");
         out.emplace(shortcode, std::move(info));
     }
     return out;
@@ -1277,12 +865,12 @@ mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
         Attachment a;
         a.post_id = post_id;
         a.sha256 = "";
-        a.media_type = item.value("mediaType", std::string());
-        a.original_name = item.value("name", *url);
+        a.media_type = jsonString(item, "mediaType");
+        a.original_name = jsonString(item, "name", *url);
         a.sensitive = boolField(object, "sensitive")
             || boolField(item, "sensitive");
         a.remote_url = *url;
-        std::string type = item.value("type", std::string());
+        std::string type = jsonString(item, "type");
         a.is_image = type == "Image" || a.media_type.starts_with("image/");
         DO_OR_RETURN(data.insertAttachment(a));
     }
@@ -1312,7 +900,7 @@ mw::E<NewPost> remoteNotePostFromActivity(
     np.remote_author_id = remote_author_id;
     auto remote_emoji = emojiTagsForObject(activity.object);
     np.content_html = substituteRemoteEmoji(
-        sanitizeRemoteHtml(activity.object.value("content", std::string())),
+        sanitizeRemoteHtml(jsonString(activity.object, "content")),
         remote_emoji);
     np.summary = activity.object.contains("summary")
         && activity.object["summary"].is_string()
@@ -1337,8 +925,8 @@ mw::E<bool> handleCreateActivity(const Config& config,
                                  const Activity& activity,
                                  const VerifiedSignature* signature)
 {
-    if(!activity.object.is_object()
-       || activity.object.value("type", std::string()) != "Note")
+    if(!activity.object.is_object() ||
+       jsonString(activity.object, "type") != "Note")
     {
         return false;
     }
@@ -1486,8 +1074,9 @@ mw::E<bool> handleEmojiReactActivity(const DataSourceInterface& data,
     if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
     if(!post.has_value()) return false;
-    std::string emoji = activity.raw.value("content", std::string());
-    if(emoji.empty()) emoji = activity.raw.value("name", std::string());
+    std::string emoji = jsonString(activity.raw, "content");
+    if(emoji.empty())
+        emoji = jsonString(activity.raw, "name");
     if(emoji.empty()) return false;
     Reaction reaction;
     reaction.actor_uri = activity.actor;
@@ -1536,7 +1125,7 @@ mw::E<bool> handleUpdateActivity(const DataSourceInterface& data,
     {
         return false;
     }
-    std::string type = activity.object.value("type", std::string());
+    std::string type = jsonString(activity.object, "type");
     if(type != "Note")
     {
         auto actor_uri = normalizeRef(activity.object);
@@ -1657,8 +1246,9 @@ mw::E<bool> handleUndoActivity(const DataSourceInterface& data,
     }
     if(wrapped.type == "EmojiReact" && object_uri.has_value())
     {
-        std::string emoji = wrapped.raw.value("content", std::string());
-        if(emoji.empty()) emoji = wrapped.raw.value("name", std::string());
+        std::string emoji = jsonString(wrapped.raw, "content");
+        if(emoji.empty())
+            emoji = jsonString(wrapped.raw, "name");
         if(!emoji.empty())
         {
             ASSIGN_OR_RETURN(auto reactions, data.reactionsForPost(
@@ -1682,82 +1272,219 @@ mw::E<bool> handleUndoActivity(const DataSourceInterface& data,
     return false;
 }
 
-} // namespace
-
-std::vector<std::string> normalizeAddressing(const nlohmann::json& field)
+class UnspokenApplication : public ap::Application
 {
-    std::vector<std::string> out;
-    if(field.is_null()) return out;
-    if(field.is_array())
+public:
+    UnspokenApplication(const Config& policy, const DataSourceInterface& source)
+        : config(policy), data(source)
     {
-        for(const auto& item : field)
+    }
+
+    mw::E<ap::Decision> decide(ap::Transaction&, const ap::ValidatedActivity&,
+                               const ap::LocalRecipient&) override
+    {
+        return ap::Decision::ACCEPT;
+    }
+
+    mw::E<void> apply(ap::Transaction&, const ap::AppliedEvent& event) override
+    {
+        if(!event.global_effect)
+            return {};
+        const auto& activity = event.activity;
+        auto uri = normalizeRef(activity.object);
+        if(!uri)
+            return {};
+        ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*uri));
+        if(activity.type == "Delete")
         {
-            if(auto ref = normalizeRef(item); ref.has_value())
-                out.push_back(*ref);
+            if(existing && !existing->local_author_id)
+            {
+                DO_OR_RETURN(data.deletePost(existing->id));
+            }
+            return {};
         }
-        return out;
+        if(activity.type != "Create" && activity.type != "Update")
+            return {};
+        if(!activity.object.is_object())
+            return {};
+        auto type = activity.object.find("type");
+        if(type == activity.object.end() || !type->is_string())
+            return {};
+        std::string object_type = type->get<std::string>();
+        if(object_type != "Note" && object_type != "Article" &&
+           object_type != "Image")
+            return {};
+        // Host content is a sanitized projection of the preserved wire object.
+        ASSIGN_OR_RETURN(auto post, remoteNotePostFromActivity(data, activity));
+        if(existing)
+        {
+            if(activity.type == "Update")
+            {
+                DO_OR_RETURN(data.updatePost(
+                    existing->id, post, recipientsForObject(activity.object)));
+                DO_OR_RETURN(storeRemoteAttachments(data, activity.object,
+                                                    existing->id));
+            }
+        }
+        else
+        {
+            ASSIGN_OR_RETURN(
+                auto inserted,
+                data.insertPost(post, recipientsForObject(activity.object),
+                                config.url_root + "p/"));
+            DO_OR_RETURN(
+                storeRemoteAttachments(data, activity.object, inserted.id));
+        }
+        return {};
     }
-    if(auto ref = normalizeRef(field); ref.has_value()) out.push_back(*ref);
-    return out;
+
+private:
+    const Config& config;
+    const DataSourceInterface& data;
+};
+
+ap::FederationConfig libraryConfig(const Config& config)
+{
+    ap::FederationConfig result;
+    result.transport = transportConfig(config);
+    result.activity_uri_prefix = config.url_root + "activities/";
+    result.system_actor_uri = config.url_root + "actor";
+    result.fetch_depth = config.thread_fetch_max_depth;
+    result.max_retries = config.job_max_retries;
+    result.retry_base_seconds = config.job_retry_base_delay_seconds;
+    result.receipt_retention_seconds = config.seen_activity_retention_seconds;
+    return result;
 }
 
-std::optional<std::string> normalizeRef(const nlohmann::json& field)
+// Register exact application URLs and import snapshots only when absent.
+mw::E<void> importApplicationState(const Config& config,
+                                   const DataSourceSQLite& data,
+                                   ap::Session& session)
 {
-    if(field.is_string()) return field.get<std::string>();
-    if(field.is_object() && field.contains("id") && field["id"].is_string())
+    auto registry = EmojiRegistry::scan(config.emoji_dir, config.url_root);
+    Service service(config, data, registry);
+    ASSIGN_OR_RETURN(auto tx, ap::Transaction::begin(data.connection()));
+    ASSIGN_OR_RETURN(auto users, data.connection().eval<int64_t>(
+                                     "SELECT id FROM users ORDER BY id"));
+    for(const auto& row : users)
     {
-        return field["id"].get<std::string>();
+        ASSIGN_OR_RETURN(auto user, data.getUserById(std::get<0>(row)));
+        if(!user)
+            continue;
+        ASSIGN_OR_RETURN(
+            auto registered,
+            session.localActor(config.url_root + "u/" + user->username));
+        if(registered)
+            continue;
+        ap::LocalActor actor;
+        actor.uri = config.url_root + "u/" + user->username;
+        actor.key_id = actor.uri + "#main-key";
+        actor.private_key_pem = user->private_key_pem;
+        std::optional<Attachment> avatar;
+        std::optional<Attachment> banner;
+        if(user->avatar_attachment_id)
+        {
+            ASSIGN_OR_RETURN(
+                avatar, data.getAttachmentById(*user->avatar_attachment_id));
+        }
+        if(user->banner_attachment_id)
+        {
+            ASSIGN_OR_RETURN(
+                banner, data.getAttachmentById(*user->banner_attachment_id));
+        }
+        ASSIGN_OR_RETURN(auto fields, service.renderedProfileFields(*user));
+        actor.document =
+            actorJson(config, *user, renderPostContent(user->bio, registry),
+                      avatar, banner, fields);
+        DO_OR_RETURN(session.registerActor(tx, actor));
     }
-    return std::nullopt;
-}
-
-mw::E<Activity> parseActivity(const nlohmann::json& raw)
-{
-    if(!raw.is_object())
+    ASSIGN_OR_RETURN(auto system_actor, data.getSystemActor());
+    if(system_actor)
     {
-        return std::unexpected(mw::httpError(
-            400, "Activity must be an object"));
+        ap::LocalActor system;
+        system.uri = config.url_root + "actor";
+        system.key_id = system.uri + "#main-key";
+        system.private_key_pem = system_actor->private_key_pem;
+        system.document = systemActorJson(config, system_actor->public_key_pem);
+        DO_OR_RETURN(session.registerActor(tx, system));
     }
-    auto id = normalizeRef(raw.contains("id") ? raw["id"] : nlohmann::json());
-    auto actor = normalizeRef(raw.contains("actor") ? raw["actor"]
-                                                    : nlohmann::json());
-    if(!id.has_value() || !raw.contains("type") || !raw["type"].is_string()
-       || !actor.has_value())
+    ASSIGN_OR_RETURN(auto posts, data.connection().eval<int64_t>(
+                                     "SELECT id FROM posts ORDER BY id"));
+    for(const auto& row : posts)
     {
-        return std::unexpected(mw::httpError(
-            400,
-            "Activity is missing id, type, or actor"));
+        ASSIGN_OR_RETURN(auto post, data.getPostById(std::get<0>(row)));
+        if(!post)
+            continue;
+        ASSIGN_OR_RETURN(auto old, session.object(post->uri));
+        if(old)
+            continue;
+        ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post->id));
+        nlohmann::json doc;
+        std::string owner;
+        if(post->local_author_id)
+        {
+            ASSIGN_OR_RETURN(auto user,
+                             data.getUserById(*post->local_author_id));
+            if(!user)
+                continue;
+            owner = config.url_root + "u/" + user->username;
+            ASSIGN_OR_RETURN(auto attachments,
+                             data.attachmentsForPost(post->id));
+            doc = noteJson(config, *post, *user, recipients, attachments,
+                           &registry);
+            nlohmann::json historical = {
+                {"@context", "https://www.w3.org/ns/activitystreams"},
+                {"id", post->uri + "/activity"},
+                {"type", "Create"},
+                {"actor", owner},
+                {"object", doc},
+                {"to", doc["to"]},
+                {"cc", doc["cc"]},
+            };
+            ASSIGN_OR_RETURN(
+                auto outbox,
+                data.connection().statementFromStr(
+                    "INSERT OR IGNORE INTO "
+                    "ap_outbox(activity_uri,actor_uri,document_json) "
+                    "VALUES (?,?,?)"));
+            DO_OR_RETURN((outbox.bind<std::string, std::string, std::string>(
+                post->uri + "/activity", owner, historical.dump())));
+            DO_OR_RETURN(data.connection().execute(std::move(outbox)));
+        }
+        else if(post->remote_author_id)
+        {
+            ASSIGN_OR_RETURN(auto actor,
+                             data.getRemoteActorById(*post->remote_author_id));
+            if(!actor)
+                continue;
+            owner = actor->uri;
+            doc = {{"id", post->uri},
+                   {"type", "Note"},
+                   {"attributedTo", owner},
+                   {"content", post->content_html},
+                   {"to", nlohmann::json::array()},
+                   {"cc", nlohmann::json::array()}};
+            for(const auto& r : recipients)
+                doc[r.field].push_back(r.recipient_uri);
+            if(post->in_reply_to_uri)
+                doc["inReplyTo"] = *post->in_reply_to_uri;
+        }
+        else
+            continue;
+        // This is a host-specific legacy import, not a new publication.
+        ASSIGN_OR_RETURN(
+            auto st,
+            data.connection().statementFromStr(
+                "INSERT INTO ap_objects(uri,owner_uri,local,document_json) "
+                "VALUES (?,?,?,?)"));
+        DO_OR_RETURN((st.bind<std::string, std::string, int64_t, std::string>(
+            post->uri, owner, post->local_author_id ? 1 : 0, doc.dump())));
+        DO_OR_RETURN(data.connection().execute(std::move(st)));
     }
-
-    Activity activity;
-    activity.id = *id;
-    activity.type = raw["type"].get<std::string>();
-    activity.actor = *actor;
-    activity.object = raw.contains("object") ? raw["object"] : nlohmann::json();
-    appendAll(activity.to,
-              normalizeAddressing(raw.value("to", nlohmann::json())));
-    appendAll(activity.to,
-              normalizeAddressing(raw.value("bto", nlohmann::json())));
-    appendAll(activity.to,
-              normalizeAddressing(raw.value("audience", nlohmann::json())));
-    appendAll(activity.cc,
-              normalizeAddressing(raw.value("cc", nlohmann::json())));
-    appendAll(activity.cc,
-              normalizeAddressing(raw.value("bcc", nlohmann::json())));
-    activity.raw = raw;
-    return activity;
+    return tx.commit();
 }
 
-bool isPublicAddress(std::string_view uri)
-{
-    return uri == AS_PUBLIC || uri == "as:Public" || uri == "Public";
-}
-
-bool wantsActivityJson(std::string_view accept)
-{
-    return accept.find("application/activity+json") != std::string_view::npos
-        || accept.find("application/ld+json") != std::string_view::npos;
-}
+} // namespace
 
 nlohmann::json actorJson(const Config& config, const User& user,
                          std::string_view summary_html)
@@ -2080,89 +1807,11 @@ mw::E<nlohmann::json> nodeInfoJson(const Config& config,
     return nodeInfoJson(config, user_count, local_post_count);
 }
 
-bool isAllowedOutboundAddress(const mw::SockAddr& addr)
-{
-    const auto& a = addr.address;
-    if(addr.family == mw::AddressFamily::IPV4)
-    {
-        if(a.size() != 4) return false;
-        if(ipv4In(a, 10) || ipv4In(a, 127) || ipv4In(a, 169, 254)
-           || ipv4In(a, 192, 168))
-        {
-            return false;
-        }
-        if(a[0] == 172 && a[1] >= 16 && a[1] <= 31) return false;
-        // Carrier-grade NAT, localhost-ish zero net, multicast/reserved.
-        if(a[0] == 100 && a[1] >= 64 && a[1] <= 127) return false;
-        if(a[0] == 0 || a[0] >= 224) return false;
-        return true;
-    }
-
-    if(addr.family == mw::AddressFamily::IPV6)
-    {
-        if(a.size() != 16) return false;
-        if(ipv6AllZeroUntilLast(a, 1)) return false; // ::1
-        if((a[0] & 0xfe) == 0xfc) return false;      // fc00::/7 ULA
-        if(a[0] == 0xfe && (a[1] & 0xc0) == 0x80) return false; // fe80::/10
-        if(a[0] == 0xff) return false;               // multicast
-        return true;
-    }
-    return false;
-}
-
-bool isValidRemoteUrl(const DevConfig& dev, std::string_view value)
-{
-    auto parsed = mw::URL::fromStr(std::string(value));
-    if(!parsed.has_value() || parsed->host().empty()) return false;
-    if(parsed->scheme() == "https") return true;
-    return dev.allow_http_url_root && parsed->scheme() == "http"
-        && hostMatches(parsed->host(), dev.outbound_allow_private_hosts);
-}
-
-mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http)
-{
-    DO_OR_RETURN(http.allowedProtocols("https"));
-    DO_OR_RETURN(http.allowedRedirectProtocols("https"));
-    DO_OR_RETURN(http.maxRedirections(5));
-    http.followRedirects(true);
-    http.addressFilter([](const mw::SockAddr& addr)
-    {
-        return isAllowedOutboundAddress(addr);
-    });
-    return {};
-}
-
 mw::E<void> hardenOutboundSession(const Config& config,
                                   mw::HTTPSessionInterface& http,
                                   std::string_view target_url)
 {
-    auto parsed = mw::URL::fromStr(std::string(target_url));
-    if(!parsed.has_value() || parsed->host().empty())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Outbound federation URL must be absolute"));
-    }
-
-    bool dev_private_host = config.dev.allow_http_url_root
-        && hostMatches(parsed->host(),
-                       config.dev.outbound_allow_private_hosts);
-    if(dev_private_host)
-    {
-        DO_OR_RETURN(http.allowedProtocols("http,https"));
-        DO_OR_RETURN(http.allowedRedirectProtocols("http,https"));
-        DO_OR_RETURN(http.maxRedirections(0));
-        http.followRedirects(false);
-        std::string host = parsed->host();
-        http.addressFilter([host](const mw::SockAddr& addr)
-        {
-            spdlog::warn("Development private outbound host {} resolved to {}",
-                         host, addressForLog(addr));
-            return !isMetadataAddress(addr);
-        });
-        return {};
-    }
-
-    return hardenOutboundSession(http);
+    return ap::hardenOutboundSession(transportConfig(config), http, target_url);
 }
 
 mw::E<mw::HTTPRequest> signedGetRequest(const Config& config,
@@ -2173,27 +1822,6 @@ mw::E<mw::HTTPRequest> signedGetRequest(const Config& config,
     return signedHttpRequest(config, crypto,
                              signingActorForSystem(config, system_actor),
                              "GET", uri);
-}
-
-mw::E<mw::HTTPRequest> webFingerRequest(const Config& config,
-                                        std::string_view uri)
-{
-    auto parsed = mw::URL::fromStr(std::string(uri));
-    bool dev_http = config.dev.allow_http_url_root
-        && parsed.has_value()
-        && hostMatches(parsed->host(),
-                       config.dev.outbound_allow_private_hosts);
-    if(!parsed.has_value() || parsed->host().empty()
-       || (parsed->scheme() != "https"
-           && !(dev_http && parsed->scheme() == "http")))
-    {
-        return std::unexpected(mw::runtimeError(
-            "Outbound WebFinger URL must be absolute https"));
-    }
-
-    mw::HTTPRequest req{std::string(uri)};
-    req.addHeader("Accept", "application/jrd+json, application/json");
-    return req;
 }
 
 SigningActor signingActorFor(const Config& config, const User& user)
@@ -2216,60 +1844,14 @@ SigningActor signingActorForSystem(const Config& config,
     };
 }
 
-mw::E<mw::HTTPRequest> signedHttpRequest(
-    const Config& config, mw::CryptoInterface& crypto,
-    const SigningActor& actor,
-    std::string_view method, std::string_view uri, std::string_view body,
-    std::string_view content_type)
+mw::E<mw::HTTPRequest>
+signedHttpRequest(const Config& config, mw::CryptoInterface& crypto,
+                  const SigningActor& actor, std::string_view method,
+                  std::string_view uri, std::string_view body,
+                  std::string_view content_type)
 {
-    auto parsed = mw::URL::fromStr(std::string(uri));
-    bool dev_http = config.dev.allow_http_url_root
-        && parsed.has_value()
-        && hostMatches(parsed->host(),
-                       config.dev.outbound_allow_private_hosts);
-    if(!parsed.has_value() || parsed->host().empty()
-       || (parsed->scheme() != "https"
-           && !(dev_http && parsed->scheme() == "http")))
-    {
-        return std::unexpected(mw::runtimeError(
-            "Outbound federation fetch URL must be absolute https"));
-    }
-
-    std::string date = httpDate();
-    std::string target = requestTarget(*parsed);
-    std::string host = requestAuthority(*parsed);
-    std::string method_lower = lower(method);
-    std::string signed_headers = "(request-target) host date";
-    std::string signing_input = std::format(
-        "(request-target): {} {}\nhost: {}\ndate: {}",
-        method_lower, target, host, date);
-
-    std::optional<std::string> digest;
-    if(method_lower == "post" || method_lower == "put")
-    {
-        ASSIGN_OR_RETURN(auto d, digestHeaderFor(body));
-        digest = d;
-        signed_headers += " digest";
-        signing_input += "\ndigest: " + *digest;
-    }
-
-    ASSIGN_OR_RETURN(auto sig, crypto.sign(
-        mw::SignatureAlgorithm::RSA_V1_5_SHA256,
-        actor.private_key_pem, signing_input));
-    std::string sig64 = mw::base64Encode(
-        std::span<unsigned char>(sig.data(), sig.size()), false, true);
-
-    mw::HTTPRequest req{std::string(uri)};
-    if(!body.empty()) req.setPayload(body);
-    if(!content_type.empty()) req.setContentType(content_type);
-    req.addHeader("Accept", "application/activity+json");
-    req.addHeader("Host", host);
-    req.addHeader("Date", date);
-    if(digest.has_value()) req.addHeader("Digest", *digest);
-    req.addHeader("Signature", std::format(
-        R"(keyId="{}",algorithm="rsa-sha256",headers="{}",signature="{}")",
-        actor.key_id, signed_headers, sig64));
-    return req;
+    return ap::signedHttpRequest(transportConfig(config), crypto, actor, method,
+                                 uri, body, content_type);
 }
 
 mw::E<RemoteActor> fetchRemoteActor(const Config& config,
@@ -2278,114 +1860,9 @@ mw::E<RemoteActor> fetchRemoteActor(const Config& config,
                                     const SystemActor& system_actor,
                                     std::string_view actor_uri)
 {
-    DO_OR_RETURN(hardenOutboundSession(config, http, actor_uri));
-    ASSIGN_OR_RETURN(auto req, signedGetRequest(config, system_actor, crypto,
-                                                actor_uri));
-    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
-    if(res->status < 200 || res->status >= 300)
-    {
-        return std::unexpected(mw::httpError(res->status,
-                                             "Remote actor fetch failed"));
-    }
-
-    nlohmann::json doc = nlohmann::json::parse(res->payloadAsStr(),
-                                               nullptr, false);
-    if(!doc.is_object())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor response is not JSON"));
-    }
-    if(doc.contains("id") && !doc["id"].is_string())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid id"));
-    }
-    std::string id = doc.contains("id")
-        ? doc["id"].get<std::string>() : std::string(actor_uri);
-    if(id != actor_uri)
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor id does not match requested URI"));
-    }
-    if(!isValidRemoteUrl(config.dev, id))
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid id"));
-    }
-    if(!doc.contains("inbox") || !doc["inbox"].is_string()
-       || !doc.contains("publicKey") || !doc["publicKey"].is_object())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor is missing inbox or publicKey"));
-    }
-    std::string inbox = doc["inbox"].get<std::string>();
-    if(!isValidRemoteUrl(config.dev, inbox))
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid inbox"));
-    }
-    const auto& public_key = doc["publicKey"];
-    if(!public_key.contains("id") || !public_key["id"].is_string()
-       || !public_key.contains("publicKeyPem")
-       || !public_key["publicKeyPem"].is_string())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has incomplete publicKey"));
-    }
-    std::string public_key_id = public_key["id"].get<std::string>();
-    std::string public_key_pem = public_key["publicKeyPem"].get<std::string>();
-    if(public_key_id.empty() || public_key_pem.empty()
-       || (public_key.contains("owner")
-           && (!public_key["owner"].is_string()
-               || public_key["owner"].get<std::string>() != id)))
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid publicKey"));
-    }
-
-    RemoteActor actor;
-    actor.uri = id;
-    if(doc.contains("preferredUsername")
-       && !doc["preferredUsername"].is_string())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid preferredUsername"));
-    }
-    if(doc.contains("name") && !doc["name"].is_string())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor has invalid name"));
-    }
-    actor.username = doc.contains("preferredUsername")
-        ? doc["preferredUsername"].get<std::string>() : std::string();
-    auto parsed_id = mw::URL::fromStr(id);
-    if(actor.username.empty()) actor.username = parsed_id->host();
-    actor.domain = parsed_id->host();
-    actor.display_name = doc.contains("name")
-        ? doc["name"].get<std::string>() : std::string();
-    actor.inbox = std::move(inbox);
-    if(doc.contains("endpoints") && doc["endpoints"].is_object()
-       && doc["endpoints"].contains("sharedInbox"))
-    {
-        if(!doc["endpoints"]["sharedInbox"].is_string())
-        {
-            return std::unexpected(mw::runtimeError(
-                "Remote actor has invalid sharedInbox"));
-        }
-        std::string shared_inbox = doc["endpoints"]["sharedInbox"]
-            .get<std::string>();
-        if(!isValidRemoteUrl(config.dev, shared_inbox))
-        {
-            return std::unexpected(mw::runtimeError(
-                "Remote actor has invalid sharedInbox"));
-        }
-        actor.shared_inbox = std::move(shared_inbox);
-    }
-    actor.public_key_id = std::move(public_key_id);
-    actor.public_key_pem = std::move(public_key_pem);
-    actor.actor_json = doc.dump();
-    actor.fetched_at = mw::timeToSeconds(mw::Clock::now());
-    return actor;
+    return ap::fetchRemoteActor(transportConfig(config), crypto, http,
+                                signingActorForSystem(config, system_actor),
+                                actor_uri);
 }
 
 mw::E<RemoteActorResolution> findOrFetchRemoteActor(
@@ -2433,60 +1910,12 @@ mw::E<RemoteActor> resolveWebFingerActor(
             "Local handles do not need WebFinger resolution"));
     }
 
-    std::string acct = username + "@" + domain;
-    std::string scheme = config.dev.allow_http_url_root
-        && hostMatches(domain, config.dev.outbound_allow_private_hosts)
-        ? "http" : "https";
-    std::string uri = scheme + "://" + domain
-        + "/.well-known/webfinger?resource="
-        + percentEncode("acct:" + acct);
-
-    DO_OR_RETURN(hardenOutboundSession(config, http, uri));
-    ASSIGN_OR_RETURN(auto req, webFingerRequest(config, uri));
-    ASSIGN_OR_RETURN(const mw::HTTPResponse* res, http.get(req));
-    if(res->status < 200 || res->status >= 300)
-    {
-        return std::unexpected(mw::httpError(res->status,
-                                             "WebFinger lookup failed"));
-    }
-
-    nlohmann::json doc = nlohmann::json::parse(res->payloadAsStr(),
-                                               nullptr, false);
-    if(!doc.is_object())
-    {
-        return std::unexpected(mw::runtimeError(
-            "WebFinger response is not JSON"));
-    }
-
-    if(!doc.contains("links") || !doc["links"].is_array())
-    {
-        return std::unexpected(mw::runtimeError(
-            "WebFinger response has no links"));
-    }
-    std::optional<std::string> actor_uri;
-    for(const auto& link : doc["links"])
-    {
-        if(!link.is_object()) continue;
-        if(link.value("rel", std::string()) != "self") continue;
-        std::string type = link.value("type", std::string());
-        if(type != "application/activity+json"
-           && type != "application/ld+json")
-        {
-            continue;
-        }
-        if(link.contains("href") && link["href"].is_string())
-        {
-            actor_uri = link["href"].get<std::string>();
-            break;
-        }
-    }
-    if(!actor_uri.has_value())
-    {
-        return std::unexpected(mw::runtimeError(
-            "WebFinger response has no ActivityPub self link"));
-    }
-    ASSIGN_OR_RETURN(auto resolution, findOrFetchRemoteActor(
-        config, data, crypto, http, system_actor, *actor_uri));
+    ASSIGN_OR_RETURN(
+        auto actor_uri,
+        ap::discoverActorUri(transportConfig(config), http, handle));
+    ASSIGN_OR_RETURN(auto resolution,
+                     findOrFetchRemoteActor(config, data, crypto, http,
+                                            system_actor, actor_uri));
     return resolution.actor;
 }
 
@@ -2495,6 +1924,35 @@ mw::E<Post> fetchRemotePostByUri(
     mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
     const SystemActor& system_actor, std::string_view post_uri)
 {
+    if(const auto* sqlite = dynamic_cast<const DataSourceSQLite*>(&data))
+    {
+        UnspokenApplication application(config, data);
+        auto policy = libraryConfig(config);
+        ap::Session session(policy, sqlite->connection(), crypto, http,
+                            application);
+        DO_OR_RETURN(importApplicationState(config, *sqlite, session));
+        {
+            ASSIGN_OR_RETURN(auto tx,
+                             ap::Transaction::begin(sqlite->connection()));
+            ap::LocalActor system;
+            system.uri = policy.system_actor_uri;
+            system.key_id = system.uri + "#main-key";
+            system.private_key_pem = system_actor.private_key_pem;
+            system.document =
+                systemActorJson(config, system_actor.public_key_pem);
+            DO_OR_RETURN(session.registerActor(tx, system));
+            DO_OR_RETURN(tx.commit());
+        }
+        ASSIGN_OR_RETURN(auto document, session.fetchAndStoreObject(post_uri));
+        auto object_uri = normalizeRef(document);
+        if(!object_uri)
+            return std::unexpected(mw::runtimeError("Missing object ID"));
+        ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
+        if(!post)
+            return std::unexpected(mw::runtimeError("Missing post projection"));
+        return *post;
+    }
+
     ASSIGN_OR_RETURN(auto existing, data.getPostByUri(post_uri));
     if(existing.has_value()) return *existing;
 
@@ -2503,7 +1961,7 @@ mw::E<Post> fetchRemotePostByUri(
     Activity activity;
     std::string object_uri;
 
-    if(doc.is_object() && doc.value("type", std::string()) == "Note")
+    if(doc.is_object() && jsonString(doc, "type") == "Note")
     {
         auto id = normalizeRef(doc);
         if(!id.has_value())
@@ -2525,9 +1983,9 @@ mw::E<Post> fetchRemotePostByUri(
             {"object", doc},
         };
     }
-    else if(doc.is_object() && doc.value("type", std::string()) == "Create"
-            && doc.contains("object") && doc["object"].is_object()
-            && doc["object"].value("type", std::string()) == "Note")
+    else if(doc.is_object() && jsonString(doc, "type") == "Create" &&
+            doc.contains("object") && doc["object"].is_object() &&
+            doc["object"].value("type", std::string()) == "Note")
     {
         ASSIGN_OR_RETURN(activity, parseActivity(doc));
         auto id = normalizeRef(activity.object);
@@ -2568,16 +2026,17 @@ mw::E<VerifiedSignature> verifyHttpSignature(
     mw::CryptoInterface& crypto, const IncomingHttpRequest& req,
     int64_t now_seconds)
 {
-    ASSIGN_OR_RETURN(auto signature, parseHttpSignature(
-        config, req, now_seconds));
+    ASSIGN_OR_RETURN(
+        auto signature,
+        ap::parseHttpSignature(transportConfig(config), req, now_seconds));
     ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(signature.actor_uri));
     if(!actor.has_value())
     {
         return std::unexpected(mw::httpError(401, "Unknown signature key"));
     }
 
-    ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
-        crypto, signature, *actor));
+    ASSIGN_OR_RETURN(bool ok,
+                     ap::verifyParsedHttpSignature(crypto, signature, *actor));
     if(!ok)
     {
         return std::unexpected(mw::httpError(401, "Bad signature"));
@@ -2597,8 +2056,9 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     const SystemActor& system_actor, const IncomingHttpRequest& req,
     int64_t now_seconds)
 {
-    ASSIGN_OR_RETURN(auto signature, parseHttpSignature(
-        config, req, now_seconds));
+    ASSIGN_OR_RETURN(
+        auto signature,
+        ap::parseHttpSignature(transportConfig(config), req, now_seconds));
     ASSIGN_OR_RETURN(auto cached, data.getRemoteActorByUri(
         signature.actor_uri));
 
@@ -2611,8 +2071,8 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
             return std::unexpected(mw::httpError(
                 401, "Unknown signature key"));
         }
-        ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
-            crypto, signature, *fetched));
+        ASSIGN_OR_RETURN(bool ok, ap::verifyParsedHttpSignature(
+                                      crypto, signature, *fetched));
         if(!ok)
         {
             return std::unexpected(mw::httpError(401, "Bad signature"));
@@ -2628,8 +2088,8 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
 
     if(cached->public_key_id == signature.key_id)
     {
-        ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
-            crypto, signature, *cached));
+        ASSIGN_OR_RETURN(
+            bool ok, ap::verifyParsedHttpSignature(crypto, signature, *cached));
         if(ok)
         {
             return VerifiedSignature{
@@ -2648,8 +2108,8 @@ mw::E<VerifiedSignature> verifyHttpSignatureWithKeyRefresh(
     {
         return std::unexpected(mw::httpError(401, "Bad signature"));
     }
-    ASSIGN_OR_RETURN(bool ok, verifyParsedHttpSignature(
-        crypto, signature, *fetched));
+    ASSIGN_OR_RETURN(
+        bool ok, ap::verifyParsedHttpSignature(crypto, signature, *fetched));
     if(!ok)
     {
         return std::unexpected(mw::httpError(401, "Bad signature"));
@@ -2731,6 +2191,68 @@ mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
     std::string_view signer_actor_uri, const nlohmann::json& activity,
     const std::vector<PostRecipient>& recipients, int64_t now_seconds)
 {
+    if(const auto* sqlite = dynamic_cast<const DataSourceSQLite*>(&data))
+    {
+        mw::Crypto crypto;
+        mw::HTTPSession http;
+        UnspokenApplication application(config, data);
+        auto policy = libraryConfig(config);
+        ap::Session session(policy, sqlite->connection(), crypto, http,
+                            application);
+        ASSIGN_OR_RETURN(bool active, ap::inTransaction(sqlite->connection()));
+        ASSIGN_OR_RETURN(auto tx,
+                         active ? ap::Transaction::join(sqlite->connection())
+                                : ap::Transaction::begin(sqlite->connection()));
+        ASSIGN_OR_RETURN(auto local, session.localActor(signer_actor_uri));
+        if(!local)
+        {
+            auto username = localUsernameForActor(config, signer_actor_uri);
+            if(!username)
+                return std::unexpected(mw::runtimeError("Unknown signer"));
+            ASSIGN_OR_RETURN(auto user, data.getUserByUsername(*username));
+            if(!user)
+                return std::unexpected(mw::runtimeError("Unknown signer"));
+            ap::LocalActor actor;
+            actor.uri = std::string(signer_actor_uri);
+            actor.key_id = actor.uri + "#main-key";
+            actor.private_key_pem = user->private_key_pem;
+            actor.document =
+                actorJson(config, *user, renderMarkdown(user->bio));
+            DO_OR_RETURN(session.registerActor(tx, actor));
+        }
+        ap::Publication publication;
+        if(activity.value("actor", std::string()) == signer_actor_uri)
+        {
+            ASSIGN_OR_RETURN(publication,
+                             session.publish(tx, activity, now_seconds));
+        }
+        else
+        {
+            ASSIGN_OR_RETURN(auto inboxes, deliveryInboxesForRecipients(
+                                               config, data, recipients));
+            ASSIGN_OR_RETURN(publication,
+                             session.enqueue(tx, signer_actor_uri, activity,
+                                             inboxes, now_seconds));
+        }
+        if(!active)
+        {
+            DO_OR_RETURN(tx.commit());
+        }
+        // The facade historically returns job IDs; query those created for
+        // this immutable activity rather than exposing outbox sequence as one.
+        ASSIGN_OR_RETURN(
+            auto st,
+            sqlite->connection().statementFromStr(
+                "SELECT id FROM ap_jobs WHERE kind='deliver' AND "
+                "json_extract(payload_json,'$.activity.id')=? ORDER BY id"));
+        DO_OR_RETURN(st.bind<std::string>(publication.activity_uri));
+        ASSIGN_OR_RETURN(auto rows,
+                         sqlite->connection().eval<int64_t>(std::move(st)));
+        std::vector<int64_t> ids;
+        for(const auto& row : rows)
+            ids.push_back(std::get<0>(row));
+        return ids;
+    }
     ASSIGN_OR_RETURN(auto inboxes, deliveryInboxesForRecipients(
         config, data, recipients));
     std::vector<int64_t> job_ids;
@@ -2763,11 +2285,12 @@ mw::E<std::vector<int64_t>> enqueueActorUpdateDelivery(
     std::vector<PostRecipient> recipients = {
         {0, actor_uri + "/followers", "to"},
     };
-    nlohmann::json activity = actorUpdateActivityJson(
-        config,
-        std::format("{}activities/update/profile/{}/{}",
-                    config.url_root, user.id, now_seconds),
-        user, summary_html, avatar, banner, fields, recipients);
+    ASSIGN_OR_RETURN(
+        auto activity_uri,
+        ap::newActivityUri(config.url_root + "activities/update/profile/"));
+    nlohmann::json activity =
+        actorUpdateActivityJson(config, activity_uri, user, summary_html,
+                                avatar, banner, fields, recipients);
     return enqueueOutboundDelivery(
         config, data, actor_uri, activity, recipients, now_seconds);
 }
@@ -2980,6 +2503,21 @@ mw::E<bool> runFederationJobOnce(const Config& config,
                                  mw::HTTPSessionInterface& http,
                                  int64_t now_seconds)
 {
+    if(const auto* sqlite = dynamic_cast<const DataSourceSQLite*>(&data))
+    {
+        UnspokenApplication application(config, data);
+        auto policy = libraryConfig(config);
+        ap::Session session(policy, sqlite->connection(), crypto, http,
+                            application);
+        ASSIGN_OR_RETURN(auto actor_count,
+                         sqlite->connection().evalToValue<int64_t>(
+                             "SELECT count(*) FROM ap_local_actors"));
+        if(actor_count == 0)
+        {
+            DO_OR_RETURN(importApplicationState(config, *sqlite, session));
+        }
+        return session.runOnce(now_seconds);
+    }
     ASSIGN_OR_RETURN(auto claimed, data.claimJob(now_seconds));
     if(!claimed.has_value()) return false;
 
@@ -3013,6 +2551,99 @@ mw::E<bool> runFederationJobOnce(const Config& config,
             config.job_retry_base_delay_seconds, config.job_max_retries));
     }
     return true;
+}
+
+mw::E<void> initializeFederationLibrary(const Config& config,
+                                        const DataSourceSQLite& data,
+                                        mw::CryptoInterface& crypto,
+                                        mw::HTTPSessionInterface& http)
+{
+    ASSIGN_OR_RETURN(auto system, data.getSystemActor());
+    if(!system)
+    {
+        ASSIGN_OR_RETURN(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+        DO_OR_RETURN(data.setSystemActor(keys.private_key, keys.public_key));
+    }
+    UnspokenApplication application(config, data);
+    auto policy = libraryConfig(config);
+    ap::Session session(policy, data.connection(), crypto, http, application);
+    DO_OR_RETURN(session.migrate());
+    return importApplicationState(config, data, session);
+}
+
+mw::E<InboxDispatchResult>
+receiveFederationInbox(const Config& config, const DataSourceSQLite& data,
+                       mw::CryptoInterface& crypto,
+                       mw::HTTPSessionInterface& http,
+                       const IncomingHttpRequest& request,
+                       std::string_view endpoint_actor, int64_t now)
+{
+    UnspokenApplication application(config, data);
+    auto policy = libraryConfig(config);
+    ap::Session session(policy, data.connection(), crypto, http, application);
+    ASSIGN_OR_RETURN(auto prepared,
+                     session.prepareInbox(request, endpoint_actor, now));
+    ASSIGN_OR_RETURN(auto result,
+                     session.acceptInbox(std::move(prepared), now));
+    InboxDisposition disposition = InboxDisposition::IGNORED;
+    if(result.duplicate)
+        disposition = InboxDisposition::DUPLICATE;
+    else if(result.applied && result.forwarded)
+        disposition = InboxDisposition::APPLIED_AND_FORWARDED;
+    else if(result.applied)
+        disposition = InboxDisposition::APPLIED;
+    else if(result.forwarded)
+        disposition = InboxDisposition::FORWARDED;
+    return InboxDispatchResult{disposition, result.applied};
+}
+
+mw::E<nlohmann::json> federationActorDocument(const Config& config,
+                                              const DataSourceSQLite& data,
+                                              std::string_view actor_uri)
+{
+    mw::Crypto crypto;
+    mw::HTTPSession http;
+    UnspokenApplication application(config, data);
+    auto policy = libraryConfig(config);
+    ap::Session session(policy, data.connection(), crypto, http, application);
+    ASSIGN_OR_RETURN(auto actor, session.localActor(actor_uri));
+    if(!actor)
+        return std::unexpected(mw::httpError(404, "Unknown actor"));
+    return actor->document;
+}
+
+mw::E<std::optional<nlohmann::json>> federationObjectDocument(
+    const Config& config, const DataSourceSQLite& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    std::string_view object_uri, std::string_view local_viewer_actor,
+    const IncomingHttpRequest& request, int64_t now)
+{
+    UnspokenApplication application(config, data);
+    auto policy = libraryConfig(config);
+    ap::Session session(policy, data.connection(), crypto, http, application);
+    ASSIGN_OR_RETURN(auto doc,
+                     session.objectForActor(object_uri, local_viewer_actor));
+    if(doc)
+        return doc;
+    auto verified = session.authenticate(request, now);
+    if(!verified)
+        return std::nullopt;
+    return session.objectForActor(object_uri, verified->actor_uri);
+}
+
+mw::E<nlohmann::json> federationOutboxPage(const Config& config,
+                                           const DataSourceSQLite& data,
+                                           std::string_view actor_uri,
+                                           const Cursor& cursor,
+                                           std::string_view self_uri)
+{
+    mw::Crypto crypto;
+    mw::HTTPSession http;
+    UnspokenApplication application(config, data);
+    auto policy = libraryConfig(config);
+    ap::Session session(policy, data.connection(), crypto, http, application);
+    return session.outboxPage(actor_uri, cursor, config.posts_per_page,
+                              self_uri);
 }
 
 } // namespace unspoken

@@ -16,6 +16,9 @@
 #include <mw/error.hpp>
 #include <mw/utils.hpp>
 
+#include <actpub/transaction.hpp>
+#include <actpub/store.hpp>
+
 #include "attachments.hpp"
 #include "data.hpp"
 #include "structs.hpp"
@@ -26,7 +29,7 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 3;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 4;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -73,20 +76,16 @@ mw::E<void> touchRemoteActorRetentionByUri(mw::SQLite& db,
                                            std::string_view actor_uri,
                                            int64_t retained_at)
 {
-    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
-        "UPDATE remote_actors SET retained_at = ? WHERE uri = ?;"));
-    DO_OR_RETURN((st.bind<int64_t, std::string>(
-        retained_at, std::string(actor_uri))));
-    return db.execute(std::move(st));
+    return ap::Store(db).touchRemoteActorRetention(actor_uri, retained_at);
 }
 
 mw::E<void> touchRemoteActorRetentionById(mw::SQLite& db, int64_t actor_id,
                                           int64_t retained_at)
 {
-    ASSIGN_OR_RETURN(auto st, db.statementFromStr(
-        "UPDATE remote_actors SET retained_at = ? WHERE id = ?;"));
-    DO_OR_RETURN((st.bind<int64_t, int64_t>(retained_at, actor_id)));
-    return db.execute(std::move(st));
+    ASSIGN_OR_RETURN(auto actor, ap::Store(db).getRemoteActorById(actor_id));
+    if(!actor)
+        return {};
+    return ap::Store(db).touchRemoteActorRetention(actor->uri, retained_at);
 }
 
 // Bind a single int64 value at a 1-based positional placeholder. Used
@@ -264,6 +263,30 @@ mw::E<void> withWriteRetry(const std::function<mw::E<void>()>& txn,
         ++attempt;
     }
 }
+
+namespace
+{
+
+mw::E<void> withDataWrite(mw::SQLite& db,
+                          const std::function<mw::E<void>()>& operation)
+{
+    ASSIGN_OR_RETURN(bool active, ap::inTransaction(db));
+    if(active)
+    {
+        ASSIGN_OR_RETURN(auto scope, ap::Savepoint::begin(db));
+        DO_OR_RETURN(operation());
+        return scope.release();
+    }
+    auto run = [&]() -> mw::E<void>
+    {
+        ASSIGN_OR_RETURN(auto transaction, ap::Transaction::begin(db));
+        DO_OR_RETURN(operation());
+        return transaction.commit();
+    };
+    return withWriteRetry(run);
+}
+
+} // namespace
 
 // ─── Connection setup and schema ───────────────────────────────────
 
@@ -525,7 +548,8 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
     if(version == 0)
     {
         DO_OR_RETURN(createSchema(*data_source->db));
-        DO_OR_RETURN(data_source->setSchemaVersion(CURRENT_SCHEMA_VERSION));
+        DO_OR_RETURN(data_source->setSchemaVersion(3));
+        DO_OR_RETURN(data_source->migrate3To4());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
     {
@@ -547,6 +571,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate2To3());
                 version = 3;
+                continue;
+            }
+            if(version == 3)
+            {
+                DO_OR_RETURN(data_source->migrate3To4());
+                version = 4;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -574,10 +604,13 @@ mw::E<void> DataSourceSQLite::setSchemaVersion(int64_t v) const
 
 mw::E<void> DataSourceSQLite::migrate1To2() const
 {
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         auto step = [&](std::string_view sql) -> mw::E<void> {
@@ -602,12 +635,14 @@ mw::E<void> DataSourceSQLite::migrate1To2() const
             "   AND extension IS NOT NULL)"
             "  OR (remote_url IS NOT NULL AND sha256 IS NULL "
             "      AND extension IS NULL)"
-            " ));"); !r.has_value()) return r;
+            " ));"); !r.has_value())
+            return r;
 
         if(auto r = step(
             "CREATE TEMP TABLE old_attachment_map ("
             " old_id INTEGER PRIMARY KEY,"
-            " new_id INTEGER NOT NULL);"); !r.has_value()) return r;
+            " new_id INTEGER NOT NULL);"); !r.has_value())
+            return r;
         if(auto r = mapAttachmentsV1(*db, created); !r.has_value())
             return rollback(r.error());
 
@@ -631,24 +666,30 @@ mw::E<void> DataSourceSQLite::migrate1To2() const
             "WHERE old.post_id IS NOT NULL;", created)); !r.has_value())
             return r;
 
-        if(auto r = step("DROP TABLE attachments;"); !r.has_value()) return r;
+        if(auto r = step("DROP TABLE attachments;"); !r.has_value())
+            return r;
         if(auto r = step("ALTER TABLE attachments_new RENAME TO attachments;");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE UNIQUE INDEX idx_attachments_local_file "
             "ON attachments(sha256, extension) WHERE remote_url IS NULL;");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE UNIQUE INDEX idx_attachments_remote_url "
             "ON attachments(remote_url) WHERE remote_url IS NOT NULL;");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_post_attachments_attachment "
-            "ON post_attachments(attachment_id);"); !r.has_value()) return r;
+            "ON post_attachments(attachment_id);"); !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_post_attachments_post "
             "ON post_attachments(post_id, sort_order, attachment_id);");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
 
         if(auto r = step(
             "ALTER TABLE users ADD COLUMN avatar_attachment_id INTEGER "
@@ -660,10 +701,12 @@ mw::E<void> DataSourceSQLite::migrate1To2() const
             return r;
         if(auto r = step(
             "CREATE INDEX idx_users_avatar_attachment "
-            "ON users(avatar_attachment_id);"); !r.has_value()) return r;
+            "ON users(avatar_attachment_id);"); !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_users_banner_attachment "
-            "ON users(banner_attachment_id);"); !r.has_value()) return r;
+            "ON users(banner_attachment_id);"); !r.has_value())
+            return r;
 
         if(auto r = step(
             "CREATE TABLE user_profile_fields ("
@@ -671,25 +714,30 @@ mw::E<void> DataSourceSQLite::migrate1To2() const
             " user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
             " label TEXT NOT NULL,"
             " value TEXT NOT NULL,"
-            " sort_order INTEGER NOT NULL);"); !r.has_value()) return r;
+            " sort_order INTEGER NOT NULL);"); !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_user_profile_fields_user "
             "ON user_profile_fields(user_id, sort_order, id);");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
 
         if(auto r = setSchemaVersion(2); !r.has_value())
             return rollback(r.error());
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void> DataSourceSQLite::migrate2To3() const
 {
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         auto step = [&](std::string_view sql) -> mw::E<void> {
@@ -700,13 +748,16 @@ mw::E<void> DataSourceSQLite::migrate2To3() const
 
         if(auto r = step(
             "ALTER TABLE remote_actors ADD COLUMN retained_at INTEGER "
-            "NOT NULL DEFAULT 0;"); !r.has_value()) return r;
+            "NOT NULL DEFAULT 0;"); !r.has_value())
+            return r;
         if(auto r = step(
             "UPDATE remote_actors SET retained_at = fetched_at "
-            "WHERE retained_at = 0;"); !r.has_value()) return r;
+            "WHERE retained_at = 0;"); !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_remote_actors_retained "
-            "ON remote_actors(retained_at, id);"); !r.has_value()) return r;
+            "ON remote_actors(retained_at, id);"); !r.has_value())
+            return r;
 
         if(auto r = step(
             "CREATE TABLE seen_activities_new ("
@@ -717,31 +768,36 @@ mw::E<void> DataSourceSQLite::migrate2To3() const
             " CHECK (state IN ('processing', 'processed')),"
             " CHECK ((state = 'processing' AND claimed_at IS NOT NULL)"
             " OR (state = 'processed' AND processed_at IS NOT NULL))"
-            ");"); !r.has_value()) return r;
+            ");"); !r.has_value())
+            return r;
         if(auto r = step(
             "INSERT INTO seen_activities_new "
             "(activity_uri, state, claimed_at, processed_at) "
             "SELECT activity_uri, 'processed', NULL, seen_at "
-            "FROM seen_activities;"); !r.has_value()) return r;
+            "FROM seen_activities;"); !r.has_value())
+            return r;
         if(auto r = step("DROP TABLE seen_activities;"); !r.has_value())
             return r;
         if(auto r = step(
             "ALTER TABLE seen_activities_new RENAME TO seen_activities;");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_seen_activities_processed "
             "ON seen_activities(processed_at) WHERE state = 'processed';");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
         if(auto r = step(
             "CREATE INDEX idx_seen_activities_processing "
             "ON seen_activities(claimed_at) WHERE state = 'processing';");
-           !r.has_value()) return r;
+           !r.has_value())
+            return r;
 
         if(auto r = setSchemaVersion(3); !r.has_value())
             return rollback(r.error());
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 // ─── Users ─────────────────────────────────────────────────────────
@@ -761,7 +817,7 @@ mw::E<User> DataSourceSQLite::createUser(const NewUser& nu) const
             nu.private_key_pem, nu.public_key_pem, created)));
         return db->execute(std::move(st));
     };
-    DO_OR_RETURN(withWriteRetry(insert));
+    DO_OR_RETURN(withDataWrite(*db, insert));
 
     User u;
     u.id = db->lastInsertRowID();
@@ -863,7 +919,7 @@ DataSourceSQLite::updateUserProfile(int64_t id, std::string_view display_name,
             std::string(display_name), std::string(bio), id)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void> DataSourceSQLite::updateProfileMedia(
@@ -879,7 +935,7 @@ mw::E<void> DataSourceSQLite::updateProfileMedia(
             avatar_attachment_id, banner_attachment_id, user_id)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::vector<UserProfileField>>
@@ -910,20 +966,26 @@ DataSourceSQLite::profileFieldsForUser(int64_t user_id) const
 mw::E<void> DataSourceSQLite::replaceProfileFields(
     int64_t user_id, const std::vector<UserProfileField>& fields) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM user_profile_fields WHERE user_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(user_id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         int sort = 0;
         for(const auto& field : fields)
@@ -931,27 +993,33 @@ mw::E<void> DataSourceSQLite::replaceProfileFields(
             auto st_e = db->statementFromStr(
                 "INSERT INTO user_profile_fields "
                 "(user_id, label, value, sort_order) VALUES (?, ?, ?, ?);");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t, std::string, std::string, int64_t>(
                 user_id, field.label, field.value,
                 field.sort_order == 0 ? sort : field.sort_order);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
             ++sort;
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void> DataSourceSQLite::replaceUserProfile(
     const UserProfileUpdate& update, int64_t user_id) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         {
@@ -959,23 +1027,29 @@ mw::E<void> DataSourceSQLite::replaceUserProfile(
                 "UPDATE users SET display_name = ?, bio = ?, "
                 "avatar_attachment_id = ?, banner_attachment_id = ? "
                 "WHERE id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<std::string, std::string,
                 std::optional<int64_t>, std::optional<int64_t>, int64_t>(
                 update.display_name, update.bio, update.avatar_attachment_id,
                 update.banner_attachment_id, user_id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM user_profile_fields WHERE user_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(user_id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         int sort = 0;
         for(const auto& field : update.fields)
@@ -983,18 +1057,21 @@ mw::E<void> DataSourceSQLite::replaceUserProfile(
             auto st_e = db->statementFromStr(
                 "INSERT INTO user_profile_fields "
                 "(user_id, label, value, sort_order) VALUES (?, ?, ?, ?);");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             int order = field.sort_order == 0 ? sort : field.sort_order;
             auto b = st_e->bind<int64_t, std::string, std::string, int64_t>(
                 user_id, field.label, field.value, order);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
             ++sort;
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::vector<User>>
@@ -1037,147 +1114,37 @@ mw::E<int64_t> DataSourceSQLite::countUsers() const
 
 mw::E<std::optional<SystemActor>> DataSourceSQLite::getSystemActor() const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT private_key_pem, public_key_pem, created_at "
-        "FROM system_actor WHERE id = 1;"));
-    ASSIGN_OR_RETURN(auto rows,
-                     (db->eval<std::string, std::string, int64_t>(
-                         std::move(st))));
-    if(rows.empty()) return std::optional<SystemActor>{};
-    SystemActor actor;
-    actor.private_key_pem = std::get<0>(rows[0]);
-    actor.public_key_pem = std::get<1>(rows[0]);
-    actor.created_at = std::get<2>(rows[0]);
-    return actor;
+    return ap::Store(*db).getSystemActor();
 }
-
 mw::E<void>
 DataSourceSQLite::setSystemActor(std::string_view private_key_pem,
                                  std::string_view public_key_pem) const
 {
-    int64_t created = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO system_actor "
-            "(id, private_key_pem, public_key_pem, created_at) "
-            "VALUES (1, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET "
-            "private_key_pem = excluded.private_key_pem, "
-            "public_key_pem = excluded.public_key_pem;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, int64_t>(
-            std::string(private_key_pem), std::string(public_key_pem),
-            created)));
-        return db->execute(std::move(st));
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).setSystemActor(private_key_pem, public_key_pem);
 }
-
 // ─── Remote actors ─────────────────────────────────────────────────
 
 mw::E<RemoteActor>
 DataSourceSQLite::upsertRemoteActor(const RemoteActor& a) const
 {
-    int64_t fetched = a.fetched_at != 0 ? a.fetched_at : now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO remote_actors (uri, username, domain, display_name, "
-            "inbox, shared_inbox, public_key_pem, public_key_id, actor_json, "
-            "fetched_at, retained_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(uri) DO UPDATE SET username=excluded.username, "
-            "domain=excluded.domain, display_name=excluded.display_name, "
-            "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
-            "public_key_pem=excluded.public_key_pem, "
-            "public_key_id=excluded.public_key_id, "
-            "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, std::string,
-            std::string, std::string, std::optional<std::string>, std::string,
-            std::string, std::string, int64_t, int64_t>(
-            a.uri, a.username, a.domain, a.display_name, a.inbox,
-            a.shared_inbox, a.public_key_pem, a.public_key_id, a.actor_json,
-            fetched, fetched)));
-        return db->execute(std::move(st));
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-
-    ASSIGN_OR_RETURN(auto stored, getRemoteActorByUri(a.uri));
-    if(!stored.has_value())
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor vanished immediately after upsert"));
-    }
-    return *stored;
+    return ap::Store(*db).upsertRemoteActor(a);
 }
-
 mw::E<std::optional<RemoteActor>>
 DataSourceSQLite::getRemoteActorById(int64_t id) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, uri, username, domain, display_name, inbox, shared_inbox, "
-        "public_key_pem, public_key_id, actor_json, fetched_at, retained_at "
-        "FROM remote_actors WHERE id = ?;"));
-    DO_OR_RETURN(st.bind<int64_t>(id));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::optional<std::string>,
-        std::string, std::string, std::string, int64_t, int64_t>(
-            std::move(st))));
-    if(rows.empty()) return std::optional<RemoteActor>{};
-    const auto& r = rows[0];
-    RemoteActor a;
-    a.id = std::get<0>(r);
-    a.uri = std::get<1>(r);
-    a.username = std::get<2>(r);
-    a.domain = std::get<3>(r);
-    a.display_name = std::get<4>(r);
-    a.inbox = std::get<5>(r);
-    a.shared_inbox = std::get<6>(r);
-    a.public_key_pem = std::get<7>(r);
-    a.public_key_id = std::get<8>(r);
-    a.actor_json = std::get<9>(r);
-    a.fetched_at = std::get<10>(r);
-    a.retained_at = std::get<11>(r);
-    return std::optional<RemoteActor>{std::move(a)};
+    return ap::Store(*db).getRemoteActorById(id);
 }
-
 mw::E<std::optional<RemoteActor>>
 DataSourceSQLite::getRemoteActorByUri(std::string_view uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, uri, username, domain, display_name, inbox, shared_inbox, "
-        "public_key_pem, public_key_id, actor_json, fetched_at, retained_at "
-        "FROM remote_actors WHERE uri = ?;"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(uri)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::string, std::string, std::optional<std::string>,
-        std::string, std::string, std::string, int64_t, int64_t>(
-            std::move(st))));
-    if(rows.empty()) return std::optional<RemoteActor>{};
-    const auto& r = rows[0];
-    RemoteActor a;
-    a.id = std::get<0>(r);
-    a.uri = std::get<1>(r);
-    a.username = std::get<2>(r);
-    a.domain = std::get<3>(r);
-    a.display_name = std::get<4>(r);
-    a.inbox = std::get<5>(r);
-    a.shared_inbox = std::get<6>(r);
-    a.public_key_pem = std::get<7>(r);
-    a.public_key_id = std::get<8>(r);
-    a.actor_json = std::get<9>(r);
-    a.fetched_at = std::get<10>(r);
-    a.retained_at = std::get<11>(r);
-    return std::optional<RemoteActor>{std::move(a)};
+    return ap::Store(*db).getRemoteActorByUri(uri);
 }
-
 mw::E<void>
 DataSourceSQLite::touchRemoteActorRetention(std::string_view actor_uri,
                                             int64_t now_seconds) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        return touchRemoteActorRetentionByUri(*db, actor_uri, now_seconds);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).touchRemoteActorRetention(actor_uri, now_seconds);
 }
-
 // ─── Posts ─────────────────────────────────────────────────────────
 
 mw::E<Post>
@@ -1189,10 +1156,13 @@ DataSourceSQLite::insertPost(const NewPost& np,
     int64_t new_id = 0;
     std::string final_uri;
 
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
 
@@ -1208,7 +1178,8 @@ DataSourceSQLite::insertPost(const NewPost& np,
                 "({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                 is_local ? "lower(hex(randomblob(16)))" : "?");
             auto st_e = db->statementFromStr(sql);
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto& st = *st_e;
             // Bind starting at the first '?'. For local the uri is filled
             // by SQL, so the first bound param is local_author_id.
@@ -1233,9 +1204,11 @@ DataSourceSQLite::insertPost(const NewPost& np,
                       np.sensitive ? 1 : 0,
                       std::string(visibilityToStr(np.visibility)),
                       np.in_reply_to_uri, created, np.published);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(st));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
 
         new_id = db->lastInsertRowID();
@@ -1244,12 +1217,15 @@ DataSourceSQLite::insertPost(const NewPost& np,
             final_uri = std::format("{}{}", local_uri_prefix, new_id);
             auto up_e = db->statementFromStr(
                 "UPDATE posts SET uri = ? WHERE id = ?;");
-            if(!up_e.has_value()) return rollback(up_e.error());
+            if(!up_e.has_value())
+                return rollback(up_e.error());
             auto& up = *up_e;
             auto b = up.bind<std::string, int64_t>(final_uri, new_id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(up));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         else
         {
@@ -1261,30 +1237,35 @@ DataSourceSQLite::insertPost(const NewPost& np,
             auto r_e = db->statementFromStr(
                 "INSERT INTO post_recipients (post_id, recipient_uri, field) "
                 "VALUES (?, ?, ?);");
-            if(!r_e.has_value()) return rollback(r_e.error());
+            if(!r_e.has_value())
+                return rollback(r_e.error());
             auto& rst = *r_e;
             auto b = rst.bind<int64_t, std::string, std::string>(
                 new_id, rec.recipient_uri, rec.field);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(rst));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         if(np.remote_author_id.has_value())
         {
             auto retained = touchRemoteActorRetentionById(
                 *db, *np.remote_author_id, created);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
         for(const auto& rec : recipients)
         {
             auto retained = touchRemoteActorRetentionByUri(
                 *db, rec.recipient_uri, created);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
 
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    DO_OR_RETURN(withWriteRetry(txn));
+    DO_OR_RETURN(withDataWrite(*db, txn));
 
     ASSIGN_OR_RETURN(auto stored, getPostById(new_id));
     if(!stored.has_value())
@@ -1308,52 +1289,26 @@ DataSourceSQLite::insertRemoteActorAndPost(
     int64_t created = now();
     int64_t actor_id = 0;
     int64_t post_id = 0;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
-        int64_t fetched = actor.fetched_at != 0 ? actor.fetched_at : created;
-        auto actor_st_e = db->statementFromStr(
-            "INSERT INTO remote_actors (uri, username, domain, display_name, "
-            "inbox, shared_inbox, public_key_pem, public_key_id, actor_json, "
-            "fetched_at, retained_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(uri) DO UPDATE SET username=excluded.username, "
-            "domain=excluded.domain, display_name=excluded.display_name, "
-            "inbox=excluded.inbox, shared_inbox=excluded.shared_inbox, "
-            "public_key_pem=excluded.public_key_pem, "
-            "public_key_id=excluded.public_key_id, "
-            "actor_json=excluded.actor_json, fetched_at=excluded.fetched_at, "
-            "retained_at=excluded.retained_at;");
-        if(!actor_st_e.has_value()) return rollback(actor_st_e.error());
-        auto actor_bind = actor_st_e->bind<std::string, std::string,
-            std::string, std::string, std::string, std::optional<std::string>,
-            std::string, std::string, std::string, int64_t, int64_t>(
-            actor.uri, actor.username, actor.domain, actor.display_name,
-            actor.inbox, actor.shared_inbox, actor.public_key_pem,
-            actor.public_key_id, actor.actor_json, fetched, fetched);
-        if(!actor_bind.has_value()) return rollback(actor_bind.error());
-        auto actor_ex = db->execute(std::move(*actor_st_e));
-        if(!actor_ex.has_value()) return rollback(actor_ex.error());
-
-        auto id_st_e = db->statementFromStr(
-            "SELECT id FROM remote_actors WHERE uri = ?;");
-        if(!id_st_e.has_value()) return rollback(id_st_e.error());
-        auto id_bind = id_st_e->bind<std::string>(actor.uri);
-        if(!id_bind.has_value()) return rollback(id_bind.error());
-        auto rows_e = db->eval<int64_t>(std::move(*id_st_e));
-        if(!rows_e.has_value()) return rollback(rows_e.error());
-        if(rows_e->empty()) return rollback(mw::runtimeError(
-            "Remote actor vanished during post insert"));
-        actor_id = std::get<0>((*rows_e)[0]);
+        ASSIGN_OR_RETURN(auto stored_actor,
+                         ap::Store(*db).upsertRemoteActor(actor));
+        actor_id = stored_actor.id;
 
         auto post_st_e = db->statementFromStr(
             "INSERT INTO posts (uri, local_author_id, remote_author_id, "
             "content_html, content_source, summary, sensitive, visibility, "
             "in_reply_to_uri, created_at, published) VALUES "
             "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
-        if(!post_st_e.has_value()) return rollback(post_st_e.error());
+        if(!post_st_e.has_value())
+            return rollback(post_st_e.error());
         auto post_bind = post_st_e->bind<std::string,
             std::optional<int64_t>, std::optional<int64_t>, std::string,
             std::optional<std::string>, std::optional<std::string>, int64_t,
@@ -1363,9 +1318,11 @@ DataSourceSQLite::insertRemoteActorAndPost(
             post.content_source, post.summary, post.sensitive ? 1 : 0,
             std::string(visibilityToStr(post.visibility)),
             post.in_reply_to_uri, created, post.published);
-        if(!post_bind.has_value()) return rollback(post_bind.error());
+        if(!post_bind.has_value())
+            return rollback(post_bind.error());
         auto post_ex = db->execute(std::move(*post_st_e));
-        if(!post_ex.has_value()) return rollback(post_ex.error());
+        if(!post_ex.has_value())
+            return rollback(post_ex.error());
         post_id = db->lastInsertRowID();
 
         for(const auto& recipient : recipients)
@@ -1373,22 +1330,26 @@ DataSourceSQLite::insertRemoteActorAndPost(
             auto rec_st_e = db->statementFromStr(
                 "INSERT INTO post_recipients (post_id, recipient_uri, field) "
                 "VALUES (?, ?, ?);");
-            if(!rec_st_e.has_value()) return rollback(rec_st_e.error());
+            if(!rec_st_e.has_value())
+                return rollback(rec_st_e.error());
             auto rec_bind = rec_st_e->bind<int64_t, std::string, std::string>(
                 post_id, recipient.recipient_uri, recipient.field);
-            if(!rec_bind.has_value()) return rollback(rec_bind.error());
+            if(!rec_bind.has_value())
+                return rollback(rec_bind.error());
             auto rec_ex = db->execute(std::move(*rec_st_e));
-            if(!rec_ex.has_value()) return rollback(rec_ex.error());
+            if(!rec_ex.has_value())
+                return rollback(rec_ex.error());
         }
         for(const auto& recipient : recipients)
         {
             auto retained = touchRemoteActorRetentionByUri(
                 *db, recipient.recipient_uri, created);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    DO_OR_RETURN(withWriteRetry(txn));
+    DO_OR_RETURN(withDataWrite(*db, txn));
     ASSIGN_OR_RETURN(auto stored, getPostById(post_id));
     if(!stored.has_value())
     {
@@ -1432,10 +1393,13 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
 mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
 {
     int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         std::optional<int64_t> remote_author_id;
@@ -1443,21 +1407,28 @@ mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
         {
             auto st_e = db->statementFromStr(
                 "SELECT remote_author_id FROM posts WHERE id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto rows_e = db->eval<std::optional<int64_t>>(std::move(*st_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
-            if(!rows_e->empty()) remote_author_id = std::get<0>((*rows_e)[0]);
+            if(!rows_e.has_value())
+                return rollback(rows_e.error());
+            if(!rows_e->empty())
+                remote_author_id = std::get<0>((*rows_e)[0]);
         }
         {
             auto st_e = db->statementFromStr(
                 "SELECT recipient_uri FROM post_recipients WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto rows_e = db->eval<std::string>(std::move(*st_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
+            if(!rows_e.has_value())
+                return rollback(rows_e.error());
             for(const auto& row : *rows_e)
             {
                 recipient_uris.push_back(std::get<0>(row));
@@ -1466,44 +1437,55 @@ mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_recipients WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_attachments WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         {
             auto st_e = db->statementFromStr("DELETE FROM posts WHERE id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         if(remote_author_id.has_value())
         {
             auto retained = touchRemoteActorRetentionById(
                 *db, *remote_author_id, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
         for(const auto& recipient_uri : recipient_uris)
         {
             auto retained = touchRemoteActorRetentionByUri(
                 *db, recipient_uri, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void>
@@ -1512,10 +1494,13 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
     const
 {
     int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         std::optional<int64_t> old_remote_author_id;
@@ -1523,22 +1508,28 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
         {
             auto st_e = db->statementFromStr(
                 "SELECT remote_author_id FROM posts WHERE id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto rows_e = db->eval<std::optional<int64_t>>(std::move(*st_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
+            if(!rows_e.has_value())
+                return rollback(rows_e.error());
             if(!rows_e->empty())
                 old_remote_author_id = std::get<0>((*rows_e)[0]);
         }
         {
             auto st_e = db->statementFromStr(
                 "SELECT recipient_uri FROM post_recipients WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto rows_e = db->eval<std::string>(std::move(*st_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
+            if(!rows_e.has_value())
+                return rollback(rows_e.error());
             for(const auto& row : *rows_e)
             {
                 old_recipient_uris.push_back(std::get<0>(row));
@@ -1551,7 +1542,8 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
                 "content_source = ?, summary = ?, sensitive = ?, "
                 "visibility = ?, in_reply_to_uri = ?, published = ? "
                 "WHERE id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto& st = *st_e;
             auto b = st.bind<std::string, std::optional<int64_t>,
                 std::optional<int64_t>, std::string,
@@ -1563,68 +1555,83 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
                 np.summary, np.sensitive ? 1 : 0,
                 std::string(visibilityToStr(np.visibility)),
                 np.in_reply_to_uri, np.published, id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(st));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_recipients WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_attachments WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         for(const auto& rec : recipients)
         {
             auto st_e = db->statementFromStr(
                 "INSERT INTO post_recipients (post_id, recipient_uri, field) "
                 "VALUES (?, ?, ?);");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto& st = *st_e;
             auto b = st.bind<int64_t, std::string, std::string>(
                 id, rec.recipient_uri, rec.field);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(st));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         if(old_remote_author_id.has_value())
         {
             auto retained = touchRemoteActorRetentionById(
                 *db, *old_remote_author_id, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
         if(np.remote_author_id.has_value())
         {
             auto retained = touchRemoteActorRetentionById(
                 *db, *np.remote_author_id, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
         for(const auto& recipient_uri : old_recipient_uris)
         {
             auto retained = touchRemoteActorRetentionByUri(
                 *db, recipient_uri, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
         for(const auto& recipient : recipients)
         {
             auto retained = touchRemoteActorRetentionByUri(
                 *db, recipient.recipient_uri, retained_at);
-            if(!retained.has_value()) return rollback(retained.error());
+            if(!retained.has_value())
+                return rollback(retained.error());
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::vector<PostRecipient>>
@@ -1899,367 +1906,96 @@ mw::E<int64_t> DataSourceSQLite::countLocalPosts() const
 
 mw::E<void> DataSourceSQLite::addFollow(const Follow& f) const
 {
-    int64_t created = f.created_at != 0 ? f.created_at : now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO follows (follower_uri, followee_uri, state, "
-            "follow_activity_uri, created_at) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(follower_uri, followee_uri) DO UPDATE SET "
-            "state=excluded.state, "
-            "follow_activity_uri=excluded.follow_activity_uri;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, std::string,
-            std::optional<std::string>, int64_t>(
-            f.follower_uri, f.followee_uri,
-            std::string(followStateToStr(f.state)), f.follow_activity_uri,
-            created)));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        DO_OR_RETURN(touchRemoteActorRetentionByUri(
-            *db, f.follower_uri, created));
-        return touchRemoteActorRetentionByUri(*db, f.followee_uri, created);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).addFollow(f);
 }
-
 mw::E<std::optional<Follow>>
 DataSourceSQLite::getFollow(std::string_view follower_uri,
                             std::string_view followee_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, follower_uri, followee_uri, state, follow_activity_uri, "
-        "created_at FROM follows WHERE follower_uri = ? AND followee_uri = ?;"));
-    DO_OR_RETURN((st.bind<std::string, std::string>(
-        std::string(follower_uri), std::string(followee_uri))));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::optional<std::string>, int64_t>(std::move(st))));
-    if(rows.empty()) return std::optional<Follow>{};
-    const auto& r = rows[0];
-    Follow f;
-    f.id = std::get<0>(r);
-    f.follower_uri = std::get<1>(r);
-    f.followee_uri = std::get<2>(r);
-    auto state = followStateFromStr(std::get<3>(r));
-    f.state = state.value_or(FollowState::PENDING);
-    f.follow_activity_uri = std::get<4>(r);
-    f.created_at = std::get<5>(r);
-    return std::optional<Follow>{std::move(f)};
+    return ap::Store(*db).getFollow(follower_uri, followee_uri);
 }
-
 mw::E<void>
 DataSourceSQLite::setFollowState(std::string_view follower_uri,
                                  std::string_view followee_uri,
                                  FollowState s) const
 {
-    int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "UPDATE follows SET state = ? WHERE follower_uri = ? "
-            "AND followee_uri = ?;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, std::string>(
-            std::string(followStateToStr(s)), std::string(follower_uri),
-            std::string(followee_uri))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        DO_OR_RETURN(touchRemoteActorRetentionByUri(
-            *db, follower_uri, retained_at));
-        return touchRemoteActorRetentionByUri(*db, followee_uri, retained_at);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).setFollowState(follower_uri, followee_uri, s);
 }
-
 mw::E<void>
 DataSourceSQLite::removeFollow(std::string_view follower_uri,
                                std::string_view followee_uri) const
 {
-    int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM follows WHERE follower_uri = ? AND followee_uri = ?;"));
-        DO_OR_RETURN((st.bind<std::string, std::string>(
-            std::string(follower_uri), std::string(followee_uri))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        DO_OR_RETURN(touchRemoteActorRetentionByUri(
-            *db, follower_uri, retained_at));
-        return touchRemoteActorRetentionByUri(*db, followee_uri, retained_at);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).removeFollow(follower_uri, followee_uri);
 }
-
 mw::E<std::vector<std::string>>
 DataSourceSQLite::followerUris(std::string_view followee_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT follower_uri FROM follows WHERE followee_uri = ? "
-        "AND state = 'accepted';"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(followee_uri)));
-    ASSIGN_OR_RETURN(auto rows, db->eval<std::string>(std::move(st)));
-    std::vector<std::string> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows) out.push_back(std::get<0>(r));
-    return out;
+    return ap::Store(*db).followerUris(followee_uri);
 }
-
 mw::E<std::vector<std::string>>
 DataSourceSQLite::followingUris(std::string_view follower_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT followee_uri FROM follows WHERE follower_uri = ? "
-        "AND state = 'accepted';"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(follower_uri)));
-    ASSIGN_OR_RETURN(auto rows, db->eval<std::string>(std::move(st)));
-    std::vector<std::string> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows) out.push_back(std::get<0>(r));
-    return out;
+    return ap::Store(*db).followingUris(follower_uri);
 }
 
-namespace
-{
-
-std::string buildFollowPageSql(const Cursor& c, std::string_view uri_column,
-                               std::string_view select_column)
-{
-    std::string where = std::format("{} = ? AND state = 'accepted'",
-                                    uri_column);
-    if(c.max_id.has_value()) where += " AND id < ?";
-    if(c.min_id.has_value()) where += " AND id > ?";
-    const char* order = c.min_id.has_value() ? "ASC" : "DESC";
-    return std::format(
-        "SELECT id, {} FROM follows WHERE {} ORDER BY id {} LIMIT ?;",
-        select_column, where, order);
-}
-
-mw::E<std::vector<ActorCollectionItem>> rowsToActorCollection(
-    const std::vector<std::tuple<int64_t, std::string>>& rows,
-    bool reverse_order)
-{
-    std::vector<ActorCollectionItem> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows)
-    {
-        out.push_back(ActorCollectionItem{std::get<0>(r), std::get<1>(r)});
-    }
-    if(reverse_order) std::reverse(out.begin(), out.end());
-    return out;
-}
-
-} // namespace
 
 mw::E<std::vector<ActorCollectionItem>>
 DataSourceSQLite::followerPage(std::string_view followee_uri,
                                const Cursor& c, int limit) const
 {
-    std::string sql = buildFollowPageSql(c, "followee_uri", "follower_uri");
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
-    int idx = 1;
-    DO_OR_RETURN(mw::internal::bindOne(st, idx++, std::string(followee_uri)));
-    if(c.max_id.has_value())
-        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
-    if(c.min_id.has_value())
-        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
-    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string>(
-        std::move(st))));
-    return rowsToActorCollection(rows, c.min_id.has_value());
+    return ap::Store(*db).followerPage(followee_uri, c, limit);
 }
-
 mw::E<std::vector<ActorCollectionItem>>
 DataSourceSQLite::followingPage(std::string_view follower_uri,
                                 const Cursor& c, int limit) const
 {
-    std::string sql = buildFollowPageSql(c, "follower_uri", "followee_uri");
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
-    int idx = 1;
-    DO_OR_RETURN(mw::internal::bindOne(st, idx++, std::string(follower_uri)));
-    if(c.max_id.has_value())
-        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
-    if(c.min_id.has_value())
-        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
-    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string>(
-        std::move(st))));
-    return rowsToActorCollection(rows, c.min_id.has_value());
+    return ap::Store(*db).followingPage(follower_uri, c, limit);
 }
-
 // ─── Likes / boosts / reactions / bookmarks ────────────────────────
 
 mw::E<void> DataSourceSQLite::addLike(const Like& l) const
 {
-    int64_t created = l.created_at != 0 ? l.created_at : now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO likes (actor_uri, post_uri, activity_uri, created_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(actor_uri, post_uri) DO NOTHING;"));
-        DO_OR_RETURN((st.bind<std::string, std::string,
-            std::optional<std::string>, int64_t>(
-            l.actor_uri, l.post_uri, l.activity_uri, created)));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, l.actor_uri, created);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).addLike(l);
 }
-
 mw::E<void> DataSourceSQLite::removeLike(std::string_view actor_uri,
                                          std::string_view post_uri) const
 {
-    int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM likes WHERE actor_uri = ? AND post_uri = ?;"));
-        DO_OR_RETURN((st.bind<std::string, std::string>(
-            std::string(actor_uri), std::string(post_uri))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).removeLike(actor_uri, post_uri);
 }
-
 mw::E<std::vector<Like>>
 DataSourceSQLite::likesForPost(std::string_view post_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, actor_uri, post_uri, activity_uri, created_at FROM likes "
-        "WHERE post_uri = ? ORDER BY created_at ASC;"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(post_uri)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::optional<std::string>, int64_t>(std::move(st))));
-    std::vector<Like> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows)
-    {
-        Like l;
-        l.id = std::get<0>(r);
-        l.actor_uri = std::get<1>(r);
-        l.post_uri = std::get<2>(r);
-        l.activity_uri = std::get<3>(r);
-        l.created_at = std::get<4>(r);
-        out.push_back(std::move(l));
-    }
-    return out;
+    return ap::Store(*db).likesForPost(post_uri);
 }
-
 mw::E<void> DataSourceSQLite::addBoost(const Boost& b) const
 {
-    int64_t created = b.created_at != 0 ? b.created_at : now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO boosts (actor_uri, post_uri, activity_uri, "
-            "created_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(actor_uri, post_uri) DO NOTHING;"));
-        DO_OR_RETURN((st.bind<std::string, std::string,
-            std::optional<std::string>, int64_t>(
-            b.actor_uri, b.post_uri, b.activity_uri, created)));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, b.actor_uri, created);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).addBoost(b);
 }
-
 mw::E<void> DataSourceSQLite::removeBoost(std::string_view actor_uri,
                                           std::string_view post_uri) const
 {
-    int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM boosts WHERE actor_uri = ? AND post_uri = ?;"));
-        DO_OR_RETURN((st.bind<std::string, std::string>(
-            std::string(actor_uri), std::string(post_uri))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).removeBoost(actor_uri, post_uri);
 }
-
 mw::E<std::vector<Boost>>
 DataSourceSQLite::boostsForPost(std::string_view post_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, actor_uri, post_uri, activity_uri, created_at "
-        "FROM boosts WHERE post_uri = ? ORDER BY created_at ASC;"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(post_uri)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::optional<std::string>, int64_t>(std::move(st))));
-    std::vector<Boost> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows)
-    {
-        Boost b;
-        b.id = std::get<0>(r);
-        b.actor_uri = std::get<1>(r);
-        b.post_uri = std::get<2>(r);
-        b.activity_uri = std::get<3>(r);
-        b.created_at = std::get<4>(r);
-        out.push_back(std::move(b));
-    }
-    return out;
+    return ap::Store(*db).boostsForPost(post_uri);
 }
-
 mw::E<void> DataSourceSQLite::addReaction(const Reaction& r) const
 {
-    int64_t created = r.created_at != 0 ? r.created_at : now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO reactions (actor_uri, post_uri, emoji, "
-            "remote_emoji_url, remote_emoji_media_type, activity_uri, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(actor_uri, post_uri, emoji) DO NOTHING;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, std::string,
-            std::optional<std::string>, std::optional<std::string>,
-            std::optional<std::string>, int64_t>(
-            r.actor_uri, r.post_uri, r.emoji, r.remote_emoji_url,
-            r.remote_emoji_media_type, r.activity_uri, created)));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, r.actor_uri, created);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).addReaction(r);
 }
-
 mw::E<void> DataSourceSQLite::removeReaction(std::string_view actor_uri,
                                              std::string_view post_uri,
                                              std::string_view emoji) const
 {
-    int64_t retained_at = now();
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM reactions WHERE actor_uri = ? AND post_uri = ? "
-            "AND emoji = ?;"));
-        DO_OR_RETURN((st.bind<std::string, std::string, std::string>(
-            std::string(actor_uri), std::string(post_uri),
-            std::string(emoji))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        return touchRemoteActorRetentionByUri(*db, actor_uri, retained_at);
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).removeReaction(actor_uri, post_uri, emoji);
 }
-
 mw::E<std::vector<Reaction>>
 DataSourceSQLite::reactionsForPost(std::string_view post_uri) const
 {
-    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-        "SELECT id, actor_uri, post_uri, emoji, remote_emoji_url, "
-        "remote_emoji_media_type, activity_uri, created_at "
-        "FROM reactions WHERE post_uri = ? ORDER BY created_at ASC;"));
-    DO_OR_RETURN(st.bind<std::string>(std::string(post_uri)));
-    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string, std::string,
-        std::string, std::optional<std::string>,
-        std::optional<std::string>, std::optional<std::string>,
-        int64_t>(std::move(st))));
-    std::vector<Reaction> out;
-    out.reserve(rows.size());
-    for(const auto& r : rows)
-    {
-        Reaction re;
-        re.id = std::get<0>(r);
-        re.actor_uri = std::get<1>(r);
-        re.post_uri = std::get<2>(r);
-        re.emoji = std::get<3>(r);
-        re.remote_emoji_url = std::get<4>(r);
-        re.remote_emoji_media_type = std::get<5>(r);
-        re.activity_uri = std::get<6>(r);
-        re.created_at = std::get<7>(r);
-        out.push_back(std::move(re));
-    }
-    return out;
+    return ap::Store(*db).reactionsForPost(post_uri);
 }
-
 mw::E<void> DataSourceSQLite::addBookmark(int64_t user_id,
                                           int64_t post_id) const
 {
@@ -2272,7 +2008,7 @@ mw::E<void> DataSourceSQLite::addBookmark(int64_t user_id,
             user_id, post_id, created)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void> DataSourceSQLite::removeBookmark(int64_t user_id,
@@ -2284,7 +2020,7 @@ mw::E<void> DataSourceSQLite::removeBookmark(int64_t user_id,
         DO_OR_RETURN((st.bind<int64_t, int64_t>(user_id, post_id)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<bool> DataSourceSQLite::isBookmarked(int64_t user_id,
@@ -2432,23 +2168,28 @@ mw::E<int64_t> DataSourceSQLite::insertAttachment(const Attachment& a) const
 {
     int64_t created = now();
     int64_t attachment_id = 0;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
 
         if(a.remote_url.has_value())
         {
             auto id = insertOrGetRemoteAttachment(*db, a, created);
-            if(!id.has_value()) return rollback(id.error());
+            if(!id.has_value())
+                return rollback(id.error());
             attachment_id = *id;
         }
         else
         {
             auto id = insertOrGetLocalAttachment(*db, a, created);
-            if(!id.has_value()) return rollback(id.error());
+            if(!id.has_value())
+                return rollback(id.error());
             attachment_id = *id;
         }
 
@@ -2456,11 +2197,12 @@ mw::E<int64_t> DataSourceSQLite::insertAttachment(const Attachment& a) const
         {
             auto rel = insertPostAttachmentRelation(
                 *db, a, attachment_id, created);
-            if(!rel.has_value()) return rollback(rel.error());
+            if(!rel.has_value())
+                return rollback(rel.error());
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    DO_OR_RETURN(withWriteRetry(txn));
+    DO_OR_RETURN(withDataWrite(*db, txn));
     return attachment_id;
 }
 
@@ -2503,7 +2245,7 @@ mw::E<void> DataSourceSQLite::attachToPost(int64_t attachment_id,
             post_id, attachment_id, post_id, post_id, created)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::vector<Attachment>>
@@ -2544,20 +2286,26 @@ mw::E<void> DataSourceSQLite::replacePostAttachments(
     int64_t post_id, const std::vector<int64_t>& attachment_ids) const
 {
     int64_t created = now();
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_attachments WHERE post_id = ?;");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t>(post_id);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
         int sort = 0;
         for(int64_t attachment_id : attachment_ids)
@@ -2567,17 +2315,20 @@ mw::E<void> DataSourceSQLite::replacePostAttachments(
                 "(post_id, attachment_id, sensitive, sort_order, created_at) "
                 "VALUES (?, ?, COALESCE((SELECT sensitive FROM posts "
                 "WHERE id = ?), 0), ?, ?);");
-            if(!st_e.has_value()) return rollback(st_e.error());
+            if(!st_e.has_value())
+                return rollback(st_e.error());
             auto b = st_e->bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
                 post_id, attachment_id, post_id, sort, created);
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
             ++sort;
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<void> DataSourceSQLite::deleteUnreferencedAttachments(
@@ -2600,7 +2351,7 @@ mw::E<void> DataSourceSQLite::deleteUnreferencedAttachments(
         }
         return mw::E<void>{};
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 // ─── Sessions ──────────────────────────────────────────────────────
@@ -2618,7 +2369,7 @@ mw::E<void> DataSourceSQLite::createSession(std::string_view token,
             std::string(token), user_id, created, expires_at)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::optional<int64_t>>
@@ -2640,7 +2391,7 @@ mw::E<void> DataSourceSQLite::deleteSession(std::string_view token) const
         DO_OR_RETURN(st.bind<std::string>(std::string(token)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 // ─── Pending logins ────────────────────────────────────────────────
@@ -2657,43 +2408,53 @@ mw::E<void> DataSourceSQLite::addPendingLogin(std::string_view state,
             std::string(state), std::string(nonce), created_at)));
         return db->execute(std::move(st));
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 mw::E<std::optional<std::string>>
 DataSourceSQLite::takePendingLogin(std::string_view state) const
 {
     std::optional<std::string> nonce;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
+    auto txn = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute("SAVEPOINT unspoken_operation;"));
+        auto rollback = [&](mw::Error e) -> mw::E<void>
+        {
+            (void)db->execute(
+                "ROLLBACK TO unspoken_operation; RELEASE unspoken_operation;");
             return std::unexpected(std::move(e));
         };
         nonce.reset();
         {
             auto sel_e = db->statementFromStr(
                 "SELECT nonce FROM pending_logins WHERE state = ?;");
-            if(!sel_e.has_value()) return rollback(sel_e.error());
+            if(!sel_e.has_value())
+                return rollback(sel_e.error());
             auto b = sel_e->bind<std::string>(std::string(state));
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto rows_e = db->eval<std::string>(std::move(*sel_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
-            if(!rows_e->empty()) nonce = std::get<0>((*rows_e)[0]);
+            if(!rows_e.has_value())
+                return rollback(rows_e.error());
+            if(!rows_e->empty())
+                nonce = std::get<0>((*rows_e)[0]);
         }
         if(nonce.has_value())
         {
             auto del_e = db->statementFromStr(
                 "DELETE FROM pending_logins WHERE state = ?;");
-            if(!del_e.has_value()) return rollback(del_e.error());
+            if(!del_e.has_value())
+                return rollback(del_e.error());
             auto b = del_e->bind<std::string>(std::string(state));
-            if(!b.has_value()) return rollback(b.error());
+            if(!b.has_value())
+                return rollback(b.error());
             auto ex = db->execute(std::move(*del_e));
-            if(!ex.has_value()) return rollback(ex.error());
+            if(!ex.has_value())
+                return rollback(ex.error());
         }
-        return db->execute("COMMIT;");
+        return db->execute("RELEASE unspoken_operation;");
     };
-    DO_OR_RETURN(withWriteRetry(txn));
+    DO_OR_RETURN(withDataWrite(*db, txn));
     return nonce;
 }
 
@@ -2703,202 +2464,30 @@ mw::E<ActivityClaimResult> DataSourceSQLite::claimIncomingActivity(
     std::string_view activity_uri, int64_t now_seconds,
     int64_t lease_seconds) const
 {
-    ActivityClaimResult result = ActivityClaimResult::IN_PROGRESS;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN IMMEDIATE;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
-            return std::unexpected(std::move(e));
-        };
-
-        auto select_e = db->statementFromStr(
-            "SELECT state, claimed_at FROM seen_activities "
-            "WHERE activity_uri = ?;");
-        if(!select_e.has_value()) return rollback(select_e.error());
-        auto select = std::move(*select_e);
-        if(auto r = select.bind<std::string>(std::string(activity_uri));
-           !r.has_value()) return rollback(r.error());
-        auto rows_e = db->eval<std::string, std::optional<int64_t>>(
-            std::move(select));
-        if(!rows_e.has_value()) return rollback(rows_e.error());
-
-        if(rows_e->empty())
-        {
-            auto insert_e = db->statementFromStr(
-                "INSERT INTO seen_activities "
-                "(activity_uri, state, claimed_at, processed_at) "
-                "VALUES (?, 'processing', ?, NULL);");
-            if(!insert_e.has_value()) return rollback(insert_e.error());
-            auto b = insert_e->bind<std::string, int64_t>(
-                std::string(activity_uri), now_seconds);
-            if(!b.has_value()) return rollback(b.error());
-            auto executed = db->execute(std::move(*insert_e));
-            if(!executed.has_value()) return rollback(executed.error());
-            result = ActivityClaimResult::CLAIMED;
-            return db->execute("COMMIT;");
-        }
-
-        const auto& row = (*rows_e)[0];
-        if(std::get<0>(row) == "processed")
-        {
-            result = ActivityClaimResult::ALREADY_PROCESSED;
-            return db->execute("COMMIT;");
-        }
-        const auto claimed_at = std::get<1>(row);
-        if(claimed_at.has_value()
-           && *claimed_at > now_seconds - lease_seconds)
-        {
-            result = ActivityClaimResult::IN_PROGRESS;
-            return db->execute("COMMIT;");
-        }
-
-        auto update_e = db->statementFromStr(
-            "UPDATE seen_activities SET claimed_at = ? "
-            "WHERE activity_uri = ? AND state = 'processing';");
-        if(!update_e.has_value()) return rollback(update_e.error());
-        auto b = update_e->bind<int64_t, std::string>(
-            now_seconds, std::string(activity_uri));
-        if(!b.has_value()) return rollback(b.error());
-        auto executed = db->execute(std::move(*update_e));
-        if(!executed.has_value()) return rollback(executed.error());
-        result = ActivityClaimResult::CLAIMED;
-        return db->execute("COMMIT;");
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-    return result;
+    return ap::Store(*db).claimIncomingActivity(activity_uri, now_seconds,
+                                                lease_seconds);
 }
-
 mw::E<void> DataSourceSQLite::finalizeIncomingActivity(
     std::string_view activity_uri, int64_t now_seconds) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "UPDATE seen_activities SET state = 'processed', "
-            "claimed_at = NULL, processed_at = ? "
-            "WHERE activity_uri = ? AND state = 'processing';"));
-        DO_OR_RETURN((st.bind<int64_t, std::string>(
-            now_seconds, std::string(activity_uri))));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        if(db->changedRowsCount() != 1)
-        {
-            return std::unexpected(mw::runtimeError(
-                "Inbox activity claim was lost before finalization"));
-        }
-        return {};
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).finalizeIncomingActivity(activity_uri, now_seconds);
 }
-
 mw::E<void> DataSourceSQLite::releaseIncomingActivity(
     std::string_view activity_uri) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM seen_activities WHERE activity_uri = ? "
-            "AND state = 'processing';"));
-        DO_OR_RETURN(st.bind<std::string>(std::string(activity_uri)));
-        return db->execute(std::move(st));
-    };
-    return withWriteRetry(txn);
+    return ap::Store(*db).releaseIncomingActivity(activity_uri);
 }
-
 mw::E<int64_t> DataSourceSQLite::pruneIncomingActivities(
     int64_t cutoff_seconds, int batch_size) const
 {
-    if(batch_size <= 0)
-    {
-        return std::unexpected(mw::runtimeError(
-            "Inbox activity maintenance batch size must be positive"));
-    }
-    int64_t pruned = 0;
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "DELETE FROM seen_activities WHERE activity_uri IN ("
-            " SELECT activity_uri FROM seen_activities "
-            " WHERE state = 'processed' AND processed_at < ? "
-            " ORDER BY processed_at ASC LIMIT ?"
-            ");"));
-        DO_OR_RETURN((st.bind<int64_t, int>(cutoff_seconds, batch_size)));
-        DO_OR_RETURN(db->execute(std::move(st)));
-        pruned = db->changedRowsCount();
-        return {};
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-    return pruned;
+    return ap::Store(*db).pruneIncomingActivities(cutoff_seconds, batch_size);
 }
-
 mw::E<int64_t> DataSourceSQLite::collectUnreferencedRemoteActors(
     int64_t cutoff_seconds, int batch_size) const
 {
-    if(batch_size <= 0)
-    {
-        return std::unexpected(mw::runtimeError(
-            "Remote actor collection batch size must be positive"));
-    }
-
-    int64_t collected = 0;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN IMMEDIATE;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
-            return std::unexpected(std::move(e));
-        };
-        auto candidates_e = db->statementFromStr(
-            "SELECT ra.id FROM remote_actors ra "
-            "WHERE ra.retained_at < ? "
-            "AND NOT EXISTS (SELECT 1 FROM posts p "
-            "                WHERE p.remote_author_id = ra.id) "
-            "AND NOT EXISTS (SELECT 1 FROM follows f "
-            "                WHERE f.follower_uri = ra.uri "
-            "                   OR f.followee_uri = ra.uri) "
-            "AND NOT EXISTS (SELECT 1 FROM likes l "
-            "                WHERE l.actor_uri = ra.uri) "
-            "AND NOT EXISTS (SELECT 1 FROM boosts b "
-            "                WHERE b.actor_uri = ra.uri) "
-            "AND NOT EXISTS (SELECT 1 FROM reactions r "
-            "                WHERE r.actor_uri = ra.uri) "
-            "AND NOT EXISTS (SELECT 1 FROM post_recipients pr "
-            "                WHERE pr.recipient_uri = ra.uri) "
-            "ORDER BY ra.retained_at ASC, ra.id ASC LIMIT ?;");
-        if(!candidates_e.has_value()) return rollback(candidates_e.error());
-        auto candidates_bind = candidates_e->bind<int64_t, int>(
-            cutoff_seconds, batch_size);
-        if(!candidates_bind.has_value()) return rollback(candidates_bind.error());
-        auto candidates = db->eval<int64_t>(std::move(*candidates_e));
-        if(!candidates.has_value()) return rollback(candidates.error());
-
-        for(const auto& candidate : *candidates)
-        {
-            auto delete_e = db->statementFromStr(
-                "DELETE FROM remote_actors "
-                "WHERE id = ? AND retained_at < ? "
-                "AND NOT EXISTS (SELECT 1 FROM posts p "
-                "                WHERE p.remote_author_id = remote_actors.id) "
-                "AND NOT EXISTS (SELECT 1 FROM follows f "
-                "                WHERE f.follower_uri = remote_actors.uri "
-                "                   OR f.followee_uri = remote_actors.uri) "
-                "AND NOT EXISTS (SELECT 1 FROM likes l "
-                "                WHERE l.actor_uri = remote_actors.uri) "
-                "AND NOT EXISTS (SELECT 1 FROM boosts b "
-                "                WHERE b.actor_uri = remote_actors.uri) "
-                "AND NOT EXISTS (SELECT 1 FROM reactions r "
-                "                WHERE r.actor_uri = remote_actors.uri) "
-                "AND NOT EXISTS (SELECT 1 FROM post_recipients pr "
-                "                WHERE pr.recipient_uri = remote_actors.uri);");
-            if(!delete_e.has_value()) return rollback(delete_e.error());
-            auto delete_bind = delete_e->bind<int64_t, int64_t>(
-                std::get<0>(candidate), cutoff_seconds);
-            if(!delete_bind.has_value()) return rollback(delete_bind.error());
-            auto deleted = db->execute(std::move(*delete_e));
-            if(!deleted.has_value()) return rollback(deleted.error());
-            collected += db->changedRowsCount();
-        }
-        return db->execute("COMMIT;");
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-    return collected;
+    return ap::Store(*db).collectUnreferencedRemoteActors(cutoff_seconds,
+                                                          batch_size);
 }
-
 // ─── Job queue ─────────────────────────────────────────────────────
 
 mw::E<int64_t> DataSourceSQLite::enqueueJob(std::string_view kind,
@@ -2906,127 +2495,143 @@ mw::E<int64_t> DataSourceSQLite::enqueueJob(std::string_view kind,
                                             int64_t run_after,
                                             int64_t now_ts) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "INSERT INTO jobs (kind, payload_json, state, attempts, "
-            "run_after, created_at) VALUES (?, ?, 'pending', 0, ?, ?);"));
-        DO_OR_RETURN((st.bind<std::string, std::string, int64_t, int64_t>(
-            std::string(kind), std::string(payload_json), run_after, now_ts)));
-        return db->execute(std::move(st));
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-    return db->lastInsertRowID();
+    return ap::Store(*db).enqueueJob(kind, payload_json, run_after, now_ts);
 }
-
 mw::E<std::optional<Job>> DataSourceSQLite::claimJob(int64_t now_ts) const
 {
-    std::optional<Job> claimed;
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN IMMEDIATE;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
-            return std::unexpected(std::move(e));
-        };
-        claimed.reset();
-        int64_t job_id = 0;
-        {
-            auto sel_e = db->statementFromStr(
-                "SELECT id, kind, payload_json, state, attempts, run_after, "
-                "last_error, created_at FROM jobs WHERE state = 'pending' "
-                "AND run_after <= ? ORDER BY run_after ASC, id ASC LIMIT 1;");
-            if(!sel_e.has_value()) return rollback(sel_e.error());
-            auto b = sel_e->bind<int64_t>(now_ts);
-            if(!b.has_value()) return rollback(b.error());
-            auto rows_e = db->eval<int64_t, std::string, std::string,
-                std::string, int64_t, int64_t, std::optional<std::string>,
-                int64_t>(std::move(*sel_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
-            if(rows_e->empty())
-            {
-                return db->execute("COMMIT;");
-            }
-            const auto& r = (*rows_e)[0];
-            Job j;
-            j.id = std::get<0>(r);
-            j.kind = std::get<1>(r);
-            j.payload_json = std::get<2>(r);
-            j.state = "running";
-            j.attempts = std::get<4>(r);
-            j.run_after = std::get<5>(r);
-            j.last_error = std::get<6>(r);
-            j.created_at = std::get<7>(r);
-            claimed = std::move(j);
-            job_id = claimed->id;
-        }
-        {
-            auto up_e = db->statementFromStr(
-                "UPDATE jobs SET state = 'running' WHERE id = ?;");
-            if(!up_e.has_value()) return rollback(up_e.error());
-            auto b = up_e->bind<int64_t>(job_id);
-            if(!b.has_value()) return rollback(b.error());
-            auto ex = db->execute(std::move(*up_e));
-            if(!ex.has_value()) return rollback(ex.error());
-        }
-        return db->execute("COMMIT;");
-    };
-    DO_OR_RETURN(withWriteRetry(txn));
-    return claimed;
+    ASSIGN_OR_RETURN(auto job, ap::Store(*db).claimJob(now_ts));
+    if(job)
+        claimed_jobs[job->id] = *job;
+    return job;
 }
-
 mw::E<void> DataSourceSQLite::completeJob(int64_t job_id) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
-            "UPDATE jobs SET state = 'done' WHERE id = ?;"));
-        DO_OR_RETURN(st.bind<int64_t>(job_id));
-        return db->execute(std::move(st));
-    };
-    return withWriteRetry(txn);
+    auto found = claimed_jobs.find(job_id);
+    if(found == claimed_jobs.end())
+        return std::unexpected(mw::runtimeError("No owned job lease"));
+    DO_OR_RETURN(ap::Store(*db).completeJob(found->second));
+    claimed_jobs.erase(found);
+    return {};
 }
-
 mw::E<void> DataSourceSQLite::failJob(int64_t job_id, std::string_view error,
                                       int64_t now_ts, int base_delay_seconds,
                                       int max_retries) const
 {
-    auto txn = [&]() -> mw::E<void> {
-        DO_OR_RETURN(db->execute("BEGIN;"));
-        auto rollback = [&](mw::Error e) -> mw::E<void> {
-            (void)db->execute("ROLLBACK;");
-            return std::unexpected(std::move(e));
+    auto found = claimed_jobs.find(job_id);
+    if(found == claimed_jobs.end())
+        return std::unexpected(mw::runtimeError("No owned job lease"));
+    DO_OR_RETURN(ap::Store(*db).failJob(found->second, error, now_ts,
+                                        base_delay_seconds, max_retries));
+    claimed_jobs.erase(found);
+    return {};
+}
+mw::E<void> DataSourceSQLite::migrate3To4() const
+{
+    auto txn = [&]() -> mw::E<void>
+    {
+        // Older v3 databases predate the persisted system identity. There
+        // are no system keys to import when that optional table is absent.
+        DO_OR_RETURN(db->execute(
+            "CREATE TABLE IF NOT EXISTS system_actor ("
+            "id INTEGER PRIMARY KEY CHECK(id=1),"
+            "private_key_pem TEXT NOT NULL,public_key_pem TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL)"));
+        DO_OR_RETURN(ap::Store(*db).migrate());
+        const std::vector<std::string> tables = {
+            "system_actor", "remote_actors", "follows",         "likes",
+            "boosts",       "reactions",     "seen_activities", "jobs",
         };
-        int64_t attempts = 0;
+        for(const auto& table : tables)
         {
-            auto sel_e = db->statementFromStr(
-                "SELECT attempts FROM jobs WHERE id = ?;");
-            if(!sel_e.has_value()) return rollback(sel_e.error());
-            auto b = sel_e->bind<int64_t>(job_id);
-            if(!b.has_value()) return rollback(b.error());
-            auto rows_e = db->eval<int64_t>(std::move(*sel_e));
-            if(!rows_e.has_value()) return rollback(rows_e.error());
-            if(rows_e->empty()) return db->execute("COMMIT;");
-            attempts = std::get<0>((*rows_e)[0]);
+            ASSIGN_OR_RETURN(
+                auto old_count,
+                db->evalToValue<int64_t>("SELECT count(*) FROM " + table));
+            ASSIGN_OR_RETURN(
+                auto new_count,
+                db->evalToValue<int64_t>("SELECT count(*) FROM ap_" + table));
+            if(new_count != 0)
+                return std::unexpected(mw::runtimeError(
+                    "Federation migration destination is not empty"));
+            std::string columns;
+            if(table == "jobs")
+            {
+                columns = "id,kind,payload_json,state,attempts,run_after,"
+                          "last_error,created_at";
+                DO_OR_RETURN(db->execute("INSERT INTO ap_jobs(" + columns +
+                                         ") SELECT " + columns + " FROM jobs"));
+                // All old workers are stopped before the migration begins.
+                DO_OR_RETURN(db->execute("UPDATE ap_jobs SET state='pending' "
+                                         "WHERE state='running'"));
+            }
+            else
+            {
+                // Copy by name: older schemas can lack optional columns,
+                // and ALTER TABLE can leave a different physical order.
+                ASSIGN_OR_RETURN(auto names,
+                                 db->eval<std::string>(
+                                     "SELECT name FROM pragma_table_info('" +
+                                     table + "') ORDER BY cid"));
+                for(const auto& row : names)
+                {
+                    if(!columns.empty())
+                        columns += ",";
+                    columns += std::get<0>(row);
+                }
+                DO_OR_RETURN(db->execute("INSERT INTO ap_" + table + "(" +
+                                         columns + ") SELECT " + columns +
+                                         " FROM " + table));
+            }
+            ASSIGN_OR_RETURN(
+                auto copied,
+                db->evalToValue<int64_t>("SELECT count(*) FROM ap_" + table));
+            if(copied != old_count)
+                return std::unexpected(mw::runtimeError(
+                    "Federation migration row-count mismatch"));
+            // Preserve historical autoincrement high-water marks as well.
+            DO_OR_RETURN(
+                db->execute("UPDATE sqlite_sequence SET seq=max(seq,coalesce(("
+                            "SELECT seq FROM sqlite_sequence WHERE name='" +
+                            table + "'),seq)) WHERE name='ap_" + table + "'"));
+            DO_OR_RETURN(db->execute("DROP TABLE " + table));
+            // Temporary read-only compatibility for application view queries.
+            DO_OR_RETURN(db->execute("CREATE VIEW " + table +
+                                     " AS SELECT * FROM ap_" + table));
         }
-        int64_t new_attempts = attempts + 1;
-        // Exponential backoff: base * 2^attempts (design §14.4).
-        int64_t delay = static_cast<int64_t>(base_delay_seconds)
-            * (static_cast<int64_t>(1) << std::min<int64_t>(new_attempts, 30));
-        bool give_up = new_attempts >= max_retries;
-        {
-            auto up_e = db->statementFromStr(
-                "UPDATE jobs SET attempts = ?, last_error = ?, state = ?, "
-                "run_after = ? WHERE id = ?;");
-            if(!up_e.has_value()) return rollback(up_e.error());
-            auto b = up_e->bind<int64_t, std::string, std::string, int64_t,
-                int64_t>(new_attempts, std::string(error),
-                         give_up ? "failed" : "pending",
-                         give_up ? now_ts : now_ts + delay, job_id);
-            if(!b.has_value()) return rollback(b.error());
-            auto ex = db->execute(std::move(*up_e));
-            if(!ex.has_value()) return rollback(ex.error());
-        }
-        return db->execute("COMMIT;");
+        DO_OR_RETURN(db->execute(
+            "INSERT OR IGNORE INTO ap_actor_refs "
+            "SELECT a.uri,'post',p.uri FROM posts p JOIN ap_remote_actors a "
+            "ON a.id=p.remote_author_id"));
+        DO_OR_RETURN(
+            db->execute("INSERT OR IGNORE INTO ap_actor_refs "
+                        "SELECT a.uri,'recipient',cast(r.post_id AS "
+                        "TEXT)||':'||r.recipient_uri "
+                        "FROM post_recipients r JOIN ap_remote_actors a "
+                        "ON a.uri=r.recipient_uri"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER unspoken_pin_post_actor AFTER INSERT ON posts "
+            "WHEN NEW.remote_author_id IS NOT NULL BEGIN "
+            "INSERT OR IGNORE INTO ap_actor_refs SELECT uri,'post',NEW.uri "
+            "FROM ap_remote_actors WHERE id=NEW.remote_author_id; END"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER unspoken_unpin_post_actor AFTER DELETE ON posts "
+            "BEGIN DELETE FROM ap_actor_refs WHERE owner_kind='post' "
+            "AND owner_key=OLD.uri; END"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER unspoken_pin_recipient AFTER INSERT ON "
+            "post_recipients "
+            "BEGIN INSERT OR IGNORE INTO ap_actor_refs "
+            "SELECT uri,'recipient',cast(NEW.post_id AS "
+            "TEXT)||':'||NEW.recipient_uri "
+            "FROM ap_remote_actors WHERE uri=NEW.recipient_uri; END"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER unspoken_unpin_recipient AFTER DELETE ON "
+            "post_recipients "
+            "BEGIN DELETE FROM ap_actor_refs WHERE owner_kind='recipient' "
+            "AND owner_key=cast(OLD.post_id AS TEXT)||':'||OLD.recipient_uri; "
+            "END"));
+        return setSchemaVersion(4);
     };
-    return withWriteRetry(txn);
+    return withDataWrite(*db, txn);
 }
 
 } // namespace unspoken

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <mw/error.hpp>
+#include <actpub/transport.hpp>
 
 #ifndef UNSPOKEN_DEFAULT_EMOJI_DATA_FILE
 #define UNSPOKEN_DEFAULT_EMOJI_DATA_FILE "data/emoji_categories.json"
@@ -31,15 +32,7 @@ struct NodeInfoConfig
     std::string description = "";
 };
 
-struct DevConfig
-{
-    // Test-only: allow http:// url_root and omit Secure on cookies so the
-    // Docker interop harness can run without local TLS.
-    bool allow_http_url_root = false;
-    // Test-only: hosts that may resolve to private Docker-network IPs for
-    // outbound federation. Ignored unless allow_http_url_root is enabled.
-    std::vector<std::string> outbound_allow_private_hosts;
-};
+using DevConfig = ap::DevConfig;
 
 struct Config
 {

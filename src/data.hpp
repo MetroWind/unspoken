@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,13 +22,7 @@ namespace unspoken
 {
 
 // The outcome of an atomic attempt to acquire an inbound activity ID.
-enum class ActivityClaimResult
-{
-    CLAIMED,           // This request owns the processing lease.
-    ALREADY_PROCESSED, // A previous request completed the activity.
-    IN_PROGRESS,       // Another request owns an unexpired lease.
-};
-
+using ap::ActivityClaimResult;
 // Retry a write transaction that may see SQLITE_BUSY / SQLITE_LOCKED
 // even after the connection's busy_timeout (e.g. during a WAL
 // checkpoint). The callable should be idempotent: it may run more than
@@ -279,7 +274,16 @@ class DataSourceSQLite : public DataSourceInterface
 {
 public:
     explicit DataSourceSQLite(std::unique_ptr<mw::SQLite> conn)
-            : db(std::move(conn)) {}
+        : owned_db(std::move(conn)), db(owned_db.get())
+    {
+    }
+    // Borrow the connection shared with a federation session/transaction.
+    explicit DataSourceSQLite(mw::SQLite& connection) : db(&connection) {}
+    // Access the request/worker connection for atomic application commands.
+    mw::SQLite& connection() const
+    {
+        return *db;
+    }
     ~DataSourceSQLite() override = default;
 
     // Open (creating if needed) the database file, enable WAL, set
@@ -287,6 +291,9 @@ public:
     static mw::E<std::unique_ptr<DataSourceSQLite>>
     fromFile(const std::string& db_file, int busy_timeout_ms = 5000);
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
+
+    // Move federation tables to the library without changing protocol IDs.
+    mw::E<void> migrate3To4() const;
 
     mw::E<int64_t> getSchemaVersion() const override;
     mw::E<void> migrate1To2() const override;
@@ -464,7 +471,9 @@ protected:
 private:
     static mw::E<void> createSchema(mw::SQLite& db);
 
-    std::unique_ptr<mw::SQLite> db;
+    std::unique_ptr<mw::SQLite> owned_db;
+    mw::SQLite* db = nullptr;
+    mutable std::map<int64_t, Job> claimed_jobs;
 };
 
 } // namespace unspoken

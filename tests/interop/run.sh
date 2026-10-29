@@ -21,7 +21,7 @@ compose()
 build_cmake()
 {
     cmake -S "$REPO_ROOT" -B "$BUILD_DIR"
-    cmake --build "$BUILD_DIR" --target unspoken fake_oidc -j
+    cmake --build "$BUILD_DIR" --target unspoken fake_oidc -j24
 }
 
 print_logs()

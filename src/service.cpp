@@ -12,7 +12,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <mw/crypto.hpp>
+#include <actpub/identity.hpp>
 #include <mw/error.hpp>
 #include <mw/url.hpp>
 #include <mw/utils.hpp>
@@ -37,13 +37,8 @@ int64_t nowSeconds()
 mw::E<std::string> interactionActivityUri(
     const Config& config, std::string_view kind)
 {
-    mw::Crypto crypto;
-    ASSIGN_OR_RETURN(auto bytes, crypto.randomBytes(16));
-    std::string token;
-    token.reserve(bytes.size() * 2);
-    for(auto byte : bytes)
-        token += std::format("{:02x}", std::to_integer<unsigned int>(byte));
-    return std::format("{}activities/{}/{}", config.url_root, kind, token);
+    return ap::newActivityUri(
+        std::format("{}activities/{}/", config.url_root, kind));
 }
 
 struct ReactionGroup

@@ -8,6 +8,12 @@ configuration and deployment instructions.
 Building requires CMake, a C++23 compiler, Python 3, libxml2 2.14 or newer
 (with development headers), and the libraries required by libmw.
 
+## ActivityPub library
+
+Unspoken uses the embedded [ActivityPub library](lib/actpub/README.md) for
+federation. See the [operator guide](docs/operator.md#federation-library-migration)
+for the SQLite migration and backup procedure.
+
 ## SVG uploads
 
 Uploaded SVG attachments are served inline from the application's origin

@@ -22,6 +22,9 @@
 #include <mw/utils.hpp>
 
 #include "app.hpp"
+#include <actpub/transaction.hpp>
+#include <actpub/identity.hpp>
+#include <actpub/collection.hpp>
 #include "attachments.hpp"
 #include "auth.hpp"
 #include "commit.hpp"
@@ -300,40 +303,8 @@ bool respondIfCannotView(const Service& svc, const unspoken::Post& post,
     return false;
 }
 
-nlohmann::json collectionRootJson(const std::string& collection_uri)
-{
-    return {
-        {"@context", "https://www.w3.org/ns/activitystreams"},
-        {"id", collection_uri},
-        {"type", "OrderedCollection"},
-        {"first", collection_uri + "?page=true"},
-    };
-}
-
-std::string pageUrl(const std::string& collection_uri, std::string_view key,
-                    int64_t value)
-{
-    return std::format("{}?page=true&{}={}", collection_uri, key, value);
-}
-
-nlohmann::json collectionPageJson(
-    const std::string& collection_uri, const std::string& self_uri,
-    const nlohmann::json& ordered_items, std::optional<int64_t> next_max_id,
-    std::optional<int64_t> prev_min_id)
-{
-    nlohmann::json page = {
-        {"@context", "https://www.w3.org/ns/activitystreams"},
-        {"id", self_uri},
-        {"type", "OrderedCollectionPage"},
-        {"partOf", collection_uri},
-        {"orderedItems", ordered_items},
-    };
-    if(next_max_id.has_value())
-        page["next"] = pageUrl(collection_uri, "max_id", *next_max_id);
-    if(prev_min_id.has_value())
-        page["prev"] = pageUrl(collection_uri, "min_id", *prev_min_id);
-    return page;
-}
+using ap::collectionPageJson;
+using ap::collectionRootJson;
 
 } // namespace
 
@@ -762,6 +733,11 @@ void App::handleSetupPost(const Request& req, Response& res) const
         return;
     }
 
+    if(respondIfError(
+           unspoken::initializeFederationLibrary(config, *ds, crypto, http),
+           res))
+        return;
+
     clearCookie(res, unspoken::SETUP_COOKIE);
     setCookie(res, unspoken::SESSION_COOKIE, session->token,
               unspoken::SESSION_TTL_SECONDS);
@@ -850,27 +826,13 @@ void App::handleUserProfile(const Request& req, Response& res) const
 
     if(unspoken::wantsActivityJson(headerValue(req, "Accept")))
     {
-        std::optional<unspoken::Attachment> avatar;
-        std::optional<unspoken::Attachment> banner;
-        if(user->avatar_attachment_id.has_value())
-        {
-            ASSIGN_OR_RESPOND_ERROR(
-                auto found,
-                ds->getAttachmentById(*user->avatar_attachment_id), res);
-            if(found.has_value()) avatar = std::move(*found);
-        }
-        if(user->banner_attachment_id.has_value())
-        {
-            ASSIGN_OR_RESPOND_ERROR(
-                auto found,
-                ds->getAttachmentById(*user->banner_attachment_id), res);
-            if(found.has_value()) banner = std::move(*found);
-        }
-        ASSIGN_OR_RESPOND_ERROR(auto fields,
-                                svc.renderedProfileFields(*user), res);
-        setJson(res, unspoken::actorJson(
-            config, *user, unspoken::renderPostContent(user->bio, emoji),
-            avatar, banner, fields));
+        ASSIGN_OR_RESPOND_ERROR(
+            auto document,
+            unspoken::federationActorDocument(
+                config, *ds, config.url_root + "u/" + user->username),
+            res);
+        res.set_header("Vary", "Accept");
+        setJson(res, document);
         return;
     }
 
@@ -925,6 +887,30 @@ void App::handlePostView(const Request& req, Response& res) const
     try { id = std::stoll(req.path_params.at("id")); }
     catch(...) { id = 0; }
 
+    if(unspoken::wantsActivityJson(headerValue(req, "Accept")))
+    {
+        std::string viewer_actor =
+            viewer ? svc.actorUri(viewer->username) : std::string();
+        mw::HTTPSession http;
+        ASSIGN_OR_RESPOND_ERROR(auto document,
+                                unspoken::federationObjectDocument(
+                                    config, *ds, crypto, http,
+                                    config.url_root + "p/" + std::to_string(id),
+                                    viewer_actor, incomingRequest(req),
+                                    mw::timeToSeconds(mw::Clock::now())),
+                                res);
+        if(!document)
+        {
+            res.status = 404;
+            res.set_content("Not found", "text/plain");
+            return;
+        }
+        res.set_header("Vary", "Accept");
+        res.set_header("Cache-Control", "private, no-store");
+        setJson(res, *document);
+        return;
+    }
+
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
     if(!post.has_value())
     {
@@ -934,64 +920,12 @@ void App::handlePostView(const Request& req, Response& res) const
         return;
     }
 
-    bool ap_json = unspoken::wantsActivityJson(headerValue(req, "Accept"));
-    bool visible = false;
-    ASSIGN_OR_RESPOND_ERROR(visible, svc.canViewPost(*post, viewer), res);
-    if(!visible && ap_json)
-    {
-        auto system = systemActor();
-        mw::HTTPSession http;
-        auto verified = system.has_value()
-            ? unspoken::verifyHttpSignatureWithKeyRefresh(
-                  config, *ds, crypto, http, *system, incomingRequest(req),
-                  mw::timeToSeconds(mw::Clock::now()))
-            : unspoken::verifyHttpSignature(
-                  config, *ds, crypto, incomingRequest(req),
-                  mw::timeToSeconds(mw::Clock::now()));
-        if(verified.has_value())
-        {
-            ASSIGN_OR_RESPOND_ERROR(
-                visible, svc.canActorViewPost(*post, verified->actor_uri),
-                res);
-        }
-    }
+    ASSIGN_OR_RESPOND_ERROR(bool visible, svc.canViewPost(*post, viewer), res);
     if(!visible)
     {
-        // 404 (not 403) so private-post existence is not revealed (§16.6).
-        if(ap_json)
-        {
-            res.status = 404;
-            res.set_content("Not found", "text/plain");
-            return;
-        }
         auto ctx = baseContext(req, viewer);
         ctx["error"] = "Not found.";
         render(res, 404, "error.html", ctx);
-        return;
-    }
-
-    if(ap_json)
-    {
-        if(!post->local_author_id.has_value())
-        {
-            res.status = 404;
-            res.set_content("Not found", "text/plain");
-            return;
-        }
-        ASSIGN_OR_RESPOND_ERROR(auto author,
-                                ds->getUserById(*post->local_author_id), res);
-        if(!author.has_value())
-        {
-            res.status = 404;
-            res.set_content("Not found", "text/plain");
-            return;
-        }
-        ASSIGN_OR_RESPOND_ERROR(auto recipients,
-                                ds->getPostRecipients(post->id), res);
-        ASSIGN_OR_RESPOND_ERROR(auto atts,
-                                ds->attachmentsForPost(post->id), res);
-        setJson(res, unspoken::noteJson(config, *post, *author, recipients,
-                                        atts, &emoji));
         return;
     }
 
@@ -1183,6 +1117,8 @@ void App::handlePostCreate(const Request& req, Response& res) const
                             remoteMentionActorUris(
                                 config, *ds, crypto, system_actor,
                                 cp.source, emoji), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
     int64_t now = mw::timeToSeconds(mw::Clock::now());
     if(respondIfError(enqueueCreateActivity(config, *ds, emoji, post,
@@ -1190,6 +1126,8 @@ void App::handlePostCreate(const Request& req, Response& res) const
     {
         return;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
@@ -1226,6 +1164,8 @@ void App::handleReply(const Request& req, Response& res) const
                             remoteMentionActorUris(
                                 config, *ds, crypto, system_actor,
                                 cp.source, emoji), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.createPost(*viewer, cp), res);
     int64_t now = mw::timeToSeconds(mw::Clock::now());
     if(respondIfError(enqueueCreateActivity(config, *ds, emoji, post,
@@ -1233,6 +1173,8 @@ void App::handleReply(const Request& req, Response& res) const
     {
         return;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
@@ -1246,6 +1188,8 @@ void App::handlePostDelete(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
 
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
@@ -1269,6 +1213,8 @@ void App::handlePostDelete(const Request& req, Response& res) const
         config, *ds, actor_uri, activity, recipients, now), res);
     (void)jobs;
     if(respondIfError(ds->deletePost(id), res)) return;
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(urlFor());
 }
 
@@ -1442,6 +1388,8 @@ void App::handleLike(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     Service svc(config, *ds, emoji);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
@@ -1506,6 +1454,8 @@ void App::handleLike(const Request& req, Response& res) const
             config, *ds, actor_uri, activity, recipients, now), res);
         (void)jobs;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1519,6 +1469,8 @@ void App::handleBoost(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     Service svc(config, *ds, emoji);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
@@ -1584,6 +1536,8 @@ void App::handleBoost(const Request& req, Response& res) const
             config, *ds, actor_uri, activity, recipients, now), res);
         (void)jobs;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1597,6 +1551,8 @@ void App::handleReact(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     Service svc(config, *ds, emoji);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
@@ -1675,6 +1631,8 @@ void App::handleReact(const Request& req, Response& res) const
             config, *ds, actor_uri, activity, recipients, now), res);
         (void)jobs;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1754,6 +1712,7 @@ void App::handleFollow(const Request& req, Response& res) const
 
     if(undo)
     {
+        std::optional<ap::Transaction> write_tx;
         ASSIGN_OR_RESPOND_ERROR(auto follow, ds->getFollow(
             svc.actorUri(viewer->username), target_actor), res);
         if(follow.has_value())
@@ -1766,11 +1725,16 @@ void App::handleFollow(const Request& req, Response& res) const
             ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
                 config, *ds, crypto, system_actor, target_actor, now), res);
             (void)actor;
+            ASSIGN_OR_RESPOND_ERROR(
+                auto tx, ap::Transaction::begin(ds->connection()), res);
+            write_tx.emplace(std::move(tx));
             if(respondIfError(enqueueUndoFollowActivity(
                 config, *ds, *viewer, *follow, activity_id, now), res)) return;
         }
         if(respondIfError(svc.setFollowActor(*viewer, target_actor, false),
                           res)) return;
+        if(write_tx && respondIfError(write_tx->commit(), res))
+            return;
         res.set_redirect(redirectTarget(req));
         return;
     }
@@ -1780,13 +1744,18 @@ void App::handleFollow(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto actor, ensureRemoteActor(
         config, *ds, crypto, system_actor, target_actor, now), res);
     (void)actor;
-    std::string activity_id = std::format(
-        "{}activities/follow/{}/{}", config.url_root, viewer->id, now);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
+    ASSIGN_OR_RESPOND_ERROR(
+        auto activity_id,
+        ap::newActivityUri(config.url_root + "activities/follow/"), res);
     if(respondIfError(svc.setFollowActor(
         *viewer, target_actor, true, unspoken::FollowState::PENDING,
         activity_id), res)) return;
     if(respondIfError(enqueueFollowActivity(
         config, *ds, *viewer, target_actor, activity_id, now), res)) return;
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(redirectTarget(req));
 }
 
@@ -1932,9 +1901,13 @@ void App::handleProfilePost(const Request& req, Response& res) const
         });
     }
 
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
     auto update_result = svc.updateProfile(*viewer, update);
     if(!update_result.has_value())
     {
+        if(respondIfError(write_tx.rollback(), res))
+            return;
         (void)ds->deleteUnreferencedAttachments(new_attachment_ids);
         respondError(update_result.error(), res);
         return;
@@ -1971,6 +1944,8 @@ void App::handleProfilePost(const Request& req, Response& res) const
                                     now), res);
         (void)jobs;
     }
+    if(respondIfError(write_tx.commit(), res))
+        return;
     res.set_redirect(urlFor("u/" + viewer->username));
 }
 
@@ -2362,21 +2337,16 @@ void App::handleInbox(const Request& req, Response& res) const
     int64_t now = mw::timeToSeconds(mw::Clock::now());
     ASSIGN_OR_RESPOND_ERROR(auto system, systemActor(), res);
     mw::HTTPSession http;
-    ASSIGN_OR_RESPOND_ERROR(auto verified,
-                            unspoken::verifyHttpSignatureWithKeyRefresh(
-        config, *ds, crypto, http, system, incomingRequest(req), now), res);
-
-    nlohmann::json raw = nlohmann::json::parse(req.body, nullptr, false);
-    if(!raw.is_object())
-    {
-        res.status = 400;
-        res.set_content("Activity must be JSON object", "text/plain");
-        return;
-    }
-    ASSIGN_OR_RESPOND_ERROR(auto activity, unspoken::parseActivity(raw), res);
-    ASSIGN_OR_RESPOND_ERROR(auto result, unspoken::dispatchIncomingActivity(
-        config, *ds, verified, activity, now, &crypto, &http,
-        &system), res);
+    (void)system;
+    std::string endpoint_actor;
+    auto username = req.path_params.find("username");
+    if(username != req.path_params.end())
+        endpoint_actor = config.url_root + "u/" + username->second;
+    ASSIGN_OR_RESPOND_ERROR(auto result,
+                            unspoken::receiveFederationInbox(
+                                config, *ds, crypto, http, incomingRequest(req),
+                                endpoint_actor, now),
+                            res);
     bool accepted = result.disposition != unspoken::InboxDisposition::DUPLICATE
         && result.disposition != unspoken::InboxDisposition::IGNORED;
     res.status = accepted ? 202 : 200;
@@ -2405,39 +2375,11 @@ void App::handleOutbox(const Request& req, Response& res) const
 
     auto cursor = cursorFromRequest(req, res, true);
     if(!cursor.has_value()) return;
-    ASSIGN_OR_RESPOND_ERROR(auto posts, ds->postsForAuthors(
-        std::vector<int64_t>{user->id}, *cursor, config.posts_per_page), res);
-
-    nlohmann::json items = nlohmann::json::array();
-    for(const auto& post : posts)
-    {
-        ASSIGN_OR_RESPOND_ERROR(auto recipients,
-                                ds->getPostRecipients(post.id), res);
-        ASSIGN_OR_RESPOND_ERROR(auto attachments,
-                                ds->attachmentsForPost(post.id), res);
-        auto note = unspoken::noteJson(config, post, *user, recipients,
-                                       attachments, &emoji);
-        items.push_back({
-            {"@context", "https://www.w3.org/ns/activitystreams"},
-            {"id", post.uri + "/activity"},
-            {"type", "Create"},
-            {"actor", actor_uri},
-            {"object", note},
-            {"to", note["to"]},
-            {"cc", note["cc"]},
-        });
-    }
-
-    std::optional<int64_t> next;
-    std::optional<int64_t> prev;
-    if(!posts.empty())
-    {
-        if(static_cast<int>(posts.size()) == config.posts_per_page)
-            next = posts.back().id;
-        prev = posts.front().id;
-    }
-    setJson(res, collectionPageJson(collection_uri, req.target, items,
-                                    next, prev));
+    ASSIGN_OR_RESPOND_ERROR(auto page,
+                            unspoken::federationOutboxPage(
+                                config, *ds, actor_uri, *cursor, req.target),
+                            res);
+    setJson(res, page);
 }
 
 void App::handleFollowersCollection(const Request& req, Response& res) const

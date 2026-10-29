@@ -2,7 +2,7 @@ FROM archlinux:base
 
 WORKDIR /app
 
-RUN pacman -Sy --needed --noconfirm \
+RUN pacman -Syu --needed --noconfirm \
         ca-certificates \
         curl \
         gcc-libs \

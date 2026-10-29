@@ -12,6 +12,8 @@
 #include <mw/error.hpp>
 #include <mw/http_client.hpp>
 
+#include <actpub/transport.hpp>
+
 #include "config.hpp"
 #include "data.hpp"
 #include "emoji.hpp"
@@ -20,35 +22,9 @@
 namespace unspoken
 {
 
-struct IncomingHttpRequest
-{
-    std::string method;
-    std::string target;
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
-};
-
-struct VerifiedSignature
-{
-    // The actor URI authenticated by the selected public key.
-    std::string actor_uri;
-    // The precise key identifier supplied in the Signature header.
-    std::string key_id;
-    // The retained or transient actor document used for verification.
-    RemoteActor actor;
-    // Whether the actor existed in durable storage before verification.
-    bool actor_was_retained = false;
-    // Whether a freshly fetched key successfully replaced a retained key.
-    bool key_was_refreshed = false;
-};
-
-struct SigningActor
-{
-    std::string actor_uri;
-    std::string key_id;
-    std::string private_key_pem;
-};
-
+using ap::IncomingHttpRequest;
+using ap::SigningActor;
+using ap::VerifiedSignature;
 // The durable effect of a successfully authenticated inbox activity.
 enum class InboxDisposition
 {
@@ -69,12 +45,11 @@ struct InboxDispatchResult
     bool actor_retained = false;
 };
 
-std::vector<std::string> normalizeAddressing(const nlohmann::json& field);
-std::optional<std::string> normalizeRef(const nlohmann::json& field);
-mw::E<Activity> parseActivity(const nlohmann::json& raw);
-bool isPublicAddress(std::string_view uri);
-
-bool wantsActivityJson(std::string_view accept);
+using ap::isPublicAddress;
+using ap::normalizeAddressing;
+using ap::normalizeRef;
+using ap::parseActivity;
+using ap::wantsActivityJson;
 
 nlohmann::json actorJson(const Config& config, const User& user,
                          std::string_view summary_html);
@@ -118,10 +93,10 @@ nlohmann::json nodeInfoJson(const Config& config, int64_t user_count,
 mw::E<nlohmann::json> nodeInfoJson(const Config& config,
                                    const DataSourceInterface& data);
 
-bool isAllowedOutboundAddress(const mw::SockAddr& addr);
+using ap::isAllowedOutboundAddress;
 // Return whether an actor document URL may be used for outbound federation.
-bool isValidRemoteUrl(const DevConfig& dev, std::string_view value);
-mw::E<void> hardenOutboundSession(mw::HTTPSessionInterface& http);
+using ap::hardenOutboundSession;
+using ap::isValidRemoteUrl;
 mw::E<void> hardenOutboundSession(const Config& config,
                                   mw::HTTPSessionInterface& http,
                                   std::string_view target_url);
@@ -225,5 +200,35 @@ mw::E<bool> runFederationJobOnce(const Config& config,
                                  mw::CryptoInterface& crypto,
                                  mw::HTTPSessionInterface& http,
                                  int64_t now_seconds);
+
+// Initialize the library schema and import legacy identities/snapshots.
+mw::E<void> initializeFederationLibrary(const Config& config,
+                                        const DataSourceSQLite& data,
+                                        mw::CryptoInterface& crypto,
+                                        mw::HTTPSessionInterface& http);
+// Receive an HTTP inbox request through the library's atomic dispatch path.
+mw::E<InboxDispatchResult>
+receiveFederationInbox(const Config& config, const DataSourceSQLite& data,
+                       mw::CryptoInterface& crypto,
+                       mw::HTTPSessionInterface& http,
+                       const IncomingHttpRequest& request,
+                       std::string_view endpoint_actor, int64_t now);
+
+// Read the registered public actor document without exposing key material.
+mw::E<nlohmann::json> federationActorDocument(const Config& config,
+                                              const DataSourceSQLite& data,
+                                              std::string_view actor_uri);
+// Serve a protocol snapshot after local or remote actor authorization.
+mw::E<std::optional<nlohmann::json>> federationObjectDocument(
+    const Config& config, const DataSourceSQLite& data,
+    mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
+    std::string_view object_uri, std::string_view local_viewer_actor,
+    const IncomingHttpRequest& request, int64_t now);
+// Read a public library outbox page with sequence-based cursors.
+mw::E<nlohmann::json> federationOutboxPage(const Config& config,
+                                           const DataSourceSQLite& data,
+                                           std::string_view actor_uri,
+                                           const Cursor& cursor,
+                                           std::string_view self_uri);
 
 } // namespace unspoken

@@ -213,15 +213,27 @@ public:
         last_request = req;
         return &response;
     }
-    mw::E<mw::HTTPResponse> getStream(const mw::HTTPRequest&,
-                                      mw::ChunkCallback) override
+    mw::E<mw::HTTPResponse> getStream(const mw::HTTPRequest& req,
+                                      mw::ChunkCallback consume) override
     {
-        return response;
+        ASSIGN_OR_RETURN(auto res, get(req));
+        if(!consume(res->payload))
+            return std::unexpected(
+                mw::runtimeError(mw::HTTP_ABORTED_BY_CALLER));
+        auto result = *res;
+        result.payload.clear();
+        return result;
     }
-    mw::E<mw::HTTPResponse> postStream(const mw::HTTPRequest&,
-                                       mw::ChunkCallback) override
+    mw::E<mw::HTTPResponse> postStream(const mw::HTTPRequest& req,
+                                       mw::ChunkCallback consume) override
     {
-        return response;
+        ASSIGN_OR_RETURN(auto res, post(req));
+        if(!consume(res->payload))
+            return std::unexpected(
+                mw::runtimeError(mw::HTTP_ABORTED_BY_CALLER));
+        auto result = *res;
+        result.payload.clear();
+        return result;
     }
     std::chrono::duration<long> transferTimeout() const override
     {
@@ -1730,6 +1742,12 @@ TEST(FederationJobs, FetchThreadBackfillsAncestorsWithDepthCap)
     EXPECT_TRUE(db->setSystemActor(keys.private_key, keys.public_key)
                     .has_value());
 
+    // Thread discovery tests use retained authors so only object fetches
+    // consume the scripted HTTP responses.
+    ASSERT_TRUE(
+        db->upsertRemoteActor(testRemoteActor("https://remote.test/u/bob"))
+            .has_value());
+
     FakeSession http;
     http.responses = {
         mw::HTTPResponse(200, nlohmann::json({
@@ -1780,6 +1798,15 @@ TEST(FederationJobs, FetchThreadBackfillsRepliesCollection)
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     EXPECT_TRUE(db->setSystemActor(keys.private_key, keys.public_key)
                     .has_value());
+
+    // Thread discovery tests use retained authors so only object fetches
+    // consume the scripted HTTP responses.
+    ASSERT_TRUE(
+        db->upsertRemoteActor(testRemoteActor("https://remote.test/u/bob"))
+            .has_value());
+    ASSERT_TRUE(
+        db->upsertRemoteActor(testRemoteActor("https://remote.test/u/carol"))
+            .has_value());
 
     FakeSession http;
     http.responses = {
@@ -1896,6 +1923,8 @@ TEST(OutboundDelivery, EnqueuesOneJobPerExpandedInbox)
     Config c = testConfig();
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
 
+    ASSIGN_OR_FAIL(auto alice, db->createUser(testNewUser("alice")));
+    (void)alice;
     RemoteActor bob;
     bob.uri = "https://remote.test/u/bob";
     bob.username = "bob";
@@ -1912,6 +1941,13 @@ TEST(OutboundDelivery, EnqueuesOneJobPerExpandedInbox)
     nlohmann::json activity = {
         {"id", "https://f.test/a/3"},
         {"type", "Create"},
+        {"actor", "https://f.test/u/alice"},
+        {"to", nlohmann::json::array({bob.uri})},
+        {"object",
+         {{"id", "https://f.test/p/3"},
+          {"type", "Note"},
+          {"attributedTo", "https://f.test/u/alice"},
+          {"content", "hello"}}},
     };
     ASSIGN_OR_FAIL(auto jobs, enqueueOutboundDelivery(
         c, *db, "https://f.test/u/alice", activity, recipients, 100));

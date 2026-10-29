@@ -6,6 +6,7 @@ listen_port: 8080
 database_path: "/data/unspoken.db"
 attachment_dir: "/data/attachments"
 emoji_dir: "/data/emoji"
+emoji_data_file: "/app/data/emoji_categories.json"
 template_dir: "/app/templates"
 static_dir: "/app/static"
 

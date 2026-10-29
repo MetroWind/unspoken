@@ -693,10 +693,14 @@ class UnspokenDatabase:
             (post_id,))
 
     def countSeenActivity(self, activity_uri: str) -> int:
-        """Return how many dedupe rows exist for one activity URI."""
+        """Count completed identities across imported and atomic inbox stores."""
         value = self.scalar(
-            "SELECT COUNT(*) FROM seen_activities WHERE activity_uri = ?",
-            (activity_uri,))
+            "SELECT COUNT(*) FROM ("
+            "SELECT activity_uri FROM seen_activities "
+            "WHERE state = 'processed' AND activity_uri = ? "
+            "UNION SELECT activity_uri FROM ap_inbox_activities "
+            "WHERE activity_uri = ?)",
+            (activity_uri, activity_uri))
         return int(value or 0)
 
     def follow(self, follower_uri: str,

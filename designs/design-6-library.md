@@ -1,6 +1,6 @@
 # Design Document: Reusable ActivityPub Library
 
-**Status:** Proposed
+**Status:** Initial implementation; see implementation record below
 **Date:** 2026-10-28
 **Baseline:** Unspoken commit `edbef3c`
 **Working library name:** `actpub`; namespace `ap`; CMake target
@@ -12,6 +12,45 @@ cryptography and error handling, and SQLite through `mw::SQLite`.
 **Related designs:** [Architecture](design-0-architecture.md),
 [interop](design-2-interop.md), and
 [remote actor lifecycle](design-4-actors.md).
+
+## Implementation record
+
+The in-tree target and Unspoken adapter implement the extraction through
+milestone 3. The compiled public API is in
+[`lib/actpub/include/actpub`](../lib/actpub/include/actpub), with integration
+instructions in the [library README](../lib/actpub/README.md). The remaining
+sections preserve the original design rationale and proposed API shapes;
+the following choices describe the implemented interface:
+
+- Construct `Session` directly with borrowed configuration, SQLite, crypto,
+  HTTP, and application hooks. There is no separate `Engine` factory or
+  clock abstraction; time-sensitive operations accept an explicit timestamp.
+- Publish ActivityStreams JSON with `Session::publish()`. Typed `Store`
+  relationship operations compose with publication in the same transaction;
+  a separate `InteractionCommand` dispatcher is not provided. Actor profile
+  Update uses publication, and NodeInfo remains in the host HTTP adapter.
+- Immutable activity-ID/body checks prevent reuse of an ID for different
+  content. A separate host-command idempotency-key table is not implemented;
+  callers retry an existing publication with its original activity ID.
+- Resolve recipient identities before opening the publication transaction.
+  Workers handle delivery and bounded thread backfill; they do not implement
+  an asynchronous unknown-recipient resolution queue.
+- Delivery jobs retain their immutable activity JSON in their payload for
+  compatibility with existing queued jobs. The outbox also retains that
+  snapshot. A future storage optimization can replace payload copies with
+  outbox references without changing delivery identities.
+- Retry scheduling uses capped exponential backoff. Transport errors, 408,
+  429, and server errors are retryable; other client errors are terminal.
+  Retry-After handling and randomized jitter remain follow-up improvements.
+- Separate typed interaction tables preserve legacy identifiers. New atomic
+  inbox receipts coexist with imported legacy processed-ID records. Legacy
+  SQL names become read-only views; application projection triggers maintain
+  actor-reference pins.
+- Unspoken advances to application schema v4; the library owns independent
+  `ap_schema` versioning. See the [operator guide](../docs/operator.md) for
+  backup and downgrade requirements.
+
+No second application, installed package, or repository split is included.
 
 ## 1. Decision and scope
 
