@@ -1,0 +1,50 @@
+<div id="emoji-picker" class="emoji-picker-panel"
+     role="dialog" aria-label="Choose an emoji" hidden>
+    <div class="emoji-tabs" role="tablist">
+{% if length(emoji) > 0 %}
+      <button type="button" class="emoji-tab active" role="tab"
+              data-tab="custom" aria-selected="true">custom</button>
+{% endif %}
+{% for category in unicode_emoji %}
+      <button type="button" class="emoji-tab {% if length(emoji) == 0 %}{{ category.default_active_class }}{% endif %}"
+              role="tab" data-tab="{{ category.id }}"
+              aria-selected="{% if length(emoji) == 0 %}{{ category.default_selected }}{% else %}false{% endif %}"
+              title="{{ category.label }}"
+              aria-label="{{ category.label }}">{{ category.representative_emoji }}</button>
+{% endfor %}
+    </div>
+{% if length(emoji) > 0 %}
+    <div class="emoji-tab-panel active" role="tabpanel"
+         data-tab-panel="custom">
+      <div class="emoji-grid">
+{% for e in emoji %}
+        <button class="emoji-choice" type="button"
+                data-emoji-insert=":{{ e.shortcode }}:"
+                title=":{{ e.shortcode }}:"
+                aria-label="Choose :{{ e.shortcode }}:">
+          <img class="emoji" src="{{ e.image_url }}" alt=":{{ e.shortcode }}:">
+          <span class="emoji-copy">:{{ e.shortcode }}:</span>
+        </button>
+{% endfor %}
+      </div>
+    </div>
+{% endif %}
+{% for category in unicode_emoji %}
+    <div class="emoji-tab-panel {% if length(emoji) == 0 %}{{ category.default_active_class }}{% endif %}"
+         role="tabpanel" data-tab-panel="{{ category.id }}">
+{% for subgroup in category.subgroups %}
+      <div class="emoji-subgroup">
+        <div class="emoji-subgroup-label">{{ subgroup.label }}</div>
+        <div class="emoji-grid">
+{% for e in subgroup.emoji %}
+          <button class="emoji-choice" type="button"
+                  data-emoji-insert="{{ e.emoji }}"
+                  title="{{ e.name }}"
+                  aria-label="Choose {{ e.name }}">{{ e.emoji }}</button>
+{% endfor %}
+        </div>
+      </div>
+{% endfor %}
+    </div>
+{% endfor %}
+</div>

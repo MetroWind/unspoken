@@ -215,7 +215,6 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
 .actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; align-items: center; }
 
 /* ── Emoji picker ──────────────────────────────────────────── */
-.emoji-picker { position: relative; display: inline-block; }
 .emoji-picker-trigger {
     display: inline-flex;
     align-items: center;
@@ -223,21 +222,21 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
     list-style: none;
     min-width: 28px;
 }
-.emoji-picker-trigger::-webkit-details-marker { display: none; }
+.emoji-picker-trigger[hidden],
+.emoji-picker-panel[hidden] { display: none; }
 .emoji-picker-panel {
-    position: absolute;
+    position: fixed;
     z-index: 20;
     width: min(360px, calc(100vw - 24px));
-    max-height: 320px;
+    max-height: min(320px, calc(100dvh - 24px));
     overflow: auto;
-    margin-top: 4px;
+    box-sizing: border-box;
     padding: 8px;
     background: var(--panel-2);
     border: 1px solid var(--border);
     border-radius: 4px;
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
-.actions .emoji-picker-panel { right: 0; }
 .emoji-tabs {
     display: flex;
     gap: 3px;
@@ -301,16 +300,6 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
     font-size: 0.72rem;
 }
 .js .emoji-copy { display: none; }
-
-@media (max-width: 520px) {
-    .emoji-picker-panel {
-        position: fixed;
-        left: 12px;
-        right: 12px;
-        width: auto;
-        max-height: 55vh;
-    }
-}
 
 .pager { margin-top: 14px; }
 .pager a { font-family: var(--mono); }

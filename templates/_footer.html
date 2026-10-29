@@ -1,4 +1,11 @@
 </main>
+{% if logged_in %}
+{% if exists("posts") or exists("post_results") %}
+{% if exists("unicode_emoji") %}
+{% include "_emoji_picker.html" %}
+{% endif %}
+{% endif %}
+{% endif %}
 <footer class="foot">
   <span>unspoken {{ site.commit }}</span>
 </footer>
