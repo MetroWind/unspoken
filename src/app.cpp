@@ -2496,6 +2496,8 @@ void App::handleFollowList(const Request& req, Response& res,
     ctx["profile"] = std::move(profile);
     ctx["results"] = std::move(views);
     ctx["list_title"] = followers ? "Followers" : "Following";
+    ctx["can_unfollow"] = !followers && viewer.has_value()
+        && viewer->id == user->id;
     ctx["list_url"] = mw::escapeHTML(actor_uri
         + (followers ? "/followers" : "/following"));
     ctx["has_previous"] = false;

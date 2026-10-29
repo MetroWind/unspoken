@@ -149,6 +149,10 @@ TEST(ServiceProfile, FollowListsRenderLocalRemoteAndMissingAccounts)
     EXPECT_EQ(views[2]["profile_url"],
               "https://missing.test/user?a=1&amp;b=2");
     EXPECT_EQ(views[3]["profile_url"], "");
+    EXPECT_EQ(views[0]["actor_uri"], svc.actorUri("alice"));
+    EXPECT_EQ(views[1]["actor_uri"], stored.uri);
+    EXPECT_EQ(views[2]["actor_uri"],
+              "https://missing.test/user?a=1&amp;b=2");
 
     ASSIGN_OR_FAIL(auto profile, svc.userView(alice));
     nlohmann::json ctx = {
@@ -158,6 +162,7 @@ TEST(ServiceProfile, FollowListsRenderLocalRemoteAndMissingAccounts)
         {"results", views}, {"list_title", "Followers"},
         {"list_url", svc.actorUri("alice") + "/followers"},
         {"has_previous", true}, {"has_next", true},
+        {"can_unfollow", false},
         {"previous_id", 4}, {"next_id", 1},
     };
     inja::Environment templates("templates/");
@@ -167,6 +172,29 @@ TEST(ServiceProfile, FollowListsRenderLocalRemoteAndMissingAccounts)
               std::string::npos);
     EXPECT_NE(html.find("/social/u/alice/followers?min_id=4"),
               std::string::npos);
+    EXPECT_EQ(html.find(">unfollow</button>"), std::string::npos);
+
+    ctx["logged_in"] = true;
+    ctx["me"] = {{"username", "alice"}, {"handle", "@alice@f.test"}};
+    ctx["csrf"] = "test-csrf";
+    ctx["can_unfollow"] = true;
+    html = templates.render_file("follow_list.html", ctx);
+    EXPECT_NE(html.find(">unfollow</button>"), std::string::npos);
+    EXPECT_NE(html.find("action=\"https://f.test/social/follow\""),
+              std::string::npos);
+    EXPECT_NE(html.find("name=\"csrf\" value=\"test-csrf\""),
+              std::string::npos);
+    EXPECT_NE(html.find("name=\"undo\" value=\"1\""), std::string::npos);
+    EXPECT_NE(html.find("name=\"actor_uri\" value=\"" + stored.uri + "\""),
+              std::string::npos);
+    EXPECT_NE(html.find("name=\"actor_uri\" value=\""
+                        "https://missing.test/user?a=1&amp;b=2\""),
+              std::string::npos);
+
+    ctx["can_unfollow"] = false;
+    html = templates.render_file("follow_list.html", ctx);
+    EXPECT_EQ(html.find(">unfollow</button>"), std::string::npos);
+    ctx["logged_in"] = false;
     ctx["results"] = nlohmann::json::array();
     ctx["has_previous"] = false;
     ctx["has_next"] = false;

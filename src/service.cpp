@@ -684,6 +684,7 @@ mw::E<nlohmann::json> Service::followViews(
             if(user.has_value())
             {
                 ASSIGN_OR_RETURN(auto view, userView(*user));
+                view["actor_uri"] = mw::escapeHTML(item.actor_uri);
                 views.push_back(std::move(view));
                 continue;
             }
@@ -691,11 +692,14 @@ mw::E<nlohmann::json> Service::followViews(
         ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(item.actor_uri));
         if(actor.has_value())
         {
-            views.push_back(remoteActorView(*actor));
+            auto view = remoteActorView(*actor);
+            view["actor_uri"] = mw::escapeHTML(item.actor_uri);
+            views.push_back(std::move(view));
             continue;
         }
         // A missing cached actor should not hide a relationship.
         views.push_back({
+            {"actor_uri", mw::escapeHTML(item.actor_uri)},
             {"display_name", mw::escapeHTML(item.actor_uri)},
             {"handle", ""},
             {"profile_url", mw::escapeHTML(
