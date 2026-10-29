@@ -5,6 +5,149 @@
 
     document.documentElement.classList.add("js");
     var active_trigger = null;
+    var load_promise = null;
+    var categories = [];
+    var panels = [];
+
+    function createNode(tag, class_name, text)
+    {
+        var node = document.createElement(tag);
+        node.className = class_name;
+        if(text !== undefined) node.textContent = text;
+        return node;
+    }
+
+    function createChoice(value, name, image_url)
+    {
+        var button = createNode("button", "emoji-choice");
+        button.type = "button";
+        button.setAttribute("data-emoji-insert", value);
+        button.title = name;
+        button.setAttribute("aria-label", "Choose " + name);
+        if(image_url)
+        {
+            var image = createNode("img", "emoji");
+            image.src = image_url;
+            image.alt = value;
+            image.loading = "lazy";
+            button.append(image);
+        }
+        else button.textContent = value;
+        return button;
+    }
+
+    function buildCategory(index)
+    {
+        if(panels[index]) return;
+        var category = categories[index];
+        var panel = createNode("div", "emoji-tab-panel");
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("data-tab-panel", String(index));
+        if(category.custom)
+        {
+            var custom_grid = createNode("div", "emoji-grid");
+            for(var item of category.custom)
+            {
+                var shortcode = ":" + item.shortcode + ":";
+                custom_grid.append(createChoice(
+                    shortcode, shortcode, item.image_url));
+            }
+            panel.append(custom_grid);
+        }
+        else
+        {
+            for(var subgroup of category.subgroups)
+            {
+                var section = createNode("div", "emoji-subgroup");
+                section.append(createNode(
+                    "div", "emoji-subgroup-label", subgroup.label));
+                var grid = createNode("div", "emoji-grid");
+                for(var entry of subgroup.emoji)
+                {
+                    grid.append(createChoice(entry.emoji, entry.name));
+                }
+                section.append(grid);
+                panel.append(section);
+            }
+        }
+        panels[index] = panel;
+        picker.append(panel);
+    }
+
+    function buildCatalog(data)
+    {
+        categories = [];
+        panels = [];
+        if(data.custom.length)
+        {
+            categories.push({label: "Custom", representative_emoji: "custom",
+                custom: data.custom});
+        }
+        categories.push(...data.categories);
+        picker.replaceChildren();
+        if(!categories.length)
+        {
+            picker.append(createNode("p", "hint", "No emoji available."));
+            return;
+        }
+        var tabs = createNode("div", "emoji-tabs");
+        tabs.setAttribute("role", "tablist");
+        for(var index = 0; index < categories.length; ++index)
+        {
+            var category = categories[index];
+            var tab = createNode("button", "emoji-tab",
+                category.representative_emoji);
+            tab.type = "button";
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("data-tab", String(index));
+            tab.setAttribute("aria-label", category.label);
+            tab.title = category.label;
+            tabs.append(tab);
+        }
+        picker.append(tabs);
+        setActiveTab(tabs.firstElementChild);
+    }
+
+    async function loadCatalog()
+    {
+        picker.replaceChildren(createNode("p", "hint", "Loading emoji…"));
+        picker.setAttribute("aria-busy", "true");
+        try
+        {
+            var response = await fetch(picker.getAttribute("data-catalog-url"));
+            if(!response.ok) throw new Error("Emoji catalog unavailable");
+            buildCatalog(await response.json());
+        }
+        finally
+        {
+            picker.setAttribute("aria-busy", "false");
+        }
+    }
+
+    async function refreshPicker(trigger)
+    {
+        try
+        {
+            if(!load_promise) load_promise = loadCatalog();
+            await load_promise;
+            if(active_trigger !== trigger) return;
+            positionPicker();
+            var choice = picker.querySelector(
+                ".emoji-tab-panel.active .emoji-choice");
+            if(choice) choice.focus({ preventScroll: true });
+        }
+        catch(error)
+        {
+            load_promise = null;
+            var message = createNode("p", "hint", "Could not load emoji.");
+            message.setAttribute("role", "status");
+            var retry = createNode("button", "linkbtn", "Retry");
+            retry.type = "button";
+            retry.setAttribute("data-emoji-retry", "true");
+            picker.replaceChildren(message, retry);
+            positionPicker();
+        }
+    }
 
     function closePicker(restore_focus)
     {
@@ -47,14 +190,13 @@
                 ? "React with an emoji" : "Insert an emoji");
         picker.hidden = false;
         positionPicker();
-        var choice = picker.querySelector(
-            ".emoji-tab-panel.active .emoji-choice");
-        if(choice) choice.focus({ preventScroll: true });
+        refreshPicker(trigger);
     }
 
     function setActiveTab(tab)
     {
         var name = tab.getAttribute("data-tab");
+        buildCategory(Number(name));
         picker.querySelectorAll(".emoji-tab").forEach(function(item)
         {
             var active = item === tab;
@@ -105,6 +247,11 @@
         if(!picker.contains(event.target))
         {
             closePicker(false);
+            return;
+        }
+        if(event.target.closest("[data-emoji-retry]"))
+        {
+            refreshPicker(active_trigger);
             return;
         }
         var tab = event.target.closest(".emoji-tab");

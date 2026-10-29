@@ -121,7 +121,9 @@ private:
     mutable mw::Crypto crypto;
     // Server-wide custom emoji, scanned once at startup (design §13.4).
     unspoken::EmojiRegistry emoji;
-    std::vector<unspoken::UnicodeEmojiCategory> unicode_emoji;
+    // Serialized once at startup and served without page rendering.
+    std::string emoji_catalog;
+    std::string emoji_catalog_etag;
     // Inja template environment (render_file reads templates/*.html).
     // mutable: inja::Environment::render_file is non-const.
     mutable inja::Environment templates;

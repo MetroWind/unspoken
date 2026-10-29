@@ -1175,7 +1175,7 @@ TEST(Render, RemoteHtmlRepairsNestingAndDropsActiveContent)
     EXPECT_EQ(sanitizeRemoteHtml(clean), clean);
 }
 
-TEST(ServiceView, TimelineSharesOneEmojiCatalogAcrossPosts)
+TEST(ServiceView, PagesDeferEmojiCatalogUntilPickerOpens)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(User alice, db->createUser(NewUser{
@@ -1197,12 +1197,6 @@ TEST(ServiceView, TimelineSharesOneEmojiCatalogAcrossPosts)
         {"me", {{"username", "alice"}, {"handle", "@alice@f.test"}}},
         {"timeline", "home"}, {"has_more", false}, {"focus_id", 0},
         {"posts", nlohmann::json::array()},
-        {"emoji", {{{"shortcode", "cat"}, {"image_url", "/cat.png"}}}},
-        {"unicode_emoji", {{{"id", "faces"}, {"label", "Faces"},
-            {"default_active_class", "active"},
-            {"default_selected", "true"}, {"representative_emoji", "☺"},
-            {"subgroups", {{{"label", "Smiles"},
-                {"emoji", {{{"emoji", "☺"}, {"name", "smile"}}}}}}}}}},
     };
     for(int i = 0; i < 20; ++i) ctx["posts"].push_back(view);
     inja::Environment templates("templates/");
@@ -1211,20 +1205,21 @@ TEST(ServiceView, TimelineSharesOneEmojiCatalogAcrossPosts)
     auto first = html.find(catalog);
     ASSERT_NE(first, std::string::npos);
     EXPECT_EQ(html.find(catalog, first + catalog.size()), std::string::npos);
-    EXPECT_NE(html.find("data-emoji-insert=\":cat:\""), std::string::npos);
-    EXPECT_NE(html.find("data-emoji-insert=\"☺\""), std::string::npos);
+    EXPECT_NE(html.find("data-catalog-url=\"/emoji_catalog.json\""),
+              std::string::npos);
+    EXPECT_EQ(html.find("emoji-choice"), std::string::npos);
+    EXPECT_EQ(html.find("emoji-tab"), std::string::npos);
     EXPECT_NE(html.find("name=\"emoji\" value=\"\""), std::string::npos);
     EXPECT_NE(html.find("name=\"csrf\" value=\"test-csrf\""),
               std::string::npos);
 
-    ctx["emoji"] = nlohmann::json::array();
     ctx["reply_to_id"] = post.id;
     ctx["reply_prefill"] = "@alice ";
     html = templates.render_file("thread.html", ctx);
     first = html.find(catalog);
     ASSERT_NE(first, std::string::npos);
     EXPECT_EQ(html.find(catalog, first + catalog.size()), std::string::npos);
-    EXPECT_NE(html.find("emoji-tab active"), std::string::npos);
+    EXPECT_EQ(html.find("emoji-choice"), std::string::npos);
 
     ctx["logged_in"] = false;
     html = templates.render_file("index.html", ctx);

@@ -90,6 +90,44 @@ inja::Environment makeEnv(const Config& config)
     return env;
 }
 
+// Serialize the public picker catalog once; DOM APIs consume raw text.
+std::string emojiCatalogJson(
+    const unspoken::EmojiRegistry& registry,
+    const std::vector<unspoken::UnicodeEmojiCategory>& categories)
+{
+    nlohmann::json catalog = {
+        {"custom", nlohmann::json::array()},
+        {"categories", nlohmann::json::array()}
+    };
+    for(const auto& e : registry.all())
+    {
+        catalog["custom"].push_back({
+            {"shortcode", e.shortcode}, {"image_url", e.image_url}
+        });
+    }
+    for(const auto& category : categories)
+    {
+        nlohmann::json subgroups = nlohmann::json::array();
+        for(const auto& subgroup : category.subgroups)
+        {
+            nlohmann::json entries = nlohmann::json::array();
+            for(const auto& e : subgroup.emoji)
+            {
+                entries.push_back({{"emoji", e.emoji}, {"name", e.name}});
+            }
+            subgroups.push_back({
+                {"label", subgroup.label}, {"emoji", std::move(entries)}
+            });
+        }
+        catalog["categories"].push_back({
+            {"id", category.id}, {"label", category.label},
+            {"representative_emoji", category.representative_emoji},
+            {"subgroups", std::move(subgroups)}
+        });
+    }
+    return catalog.dump();
+}
+
 // Read a POST form field, returning "" when absent.
 std::string param(const mw::HTTPServer::Request& req, const char* name)
 {
@@ -314,9 +352,9 @@ App::App(const Config& conf)
           base_url(baseUrlFromConfig(conf)),
           server_key(generateServerKey()),
           emoji(unspoken::EmojiRegistry::scan(conf.emoji_dir, conf.url_root)),
-          unicode_emoji(),
           templates(makeEnv(conf))
 {
+    std::vector<unspoken::UnicodeEmojiCategory> unicode_emoji;
     auto loaded = unspoken::loadUnicodeEmojiCategories(conf.emoji_data_file);
     if(loaded.has_value())
     {
@@ -328,6 +366,12 @@ App::App(const Config& conf)
     {
         spdlog::warn("Unicode emoji data unavailable: {}",
                      mw::errorMsg(loaded.error()));
+    }
+    emoji_catalog = emojiCatalogJson(emoji, unicode_emoji);
+    mw::SHA256Hasher hasher;
+    if(auto hash = hasher.hashToHexStr(emoji_catalog); hash.has_value())
+    {
+        emoji_catalog_etag = "\"" + *hash + "\"";
     }
 }
 
@@ -519,50 +563,6 @@ App::baseContext(const Request& req,
     // Default so _post.html can compare against it on non-thread pages
     // (post ids start at 1, so 0 never highlights).
     ctx["focus_id"] = 0;
-
-    // Emoji picker data (escaped URLs) for composers.
-    nlohmann::json emoji_arr = nlohmann::json::array();
-    for(const auto& e : emoji.all())
-    {
-        nlohmann::json ej;
-        ej["shortcode"] = mw::escapeHTML(e.shortcode);
-        ej["image_url"] = mw::escapeHTML(e.image_url);
-        emoji_arr.push_back(std::move(ej));
-    }
-    ctx["emoji"] = emoji_arr;
-
-    nlohmann::json unicode_arr = nlohmann::json::array();
-    bool first_unicode = true;
-    for(const auto& category : unicode_emoji)
-    {
-        nlohmann::json cj;
-        cj["id"] = mw::escapeHTML(category.id);
-        cj["label"] = mw::escapeHTML(category.label);
-        cj["default_active"] = first_unicode;
-        cj["default_active_class"] = first_unicode ? "active" : "";
-        cj["default_selected"] = first_unicode ? "true" : "false";
-        first_unicode = false;
-        cj["representative_emoji"] = category.representative_emoji;
-        cj["subgroups"] = nlohmann::json::array();
-        for(const auto& subgroup : category.subgroups)
-        {
-            nlohmann::json sj;
-            sj["id"] = mw::escapeHTML(subgroup.id);
-            sj["label"] = mw::escapeHTML(subgroup.label);
-            sj["emoji"] = nlohmann::json::array();
-            for(const auto& e : subgroup.emoji)
-            {
-                nlohmann::json ej;
-                ej["emoji"] = e.emoji;
-                ej["name"] = mw::escapeHTML(e.name);
-                ej["version"] = mw::escapeHTML(e.version);
-                sj["emoji"].push_back(std::move(ej));
-            }
-            cj["subgroups"].push_back(std::move(sj));
-        }
-        unicode_arr.push_back(std::move(cj));
-    }
-    ctx["unicode_emoji"] = unicode_arr;
 
     if(viewer.has_value())
     {
@@ -2611,6 +2611,23 @@ void App::setup()
     { handleInbox(req, res); });
     server.Get("/p/:id", [&](const Request& req, Response& res)
     { handlePostView(req, res); });
+
+    // The public catalog is precomputed and cached independently of pages.
+    server.Get("/emoji_catalog.json", [&](const Request& req, Response& res)
+    {
+        res.set_header("Cache-Control", "public, max-age=3600");
+        res.set_header("X-Content-Type-Options", "nosniff");
+        if(!emoji_catalog_etag.empty())
+        {
+            res.set_header("ETag", emoji_catalog_etag);
+            if(headerValue(req, "If-None-Match") == emoji_catalog_etag)
+            {
+                res.status = 304;
+                return;
+            }
+        }
+        res.set_content(emoji_catalog, "application/json; charset=utf-8");
+    });
 
     // Media + emoji.
     server.Get("/media/:shard/:filename", [&](const Request& req, Response& res)
