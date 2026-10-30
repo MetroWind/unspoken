@@ -1,4 +1,7 @@
 #include <string>
+#include <functional>
+#include <actpub/transaction.hpp>
+#include "service.hpp"
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -179,6 +182,7 @@ IncomingHttpRequest signedIncomingRequest(
 class FakeSession : public mw::HTTPSessionInterface
 {
 public:
+    std::function<void()> on_get;
     mw::HTTPRequest last_request;
     mw::HTTPResponse response{200, "{}"};
     std::vector<mw::HTTPResponse> responses;
@@ -195,6 +199,7 @@ public:
 
     mw::E<const mw::HTTPResponse*> get(const mw::HTTPRequest& req) override
     {
+        if(on_get) on_get();
         last_request = req;
         get_requests.push_back(req);
         get_urls.push_back(req.url);
@@ -3033,4 +3038,176 @@ TEST(InboxDispatch, LinkPreviewsExcludeStructuredUrlsAndDeduplicate)
     ASSERT_TRUE(dispatchIncomingActivity(config,*data,retainedSignature(remote),
                                          removed,103));
     EXPECT_FALSE(data->getPostById(post->id).value()->link_preview_id);
+}
+
+namespace
+{
+class FollowedInbox : public ::testing::Test
+{
+protected:
+    Config config = testConfig();
+    std::unique_ptr<DataSourceSQLite> data;
+    mw::Crypto crypto;
+    FakeSession http;
+    User viewer;
+    RemoteActor followed;
+    mw::KeyPair keys;
+    static constexpr int64_t NOW = 100000;
+
+    void SetUp() override
+    {
+        ASSIGN_OR_FAIL(data,DataSourceSQLite::newFromMemory());
+        ASSIGN_OR_FAIL(viewer,data->createUser(testNewUser("alice")));
+        ASSIGN_OR_FAIL(keys,crypto.generateKeyPair(mw::KeyType::RSA));
+        followed = testRemoteActor("https://remote.test/u/followed");
+        followed.public_key_pem = keys.public_key;
+        followed.actor_json = remoteActorDocument(followed).dump();
+        ASSIGN_OR_FAIL(followed,data->upsertRemoteActor(followed));
+        ASSERT_TRUE(data->addFollow({0,config.url_root+"u/alice",followed.uri,
+            FollowState::ACCEPTED,std::nullopt,NOW}));
+        ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
+        http.on_get = [this]
+        {
+            EXPECT_FALSE(ap::inTransaction(data->connection()).value());
+        };
+    }
+
+    nlohmann::json announce() const
+    {
+        return {{"id","https://remote.test/a/boost"},{"type","Announce"},
+            {"actor",followed.uri},{"object","https://other.test/o/original"},
+            {"to",std::string(AS_PUBLIC)}};
+    }
+
+    void programTarget(bool is_public = true)
+    {
+        nlohmann::json note = {
+            {"id","https://other.test/o/original"},{"type","Note"},
+            {"attributedTo","https://other.test/u/stranger"},
+            {"content","<p>authoritative content</p>"},
+            {"to",is_public ? std::string(AS_PUBLIC) :
+                              "https://other.test/u/someone"}};
+        auto author = testRemoteActor("https://other.test/u/stranger");
+        http.responses.push_back(mw::HTTPResponse(200,note.dump()));
+        http.responses.push_back(mw::HTTPResponse(
+            200,remoteActorDocument(author).dump()));
+    }
+
+    mw::E<InboxDispatchResult> receive(const nlohmann::json& activity)
+    {
+        auto request = signedIncomingRequest(crypto,keys.private_key,
+            followed.public_key_id,"rsa-sha256","post","/inbox",
+            activity.dump(),NOW,true,true);
+        return receiveFederationInbox(config,*data,crypto,http,request,"",NOW);
+    }
+};
+} // namespace
+
+TEST_F(FollowedInbox, UnknownBoostTargetIsFetchedAndShownWithAttribution)
+{
+    auto activity = announce();
+    // Embedded text supplied by the booster is not authoritative evidence.
+    activity["object"] = {{"id","https://other.test/o/original"},
+        {"type","Note"},{"attributedTo",followed.uri},{"content","forged"}};
+    programTarget();
+    ASSIGN_OR_FAIL(auto result,receive(activity));
+    EXPECT_EQ(result.disposition,InboxDisposition::APPLIED);
+    ASSERT_EQ(http.get_urls.size(),2u);
+    EXPECT_EQ(http.get_urls[0],"https://other.test/o/original");
+    EXPECT_EQ(http.get_urls[1],"https://other.test/u/stranger");
+    ASSIGN_OR_FAIL(auto post,data->getPostByUri("https://other.test/o/original"));
+    ASSERT_TRUE(post);
+    EXPECT_EQ(post->content_html,"<p>authoritative content</p>");
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSERT_EQ(timeline.size(),1u);
+    EXPECT_EQ(timeline[0].id,post->id);
+    EXPECT_EQ(timeline[0].boosted_by_uri,followed.uri);
+    ASSIGN_OR_FAIL(auto view,service.postView(timeline[0],viewer));
+    EXPECT_TRUE(view["is_boost"].get<bool>());
+    EXPECT_EQ(view["boosted_by"]["profile_url"],followed.uri);
+    auto cursor = timeline[0].timeline_id;
+    ASSIGN_OR_FAIL(auto duplicate,receive(activity));
+    EXPECT_EQ(duplicate.disposition,InboxDisposition::DUPLICATE);
+    EXPECT_EQ(http.get_urls.size(),2u);
+    EXPECT_EQ(service.homeTimeline(viewer,{}).value()[0].timeline_id,cursor);
+    nlohmann::json undo = {{"id","https://remote.test/a/undo-boost"},
+        {"type","Undo"},{"actor",followed.uri},{"object",activity},
+        {"to",std::string(AS_PUBLIC)}};
+    ASSERT_TRUE(receive(undo));
+    EXPECT_TRUE(service.homeTimeline(viewer,{}).value().empty());
+}
+
+TEST_F(FollowedInbox, PrivateBoostTargetIsNotRetained)
+{
+    programTarget(false);
+    ASSIGN_OR_FAIL(auto result,receive(announce()));
+    EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
+    EXPECT_EQ(http.get_urls.size(),1u);
+    EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
+    EXPECT_FALSE(data->getRemoteActorByUri("https://other.test/u/stranger").value());
+    EXPECT_EQ(data->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM home_timeline_entries").value(),0);
+}
+
+TEST_F(FollowedInbox, BoostRetentionAndInboxEffectsRollBackTogether)
+{
+    programTarget();
+    ASSERT_TRUE(data->connection().execute(
+        "CREATE TRIGGER fail_boost_post BEFORE INSERT ON posts "
+        "BEGIN SELECT RAISE(ABORT,'injected projection failure'); END;"));
+    EXPECT_FALSE(receive(announce()));
+    EXPECT_FALSE(data->getRemoteActorByUri("https://other.test/u/stranger").value());
+    EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
+    EXPECT_EQ(data->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM ap_objects").value(),0);
+    EXPECT_EQ(data->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM ap_boosts").value(),0);
+    ASSERT_TRUE(data->connection().execute("DROP TRIGGER fail_boost_post"));
+    programTarget();
+    ASSIGN_OR_FAIL(auto retry,receive(announce()));
+    EXPECT_EQ(retry.disposition,InboxDisposition::APPLIED);
+}
+
+TEST_F(FollowedInbox, ReplyToUnknownParentAppearsWithoutFetchingParent)
+{
+    nlohmann::json note = {{"id","https://remote.test/o/reply"},
+        {"type","Note"},{"attributedTo",followed.uri},
+        {"content","<p>a reply to someone else</p>"},
+        {"inReplyTo","https://unknown.test/o/parent"},
+        {"to",std::string(AS_PUBLIC)}};
+    nlohmann::json activity = {{"id","https://remote.test/a/reply"},
+        {"type","Create"},{"actor",followed.uri},{"object",note},
+        {"to",std::string(AS_PUBLIC)}};
+    ASSIGN_OR_FAIL(auto result,receive(activity));
+    EXPECT_EQ(result.disposition,InboxDisposition::APPLIED);
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSERT_EQ(timeline.size(),1u);
+    EXPECT_EQ(timeline[0].uri,"https://remote.test/o/reply");
+    EXPECT_EQ(timeline[0].in_reply_to_uri,"https://unknown.test/o/parent");
+    EXPECT_TRUE(http.get_urls.empty());
+}
+
+TEST_F(FollowedInbox, UnfollowedAnnounceDoesNotFetchUnknownTarget)
+{
+    ASSERT_TRUE(data->removeFollow(config.url_root+"u/alice",followed.uri));
+    ASSIGN_OR_FAIL(auto result,receive(announce()));
+    EXPECT_NE(result.disposition,InboxDisposition::APPLIED);
+    EXPECT_TRUE(http.get_urls.empty());
+    EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
+}
+
+TEST_F(FollowedInbox, TargetWithoutCanonicalIdIsNotRetained)
+{
+    programTarget();
+    auto note = nlohmann::json::parse(http.responses[0].payloadAsStr());
+    note.erase("id");
+    http.responses[0] = mw::HTTPResponse(200,note.dump());
+    ASSIGN_OR_FAIL(auto result,receive(announce()));
+    EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
+    EXPECT_EQ(http.get_urls.size(),1u);
+    EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
 }

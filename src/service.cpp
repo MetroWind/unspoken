@@ -1001,6 +1001,31 @@ Service::postViewWithAuthorCache(
         author = unknownAuthorView(config);
     }
     j["author"] = author;
+    j["is_boost"] = p.boosted_by_uri.has_value();
+    if(p.boosted_by_uri)
+    {
+        nlohmann::json booster;
+        const std::string local_prefix = config.url_root + "u/";
+        if(p.boosted_by_uri->starts_with(local_prefix))
+        {
+            ASSIGN_OR_RETURN(auto local,data.getUserByUsername(
+                p.boosted_by_uri->substr(local_prefix.size())));
+            if(local)
+            {
+                ASSIGN_OR_RETURN(booster,localAuthorView(config,data,*local));
+            }
+        }
+        else
+        {
+            ASSIGN_OR_RETURN(auto remote,
+                             data.getRemoteActorByUri(*p.boosted_by_uri));
+            if(remote) booster = remoteAuthorView(config,*remote);
+        }
+        if(booster.is_null())
+            booster = {{"display_name",esc(*p.boosted_by_uri)},
+                       {"profile_url",esc(*p.boosted_by_uri)}};
+        j["boosted_by"] = std::move(booster);
+    }
 
     // ── Attachments ──
     ASSIGN_OR_RETURN(auto atts, data.attachmentsForPost(p.id));

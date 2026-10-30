@@ -1,4 +1,10 @@
 <article class="post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
+{% if post.is_boost %}
+  <div class="boost-attribution">
+    <a href="{{ post.boosted_by.profile_url }}">{{ post.boosted_by.display_name }}</a>
+    boosted
+  </div>
+{% endif %}
   <div class="post-head">
     <a class="author" href="{{ post.author.profile_url }}">
       <img class="post-avatar"

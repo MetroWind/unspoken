@@ -383,6 +383,9 @@ TEST(LinkPreview, MigrationPreservesPostsWithoutBackfill)
     {
         ASSIGN_OR_FAIL(auto data,DataSourceSQLite::fromFile(path.string()));
         ASSIGN_OR_FAIL(auto post,data->insertPost(previewPost(),{},"https://local.test/p/"));
+        ASSERT_TRUE(data->connection().execute("DROP TRIGGER home_post_insert;"));
+        ASSERT_TRUE(data->connection().execute("DROP TRIGGER home_boost_insert;"));
+        ASSERT_TRUE(data->connection().execute("DROP TABLE home_timeline_entries;"));
         ASSERT_TRUE(data->connection().execute("DROP INDEX idx_posts_link_preview;"));
         ASSERT_TRUE(data->connection().execute("ALTER TABLE posts DROP COLUMN link_preview_id;"));
         ASSERT_TRUE(data->connection().execute("DROP TABLE link_previews;"));
@@ -390,7 +393,7 @@ TEST(LinkPreview, MigrationPreservesPostsWithoutBackfill)
     }
     {
         ASSIGN_OR_FAIL(auto data,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(data->getSchemaVersion().value(),5);
+        EXPECT_EQ(data->getSchemaVersion().value(),6);
         auto posts = data->timelinePublic({},20).value();
         ASSERT_EQ(posts.size(),1u);
         EXPECT_FALSE(posts.front().link_preview_id);
@@ -401,7 +404,7 @@ TEST(LinkPreview, MigrationPreservesPostsWithoutBackfill)
     }
     {
         ASSIGN_OR_FAIL(auto reopened,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(reopened->getSchemaVersion().value(),5);
+        EXPECT_EQ(reopened->getSchemaVersion().value(),6);
     }
     std::filesystem::remove(path);
 }

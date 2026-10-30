@@ -1317,3 +1317,37 @@ TEST(ServiceView, PagesDeferEmojiCatalogUntilPickerOpens)
     ASSERT_NE(first, std::string::npos);
     EXPECT_EQ(html.find(catalog, first + catalog.size()), std::string::npos);
 }
+
+TEST(ServiceTimeline, RendersFollowedLocalBoostWithEscapedAttribution)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto viewer,data->createUser(NewUser{
+        "viewer","Viewer","","iss","viewer","PRIV","PUB"}));
+    ASSIGN_OR_FAIL(auto booster,data->createUser(NewUser{
+        "booster","<Bob & Co>","","iss","booster","PRIV","PUB"}));
+    ASSIGN_OR_FAIL(auto stranger,data->createUser(NewUser{
+        "stranger","Stranger","","iss","stranger","PRIV","PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ASSERT_TRUE(data->addFollow({0,service.actorUri(viewer.username),
+        service.actorUri(booster.username),FollowState::ACCEPTED,
+        std::nullopt,100}));
+    ComposeParams input;
+    input.source = "A post from somebody else";
+    ASSIGN_OR_FAIL(auto post,service.createPost(stranger,input));
+    ASSERT_TRUE(service.setBoost(booster,post,true));
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSERT_EQ(timeline.size(),1u);
+    ASSIGN_OR_FAIL(auto view,service.postView(timeline.front(),viewer));
+    EXPECT_TRUE(view["is_boost"].get<bool>());
+    EXPECT_EQ(view["boosted_by"]["display_name"],"&lt;Bob &amp; Co&gt;");
+    inja::Environment environment("templates/");
+    auto html = environment.render_file("_post.html",{
+        {"post",view},{"focus_id",0},{"logged_in",false},
+        {"site",{{"root",config.url_root}}}});
+    EXPECT_NE(html.find("class=\"boost-attribution\""),std::string::npos);
+    EXPECT_NE(html.find("&lt;Bob &amp; Co&gt;"),std::string::npos);
+    EXPECT_NE(html.find("A post from somebody else"),std::string::npos);
+    EXPECT_EQ(html.find("<Bob & Co>"),std::string::npos);
+}

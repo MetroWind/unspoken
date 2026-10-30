@@ -111,6 +111,9 @@ struct Post
     int64_t created_at = 0;     // local insertion time (cursor ordering)
     // Shared application-owned preview, independent of federation data.
     std::optional<int64_t> link_preview_id;
+    // Home timeline event cursor and optional boost attribution (not wire data).
+    int64_t timeline_id = 0;
+    std::optional<std::string> boosted_by_uri;
     std::optional<std::string> published; // original timestamp (remote)
 };
 

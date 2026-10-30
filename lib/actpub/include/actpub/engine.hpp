@@ -104,6 +104,9 @@ private:
     std::string endpoint_actor;
     std::vector<std::pair<std::string, std::string>> forward_collections;
     nlohmann::json forward_document;
+    // Origin-fetched public boost target, staged until inbox commit.
+    std::optional<nlohmann::json> announced_object;
+    std::optional<RemoteActor> announced_author;
     int64_t prepared_at = 0;
     const void* session_identity = nullptr;
     friend class Session;

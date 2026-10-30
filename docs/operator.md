@@ -286,7 +286,30 @@ HTTP(S) image sources while retaining existing script/frame restrictions.
 
 Unused preview rows are collected hourly in batches of 100, excluding queued
 and running rows. There are no preview image files to back up. Take a
-consistent SQLite backup before upgrading to schema 5. Reverting the binary
+consistent SQLite backup before upgrading to schema 6. Reverting the binary
 requires a compatible database backup; disabling previews is the reversible
 way to stop fetching while retaining cached metadata. Only one Unspoken
 process per database is supported for preview workers.
+
+## Home timeline boosts and replies
+
+The home timeline includes replies from followed accounts even when their
+parent posts or authors are unknown. It also includes public and unlisted
+posts boosted by accepted follows, with attribution to the boosting account.
+A newly received boost of an older post appears at the top. Multiple eligible
+events for the same post collapse to its newest entry. Undoing a boost or
+unfollowing its author removes that boost from the timeline; the original
+post can remain if it is independently eligible.
+
+Schema 6 adds application timeline event IDs so post and boost ordering share
+a stable cursor. Existing posts and retained boosts are migrated in creation
+time order. Home timeline cursor values from before this upgrade should be
+replaced by opening the home page again. Other post URLs and collection
+cursors continue to use their existing IDs.
+
+For a followed account's boost of an unfamiliar post, the inbox preparation
+fetches the original object and its author before opening a write transaction.
+Only public or unlisted targets are retained. The fetched post, author, boost,
+and timeline entry commit atomically. Replies do not require fetching an
+unknown parent to appear in the home timeline. Take a consistent database
+backup before this migration; older binaries require a compatible backup.

@@ -29,7 +29,7 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 5;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 6;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -37,13 +37,8 @@ constexpr const char* POST_COLS =
     "content_source, summary, sensitive, visibility, in_reply_to_uri, "
     "created_at, published, link_preview_id";
 
-using PostRow = std::tuple<
-    int64_t, std::string, std::optional<int64_t>, std::optional<int64_t>,
-    std::string, std::optional<std::string>, std::optional<std::string>,
-    int64_t, std::string, std::optional<std::string>, int64_t,
-    std::optional<std::string>, std::optional<int64_t>>;
-
-mw::E<Post> rowToPost(const PostRow& row)
+template<typename Row>
+mw::E<Post> rowToPost(const Row& row)
 {
     Post p;
     p.id = std::get<0>(row);
@@ -564,6 +559,7 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
         DO_OR_RETURN(data_source->setSchemaVersion(3));
         DO_OR_RETURN(data_source->migrate3To4());
         DO_OR_RETURN(data_source->setSchemaVersion(5));
+        DO_OR_RETURN(data_source->migrate5To6());
         DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
@@ -598,6 +594,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate4To5());
                 version = 5;
+                continue;
+            }
+            if(version == 5)
+            {
+                DO_OR_RETURN(data_source->migrate5To6());
+                version = 6;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -1829,7 +1831,8 @@ DataSourceSQLite::homeTimelinePosts(
         remote_in_list += (i == 0) ? "?" : ",?";
 
     std::string addressed_where =
-        "id IN (SELECT post_id FROM post_recipients WHERE recipient_uri = ?)";
+        "posts.id IN (SELECT post_id FROM post_recipients "
+        "WHERE recipient_uri = ?)";
     std::string author_where;
     if(!author_ids.empty())
     {
@@ -1863,7 +1866,25 @@ DataSourceSQLite::homeTimelinePosts(
         "({} OR in_reply_to_uri IN "
         "(SELECT uri FROM posts WHERE local_author_id = ?) OR {})",
         author_where, addressed_where);
-    std::string sql = buildTimelineSql(c, where);
+    // Pick the newest eligible event for each post before applying the cursor.
+    // A boost of an old post therefore appears as a fresh timeline entry.
+    std::string sql = std::format(
+        "WITH eligible AS (SELECT e.id AS timeline_id,posts.id AS post_id,"
+        "b.actor_uri AS boosted_by_uri,row_number() OVER ("
+        "PARTITION BY posts.id ORDER BY e.id DESC) AS position "
+        "FROM home_timeline_entries e JOIN posts ON posts.id=e.post_id "
+        "LEFT JOIN ap_boosts b ON b.id=e.boost_id WHERE "
+        "(e.boost_id IS NULL AND {}) OR (e.boost_id IS NOT NULL "
+        "AND posts.visibility IN ('public','unlisted') AND "
+        "(b.actor_uri=? OR b.actor_uri IN (SELECT followee_uri FROM follows "
+        "WHERE follower_uri=? AND state='accepted')))) "
+        "SELECT {},eligible.timeline_id,eligible.boosted_by_uri "
+        "FROM posts JOIN eligible ON eligible.post_id=posts.id "
+        "WHERE eligible.position=1",where,POST_COLS);
+    if(c.max_id) sql += " AND eligible.timeline_id < ?";
+    if(c.min_id) sql += " AND eligible.timeline_id > ?";
+    sql += c.min_id ? " ORDER BY eligible.timeline_id ASC LIMIT ?;"
+                    : " ORDER BY eligible.timeline_id DESC LIMIT ?;";
 
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
@@ -1883,6 +1904,8 @@ DataSourceSQLite::homeTimelinePosts(
     }
     DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
     DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
+    DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
+    DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
     if(c.max_id.has_value())
         DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
     if(c.min_id.has_value())
@@ -1893,12 +1916,15 @@ DataSourceSQLite::homeTimelinePosts(
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>, int64_t,
+        std::optional<std::string>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
     {
         ASSIGN_OR_RETURN(Post p, rowToPost(r));
+        p.timeline_id = std::get<13>(r);
+        p.boosted_by_uri = std::get<14>(r);
         out.push_back(std::move(p));
     }
     if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
@@ -2090,7 +2116,7 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         // qualify columns with p.
         "p.id, p.uri, p.local_author_id, p.remote_author_id, p.content_html, "
         "p.content_source, p.summary, p.sensitive, p.visibility, "
-        "p.in_reply_to_uri, p.created_at, p.published",
+        "p.in_reply_to_uri, p.created_at, p.published, p.link_preview_id",
         where, order);
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
@@ -2797,6 +2823,46 @@ mw::E<void> DataSourceSQLite::collectLinkPreviews(
         "WHERE link_preview_id=link_previews.id) AND id NOT IN (" +
         active + ") ORDER BY id LIMIT 100);"));
     return transaction.commit();
+}
+
+mw::E<void> DataSourceSQLite::migrate5To6() const
+{
+    auto migrate = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute(
+            "CREATE TABLE home_timeline_entries ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,"
+            "boost_id INTEGER UNIQUE REFERENCES ap_boosts(id) "
+            "ON DELETE CASCADE);"));
+        DO_OR_RETURN(db->execute(
+            "CREATE UNIQUE INDEX idx_home_original ON home_timeline_entries"
+            "(post_id) WHERE boost_id IS NULL;"));
+        DO_OR_RETURN(db->execute(
+            "CREATE INDEX idx_home_post ON home_timeline_entries(post_id,id);"));
+        DO_OR_RETURN(db->execute(
+            "INSERT INTO home_timeline_entries(post_id,boost_id) "
+            "SELECT post_id,boost_id FROM ("
+            "SELECT id AS post_id,NULL AS boost_id,created_at AS timestamp "
+            "FROM posts UNION ALL SELECT p.id,b.id,b.created_at "
+            "FROM ap_boosts b JOIN posts p ON p.uri=b.post_uri "
+            "WHERE p.visibility IN ('public','unlisted')) "
+            "ORDER BY timestamp,post_id,boost_id;"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER home_post_insert AFTER INSERT ON posts BEGIN "
+            "INSERT INTO home_timeline_entries(post_id) VALUES(NEW.id); "
+            "INSERT INTO home_timeline_entries(post_id,boost_id) "
+            "SELECT NEW.id,id FROM ap_boosts WHERE post_uri=NEW.uri "
+            "AND NEW.visibility IN ('public','unlisted') "
+            "ORDER BY created_at,id; END;"));
+        DO_OR_RETURN(db->execute(
+            "CREATE TRIGGER home_boost_insert AFTER INSERT ON ap_boosts BEGIN "
+            "INSERT INTO home_timeline_entries(post_id,boost_id) "
+            "SELECT id,NEW.id FROM posts WHERE uri=NEW.post_uri "
+            "AND visibility IN ('public','unlisted'); END;"));
+        return setSchemaVersion(6);
+    };
+    return withDataWrite(*db,migrate);
 }
 
 } // namespace unspoken

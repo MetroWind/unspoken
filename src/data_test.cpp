@@ -70,11 +70,11 @@ RemoteActor sampleRemoteActor(const std::string& uri)
 
 } // namespace
 
-TEST(Data, SchemaVersionIsFive)
+TEST(Data, SchemaVersionIsSix)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 5);
+    EXPECT_EQ(v, 6);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -99,7 +99,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 5);
+    EXPECT_EQ(version, 6);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -173,7 +173,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 5);
+    EXPECT_EQ(version, 6);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -1345,7 +1345,7 @@ TEST(Data, OpensOlderVersionThreeSchema)
     }
     {
         ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(source->getSchemaVersion().value(), 5);
+        EXPECT_EQ(source->getSchemaVersion().value(), 6);
         ASSIGN_OR_FAIL(auto system, source->getSystemActor());
         EXPECT_FALSE(system.has_value());
         ASSIGN_OR_FAIL(auto migrated_keys,
@@ -1372,4 +1372,140 @@ TEST(Data, OpensOlderVersionThreeSchema)
     fs::remove(path, ignored);
     fs::remove(path.string() + "-wal", ignored);
     fs::remove(path.string() + "-shm", ignored);
+}
+
+TEST(Data, HomeTimelineIncludesBoostsAndRepliesToUnknownPeople)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto viewer, db->createUser(sampleUser("viewer")));
+    ASSIGN_OR_FAIL(auto local, db->createUser(sampleUser("followed")));
+    ASSIGN_OR_FAIL(auto remote, db->upsertRemoteActor(
+        sampleRemoteActor("https://remote.test/followed")));
+    ASSIGN_OR_FAIL(auto stranger, db->upsertRemoteActor(
+        sampleRemoteActor("https://other.test/stranger")));
+    const std::string viewer_uri = "https://f.test/u/viewer";
+    const std::string local_uri = "https://f.test/u/followed";
+    ASSERT_TRUE(db->addFollow({0,viewer_uri,local_uri,FollowState::ACCEPTED,
+                               std::nullopt,100}));
+    ASSERT_TRUE(db->addFollow({0,viewer_uri,remote.uri,FollowState::ACCEPTED,
+                               std::nullopt,100}));
+    NewPost input;
+    input.remote_author_id = stranger.id;
+    input.uri = "https://other.test/old";
+    input.content_html = "old post by an unfamiliar author";
+    ASSIGN_OR_FAIL(auto old,db->insertPost(input,{},""));
+    input.uri = "https://other.test/another";
+    input.visibility = Visibility::UNLISTED;
+    ASSIGN_OR_FAIL(auto another,db->insertPost(input,{},""));
+    input.uri = "https://other.test/private";
+    input.visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(auto secret,db->insertPost(input,{},""));
+    input.uri = "https://remote.test/reply";
+    input.remote_author_id = remote.id;
+    input.visibility = Visibility::PUBLIC;
+    input.in_reply_to_uri = "https://unknown.test/never-fetched-parent";
+    ASSIGN_OR_FAIL(auto reply,db->insertPost(input,{},""));
+    ASSERT_TRUE(db->addBoost({0,remote.uri,old.uri,"https://remote.test/boost",200}));
+    ASSERT_TRUE(db->addBoost({0,local_uri,another.uri,"https://f.test/boost",201}));
+    // Corrupt or legacy private boosts must not reveal private posts.
+    ASSERT_TRUE(db->addBoost({0,remote.uri,secret.uri,std::nullopt,202}));
+    auto page = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+        viewer.id,{},2,viewer_uri).value();
+    ASSERT_EQ(page.size(),2u);
+    EXPECT_EQ(page[0].id,another.id);
+    EXPECT_EQ(page[0].boosted_by_uri,local_uri);
+    EXPECT_EQ(page[1].id,old.id);
+    EXPECT_EQ(page[1].boosted_by_uri,remote.uri);
+    EXPECT_GT(page[0].timeline_id,page[1].timeline_id);
+    Cursor older;
+    older.max_id = page.back().timeline_id;
+    auto next = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+        viewer.id,older,2,viewer_uri).value();
+    ASSERT_EQ(next.size(),1u);
+    EXPECT_EQ(next[0].id,reply.id);
+    EXPECT_FALSE(next[0].boosted_by_uri);
+    Cursor newer;
+    newer.min_id = page.back().timeline_id;
+    auto previous = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+        viewer.id,newer,2,viewer_uri).value();
+    ASSERT_EQ(previous.size(),1u);
+    EXPECT_EQ(previous[0].id,another.id);
+    // Redelivery preserves the event cursor and does not add a duplicate.
+    ASSERT_TRUE(db->addBoost({0,remote.uri,old.uri,std::nullopt,300}));
+    auto stable = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+        viewer.id,{},20,viewer_uri).value();
+    ASSERT_EQ(stable.size(),3u);
+    EXPECT_EQ(stable[1].timeline_id,page[1].timeline_id);
+    ASSERT_TRUE(db->removeBoost(local_uri,another.uri));
+    ASSERT_TRUE(db->removeFollow(viewer_uri,remote.uri));
+    EXPECT_TRUE(db->homeTimelinePosts({viewer.id,local.id},{},viewer.id,
+                                      {},20,viewer_uri).value().empty());
+}
+
+TEST(Data, HomeTimelineDeduplicatesAuthoredAndBoostedPosts)
+{
+    ASSIGN_OR_FAIL(auto db,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto viewer,db->createUser(sampleUser("viewer")));
+    auto post = insertLocalPost(*db,viewer.id,"a post");
+    const std::string actor = "https://f.test/u/viewer";
+    auto before = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+        .value();
+    ASSERT_TRUE(db->addBoost({0,actor,post.uri,std::nullopt,200}));
+    auto boosted = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+        .value();
+    ASSERT_EQ(boosted.size(),1u);
+    EXPECT_EQ(boosted[0].boosted_by_uri,actor);
+    EXPECT_GT(boosted[0].timeline_id,before[0].timeline_id);
+    ASSERT_TRUE(db->removeBoost(actor,post.uri));
+    auto undone = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+        .value();
+    ASSERT_EQ(undone.size(),1u);
+    EXPECT_FALSE(undone[0].boosted_by_uri);
+    EXPECT_EQ(undone[0].timeline_id,before[0].timeline_id);
+    ASSERT_TRUE(db->deletePost(post.id));
+    EXPECT_EQ(db->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM home_timeline_entries").value(),0);
+}
+
+TEST(Data, MigrationFiveToSixBackfillsOrderedEvents)
+{
+    auto path = std::filesystem::temp_directory_path()/
+                "unspoken_home_event_migration.sqlite";
+    std::filesystem::remove(path);
+    {
+        ASSIGN_OR_FAIL(auto db,DataSourceSQLite::fromFile(path.string()));
+        ASSIGN_OR_FAIL(auto viewer,db->createUser(sampleUser("viewer")));
+        auto old = insertLocalPost(*db,viewer.id,"old");
+        insertLocalPost(*db,viewer.id,"newer");
+        ASSERT_TRUE(db->addBoost({0,"https://f.test/u/viewer",old.uri,
+                                  std::nullopt,9999999999}));
+        ASSERT_TRUE(db->connection().execute("DROP TRIGGER home_post_insert"));
+        ASSERT_TRUE(db->connection().execute("DROP TRIGGER home_boost_insert"));
+        ASSERT_TRUE(db->connection().execute("DROP TABLE home_timeline_entries"));
+        ASSERT_TRUE(db->connection().execute("PRAGMA user_version=5"));
+    }
+    {
+        ASSIGN_OR_FAIL(auto db,DataSourceSQLite::fromFile(path.string()));
+        EXPECT_EQ(db->getSchemaVersion().value(),6);
+        auto timeline = db->homeTimelinePosts({1},{},1,{},20,
+                                              "https://f.test/u/viewer").value();
+        ASSERT_EQ(timeline.size(),2u);
+        EXPECT_EQ(timeline[0].content_html,"old");
+        EXPECT_TRUE(timeline[0].boosted_by_uri);
+        EXPECT_EQ(db->connection().evalToValue<int64_t>(
+            "SELECT count(*) FROM pragma_foreign_key_check").value(),0);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(Data, BookmarksRetainPreviewAssociation)
+{
+    ASSIGN_OR_FAIL(auto db,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto viewer,db->createUser(sampleUser("viewer")));
+    auto post = insertLocalPost(*db,viewer.id,
+        "<a href='https://example.com/article'>article</a>");
+    ASSERT_TRUE(db->addBookmark(viewer.id,post.id));
+    ASSIGN_OR_FAIL(auto bookmarks,db->bookmarksFor(viewer.id,{},20));
+    ASSERT_EQ(bookmarks.size(),1u);
+    EXPECT_EQ(bookmarks[0].link_preview_id,post.link_preview_id);
 }

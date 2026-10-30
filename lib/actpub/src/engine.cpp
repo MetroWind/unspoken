@@ -641,6 +641,59 @@ mw::E<PreparedInbox> Session::prepareInbox(const IncomingHttpRequest& request,
             }
         }
     }
+    if(prepared.activity.type == "Announce" &&
+       prepared.activity.actor == prepared.verified.actor_uri)
+    {
+        auto uri = normalizeRef(prepared.activity.object);
+        ASSIGN_OR_RETURN(auto targets,recipients(prepared.activity));
+        bool followed = false;
+        for(const auto& recipient : targets)
+        {
+            if(!endpoint_actor.empty() && recipient != endpoint_actor) continue;
+            ASSIGN_OR_RETURN(auto follow,
+                             store.getFollow(recipient,prepared.activity.actor));
+            if(follow && follow->state == FollowState::ACCEPTED)
+                followed = true;
+        }
+        if(uri && followed)
+        {
+            ASSIGN_OR_RETURN(auto known,object(*uri));
+            if(!known)
+            {
+                // Ignore embedded boost content: obtain the origin's document.
+                ASSIGN_OR_RETURN(auto doc,fetchObject(*uri));
+                auto type = stringField(doc,"type");
+                auto owner = normalizeRef(doc.value("attributedTo",
+                                                    nlohmann::json()));
+                if(normalizeRef(doc) == uri && publicDocument(doc) && owner &&
+                   (type == "Note" || type == "Article" || type == "Image"))
+                {
+                    ASSIGN_OR_RETURN(auto local,localActor(*owner));
+                    if(!local)
+                    {
+                        ASSIGN_OR_RETURN(auto author,
+                                         store.getRemoteActorByUri(*owner));
+                        if(!author)
+                        {
+                            ASSIGN_OR_RETURN(auto signing_actor,
+                                             signer(config.system_actor_uri));
+                            DO_OR_RETURN(http.connectionTimeout(
+                                std::chrono::seconds(10)));
+                            DO_OR_RETURN(http.transferTimeout(
+                                std::chrono::seconds(30)));
+                            DO_OR_RETURN(http.maxSize(
+                                static_cast<long>(config.max_document_bytes)));
+                            ASSIGN_OR_RETURN(auto fetched,fetchRemoteActor(
+                                config.transport,crypto,http,signing_actor,*owner));
+                            author = std::move(fetched);
+                        }
+                        prepared.announced_object = std::move(doc);
+                        prepared.announced_author = std::move(author);
+                    }
+                }
+            }
+        }
+    }
     prepared.endpoint_actor = std::string(endpoint_actor);
     prepared.prepared_at = now;
     prepared.session_identity = this;
@@ -1066,6 +1119,27 @@ mw::E<InboxResult> Session::acceptInbox(PreparedInbox&& prepared, int64_t now)
                 ASSIGN_OR_RETURN(auto actor, store.upsertRemoteActor(
                                                  prepared.verified.actor));
                 (void)actor;
+                if(prepared.announced_object && prepared.announced_author)
+                {
+                    auto uri = normalizeRef(*prepared.announced_object);
+                    ASSIGN_OR_RETURN(auto known,object(*uri));
+                    if(!known)
+                    {
+                        ASSIGN_OR_RETURN(auto author,store.upsertRemoteActor(
+                            *prepared.announced_author));
+                        DO_OR_RETURN(writeObject(db,*prepared.announced_object,
+                                                 author.uri,false));
+                        Activity imported;
+                        imported.id = *uri + "#fetch";
+                        imported.type = "Create";
+                        imported.actor = author.uri;
+                        imported.object = *prepared.announced_object;
+                        imported.raw = {{"id",imported.id},{"type","Create"},
+                            {"actor",author.uri},{"object",imported.object}};
+                        DO_OR_RETURN(application.apply(tx,
+                            {imported,target,author,true}));
+                    }
+                }
                 ASSIGN_OR_RETURN(applied, applyProtocol(tx, prepared, target,
                                                         decision, now));
                 if(applied)

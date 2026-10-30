@@ -802,7 +802,8 @@ void App::handleIndex(const Request& req, Response& res) const
     ctx["timeline"] = viewer.has_value() ? "home" : "public";
     if(!posts.empty())
     {
-        ctx["next_max_id"] = posts.back().id;
+        ctx["next_max_id"] = viewer.has_value()
+            ? posts.back().timeline_id : posts.back().id;
         ctx["has_more"] = (static_cast<int>(posts.size())
                            == config.posts_per_page);
     }

@@ -292,11 +292,13 @@ public:
     ~DataSourceSQLite() override = default;
 
     // Open (creating if needed) the database file, enable WAL, set
-    // busy_timeout, and ensure the schema exists at version 1.
+    // busy_timeout, and migrate to the current application schema.
     static mw::E<std::unique_ptr<DataSourceSQLite>>
     fromFile(const std::string& db_file, int busy_timeout_ms = 5000);
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
 
+    // Add ordered post/boost events for stable home timeline pagination.
+    mw::E<void> migrate5To6() const;
     // Upgrade application preview storage without backfilling old posts.
     mw::E<void> migrate4To5() const;
     // Associate the selected URL inside the current post transaction.

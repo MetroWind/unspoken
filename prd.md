@@ -11,7 +11,10 @@ Basically just standard micro blog features.
   configurable parameter.
 * When logged in, home page shows timeline of posts from all the
   account that the current user follows, as well as the posts from the
-  current user.
+  current user. Include their replies even when the parent or its author
+  is unknown, and public or unlisted posts they boost, even from authors
+  the viewer does not follow. Show who boosted each post and order boosts
+  by their arrival in the timeline.
 * User can write new posts
 * User can choose post visibility (scope) when writing new posts.
   Valid visibilities are Public, Unlisted, Followers-Only, and Direct

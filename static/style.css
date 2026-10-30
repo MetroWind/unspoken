@@ -518,3 +518,9 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
     .link-preview { flex-direction: column; }
     .link-preview-image { flex-basis: auto; width: 100%; }
 }
+
+.boost-attribution {
+    font-size: .85rem;
+    margin-bottom: .5rem;
+    opacity: .8;
+}
