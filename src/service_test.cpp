@@ -558,6 +558,59 @@ TEST(ServiceAuthz, UserCanViewRemoteFollowersPostWhenAddressed)
     EXPECT_FALSE(denied);
 }
 
+TEST(ServiceAuthz, RemoteFollowersCollectionRequiresAcceptedFollow)
+{
+    ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto alice, db->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    RemoteActor remote;
+    remote.uri = "https://remote.test/users/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.inbox = remote.uri + "/inbox";
+    remote.public_key_pem = "PUB";
+    remote.public_key_id = remote.uri + "#main-key";
+    const std::string followers = "https://remote.test/collections/bob";
+    remote.actor_json = nlohmann::json({{"followers", followers}}).dump();
+    ASSIGN_OR_FAIL(auto author, db->upsertRemoteActor(remote));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service svc(config, *db, emoji);
+    NewPost incoming;
+    incoming.uri = "https://remote.test/statuses/1";
+    incoming.remote_author_id = author.id;
+    incoming.content_html = "followers only";
+    incoming.visibility = Visibility::FOLLOWERS;
+    ASSIGN_OR_FAIL(auto post, db->insertPost(
+        incoming, {{0, followers, "to"}}, "https://f.test/p/"));
+    Follow follow;
+    follow.follower_uri = svc.actorUri("alice");
+    follow.followee_uri = author.uri;
+    EXPECT_TRUE(mw::isExpected(db->addFollow(follow)));
+    ASSIGN_OR_FAIL(bool pending, svc.canViewPost(post, alice));
+    EXPECT_FALSE(pending);
+    EXPECT_TRUE(mw::isExpected(db->setFollowState(
+        follow.follower_uri, follow.followee_uri, FollowState::ACCEPTED)));
+    ASSIGN_OR_FAIL(bool accepted, svc.canViewPost(post, alice));
+    EXPECT_TRUE(accepted);
+    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(alice, Cursor{}));
+    ASSERT_EQ(timeline.size(), 1u);
+    EXPECT_EQ(timeline.front().id, post.id);
+    ASSIGN_OR_FAIL(bool stranger, svc.canActorViewPost(
+        post, "https://f.test/u/eve"));
+    EXPECT_FALSE(stranger);
+    Post direct = post;
+    direct.visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(bool direct_allowed, svc.canViewPost(direct, alice));
+    EXPECT_FALSE(direct_allowed);
+    EXPECT_TRUE(mw::isExpected(db->removeFollow(
+        follow.follower_uri, follow.followee_uri)));
+    ASSIGN_OR_FAIL(bool unfollowed, svc.canViewPost(post, alice));
+    EXPECT_FALSE(unfollowed);
+    ASSIGN_OR_FAIL(auto after_unfollow, svc.homeTimeline(alice, Cursor{}));
+    EXPECT_TRUE(after_unfollow.empty());
+}
+
 // ─── Emoji registry / substitution (§13.4) ─────────────────────────────
 
 TEST(Emoji, ShortcodeValidation)

@@ -1816,7 +1816,19 @@ DataSourceSQLite::homeTimelinePosts(
         if(!author_where.empty()) author_where += " OR ";
         author_where += std::format(
             "(remote_author_id IN ({}) AND "
-            "(visibility IN ('public', 'unlisted') OR {}))",
+            "(visibility IN ('public', 'unlisted') OR {} OR "
+            "(visibility = 'followers' AND EXISTS ("
+            "SELECT 1 FROM remote_actors ra "
+            "JOIN follows f ON f.followee_uri = ra.uri "
+            "JOIN post_recipients pr ON pr.post_id = posts.id "
+            "WHERE ra.id = posts.remote_author_id "
+            "AND f.follower_uri = ? AND f.state = 'accepted' "
+            "AND pr.recipient_uri = CASE "
+            "WHEN json_valid(ra.actor_json) THEN CASE "
+            "WHEN json_type(ra.actor_json, '$.followers') = 'text' "
+            "THEN json_extract(ra.actor_json, '$.followers') "
+            "ELSE json_extract(ra.actor_json, '$.followers.id') "
+            "END END))))",
             remote_in_list, addressed_where);
     }
 
@@ -1838,7 +1850,10 @@ DataSourceSQLite::homeTimelinePosts(
     for(int64_t id : remote_author_ids)
         DO_OR_RETURN(internalBindAt(st, idx++, id));
     if(!remote_author_ids.empty())
+    {
         DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
+        DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
+    }
     DO_OR_RETURN(internalBindAt(st, idx++, reply_author_id));
     DO_OR_RETURN(internalBindAt(st, idx++, std::string(viewer_actor)));
     if(c.max_id.has_value())

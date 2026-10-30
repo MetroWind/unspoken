@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 #include <actpub/identity.hpp>
+#include <actpub/transport.hpp>
 #include <mw/error.hpp>
 #include <mw/url.hpp>
 #include <mw/utils.hpp>
@@ -280,6 +281,29 @@ mw::E<bool> canNonPublicActorViewPost(
     }
 
     ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(post.id));
+    if(post.visibility == Visibility::FOLLOWERS && post.remote_author_id)
+    {
+        ASSIGN_OR_RETURN(auto author,
+                         data.getRemoteActorById(*post.remote_author_id));
+        if(author)
+        {
+            const auto doc = nlohmann::json::parse(
+                author->actor_json, nullptr, false);
+            const std::string followers = doc.is_object()
+                ? ap::normalizeRef(doc.value("followers", nlohmann::json()))
+                      .value_or("")
+                : std::string{};
+            for(const auto& recipient : recipients)
+            {
+                if(followers.empty() || recipient.recipient_uri != followers)
+                    continue;
+                ASSIGN_OR_RETURN(auto follow,
+                                 data.getFollow(actor_uri, author->uri));
+                if(follow && follow->state == FollowState::ACCEPTED)
+                    return true;
+            }
+        }
+    }
     for(const auto& r : recipients)
     {
         if(r.recipient_uri == actor_uri) return true;
