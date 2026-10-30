@@ -633,6 +633,21 @@ TEST(Discovery, WebFingerCanonicalSubject)
     EXPECT_EQ(j["links"][0]["href"], "https://f.test/u/alice");
 }
 
+TEST(Discovery, SystemWebFingerMatchesSigningActor)
+{
+    auto config = testConfig();
+    config.url_root = "https://f.test/social/";
+    const auto actor = systemActorJson(config, "PUBLIC KEY");
+    const auto webfinger = systemWebFingerJson(config);
+    EXPECT_EQ(webfinger["subject"],
+              "acct:" + actor["preferredUsername"].get<std::string>()
+                  + "@f.test");
+    EXPECT_EQ(webfinger["aliases"][0], actor["id"]);
+    EXPECT_EQ(webfinger["links"][0]["rel"], "self");
+    EXPECT_EQ(webfinger["links"][0]["type"], "application/activity+json");
+    EXPECT_EQ(webfinger["links"][0]["href"], actor["id"]);
+}
+
 TEST(Discovery, HostMetaPointsToWebFinger)
 {
     auto xml = hostMetaXml(testConfig());

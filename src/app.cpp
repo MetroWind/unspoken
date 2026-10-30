@@ -2299,6 +2299,12 @@ void App::handleWebFinger(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
     if(!user.has_value())
     {
+        if(username == "unspoken" && domain == url_host)
+        {
+            setJson(res, unspoken::systemWebFingerJson(config),
+                    "application/jrd+json");
+            return;
+        }
         res.status = 404;
         res.set_content("Not found", "text/plain");
         return;

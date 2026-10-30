@@ -1740,6 +1740,22 @@ nlohmann::json webFingerJson(const Config& config, const User& user)
     };
 }
 
+nlohmann::json systemWebFingerJson(const Config& config)
+{
+    const std::string actor = config.url_root + "actor";
+    const auto url = mw::URL::fromStr(config.url_root);
+    const auto host = url->host();
+    return {
+        {"subject", std::format("acct:unspoken@{}", host)},
+        {"aliases", nlohmann::json::array({actor})},
+        {"links", nlohmann::json::array({{
+            {"rel", "self"},
+            {"type", "application/activity+json"},
+            {"href", actor},
+        }})},
+    };
+}
+
 std::string hostMetaXml(const Config& config)
 {
     std::string webfinger = config.url_root
