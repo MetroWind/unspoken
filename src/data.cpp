@@ -2865,4 +2865,58 @@ mw::E<void> DataSourceSQLite::migrate5To6() const
     return withDataWrite(*db,migrate);
 }
 
+mw::E<int64_t> DataSourceSQLite::repairMentionLinkPreviews(
+    std::string_view origin, bool enabled) const
+{
+    int64_t after_id = 0;
+    int64_t repaired = 0;
+    while(true)
+    {
+        ASSIGN_OR_RETURN(auto query,db->statementFromStr(
+            "SELECT p.id,p.uri,p.content_html,p.link_preview_id,l.url,"
+            "o.document_json FROM posts p "
+            "JOIN link_previews l ON l.id=p.link_preview_id "
+            "JOIN ap_objects o ON o.uri=p.uri "
+            "WHERE p.local_author_id IS NULL AND p.id>? "
+            "ORDER BY p.id LIMIT 100;"));
+        DO_OR_RETURN(query.bind<int64_t>(after_id));
+        ASSIGN_OR_RETURN(auto rows,(db->eval<int64_t,std::string,
+            std::string,int64_t,std::string,std::string>(std::move(query))));
+        if(rows.empty()) break;
+        for(const auto& [id,uri,html,preview_id,url,document] : rows)
+        {
+            after_id = id;
+            auto object = nlohmann::json::parse(document,nullptr,false);
+            auto excluded = previewExcludedUrlsForObject(object);
+            auto normalized = normalizePreviewUrl(url);
+            bool invalid = normalized && std::any_of(
+                excluded.begin(),excluded.end(),[&normalized](const auto& href)
+                { return normalizePreviewUrl(href) == normalized; });
+            if(!invalid) continue;
+            NewPost post;
+            post.uri = uri;
+            post.content_html = html;
+            post.preview_origin = origin;
+            post.previews_enabled = enabled;
+            post.preview_excluded_urls = std::move(excluded);
+            bool changed = false;
+            auto repair = [&]() -> mw::E<void>
+            {
+                // Recheck after acquiring the write lock; preserve edits.
+                changed = false;
+                ASSIGN_OR_RETURN(auto current,getPostById(id));
+                if(!current || current->link_preview_id != preview_id ||
+                   current->uri != uri || current->content_html != html)
+                    return {};
+                DO_OR_RETURN(associateLinkPreview(id,post));
+                changed = true;
+                return {};
+            };
+            DO_OR_RETURN(withDataWrite(*db,repair));
+            if(changed) ++repaired;
+        }
+    }
+    return repaired;
+}
+
 } // namespace unspoken

@@ -124,15 +124,47 @@ std::string header(const mw::HTTPResponse& response, std::string_view key)
     return "";
 }
 
+bool linkMarker(xmlNode* node)
+{
+    if(node->type != XML_ELEMENT_NODE) return false;
+    return token(attribute(node,"class"),"mention") ||
+           token(attribute(node,"class"),"hashtag") ||
+           token(attribute(node,"rel"),"tag") ||
+           token(attribute(node,"rel"),"mention");
+}
+
+bool containsLinkMarker(xmlNode* node)
+{
+    for(auto* child = node->children; child; child = child->next)
+        if(linkMarker(child) || containsLinkMarker(child)) return true;
+    return false;
+}
+
+void collectExcludedUrls(xmlNode* node, bool inherited_marker,
+                         std::vector<std::string>& excluded)
+{
+    for(; node; node = node->next)
+    {
+        bool marked = inherited_marker || linkMarker(node);
+        if(named(node,"a") &&
+           (marked || containsImage(node) || containsLinkMarker(node)))
+        {
+            auto href = attribute(node,"href");
+            if(!href.empty()) excluded.push_back(std::move(href));
+        }
+        collectExcludedUrls(node->children,marked,excluded);
+    }
+}
+
 std::optional<std::string> selectAnchor(
     xmlNode* node, std::string_view origin, std::string_view canonical,
     const std::set<std::string>& excluded)
 {
     for(; node; node = node->next)
     {
-        if(named(node, "a") && !token(attribute(node,"rel"),"tag") &&
-           !token(attribute(node,"class"),"mention") &&
-           !token(attribute(node,"class"),"hashtag") && !containsImage(node))
+        if(linkMarker(node)) continue;
+        if(named(node, "a") && !containsImage(node) &&
+           !containsLinkMarker(node))
         {
             auto url = normalizePreviewUrl(attribute(node,"href"),origin);
             if(url && *url != canonical && !excluded.contains(*url)) return url;
@@ -319,6 +351,48 @@ std::optional<std::string> selectPreviewUrl(
                                  own_url.value_or(""),excluded);
     xmlFreeDoc(document);
     return selected;
+}
+
+std::vector<std::string> previewExcludedUrlsFromHtml(std::string_view html)
+{
+    std::vector<std::string> excluded;
+    if(html.empty() || html.size() > MAX_HTML_BYTES) return excluded;
+    auto* document = htmlReadMemory(html.data(),static_cast<int>(html.size()),
+        nullptr,"UTF-8",HTML_PARSE_NONET | HTML_PARSE_NOERROR |
+        HTML_PARSE_NOWARNING | HTML_PARSE_COMPACT);
+    if(!document) return excluded;
+    collectExcludedUrls(xmlDocGetRootElement(document),false,excluded);
+    xmlFreeDoc(document);
+    return excluded;
+}
+
+std::vector<std::string> previewExcludedUrlsForObject(
+    const nlohmann::json& object)
+{
+    if(!object.is_object()) return {};
+    auto content = object.find("content");
+    auto excluded = previewExcludedUrlsFromHtml(
+        content != object.end() && content->is_string()
+            ? content->get_ref<const std::string&>() : "");
+    for(const char* field : {"tag", "attachment"})
+    {
+        auto entries = object.value(field,nlohmann::json::array());
+        if(entries.is_object()) entries = nlohmann::json::array({entries});
+        if(!entries.is_array()) continue;
+        for(const auto& entry : entries)
+        {
+            if(!entry.is_object()) continue;
+            auto type = entry.find("type");
+            if(std::string_view(field) == "tag" &&
+               (type == entry.end() || !type->is_string() ||
+                (*type != "Mention" && *type != "Hashtag"))) continue;
+            auto url = entry.find(std::string_view(field) == "tag" ?
+                                  "href" : "url");
+            if(url != entry.end() && url->is_string())
+                excluded.push_back(url->get<std::string>());
+        }
+    }
+    return excluded;
 }
 
 LinkPreview parsePreviewHtml(std::string_view html, std::string_view final_url,

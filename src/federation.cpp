@@ -899,22 +899,7 @@ mw::E<NewPost> remoteNotePostFromActivity(
     NewPost np;
     np.preview_origin = config.url_root;
     np.previews_enabled = config.link_previews_enabled;
-    for(const char* field : {"tag", "attachment"})
-    {
-        auto entries = activity.object.value(field,nlohmann::json::array());
-        if(entries.is_object()) entries = nlohmann::json::array({entries});
-        if(!entries.is_array()) continue;
-        for(const auto& entry : entries)
-        {
-            if(!entry.is_object()) continue;
-            std::string type = jsonString(entry,"type");
-            if(std::string_view(field) == "tag" && type != "Mention" &&
-               type != "Hashtag") continue;
-            std::string url = jsonString(entry,
-                std::string_view(field) == "tag" ? "href" : "url");
-            if(!url.empty()) np.preview_excluded_urls.push_back(url);
-        }
-    }
+    np.preview_excluded_urls = previewExcludedUrlsForObject(activity.object);
     np.uri = *uri;
     np.remote_author_id = remote_author_id;
     auto remote_emoji = emojiTagsForObject(activity.object);

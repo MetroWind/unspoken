@@ -297,6 +297,10 @@ public:
     fromFile(const std::string& db_file, int busy_timeout_ms = 5000);
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
 
+    // Correct saved previews that point to marked mention/tag/media links.
+    // Reuses retained wire objects; never backfills posts without a preview.
+    mw::E<int64_t> repairMentionLinkPreviews(
+        std::string_view origin, bool enabled) const;
     // Add ordered post/boost events for stable home timeline pagination.
     mw::E<void> migrate5To6() const;
     // Upgrade application preview storage without backfilling old posts.

@@ -2996,8 +2996,10 @@ TEST(InboxDispatch, LinkPreviewsExcludeStructuredUrlsAndDeduplicate)
         {"object",{
             {"id","https://remote.test/o/preview"},{"type","Note"},
             {"attributedTo",remote.uri},{"to",std::string(AS_PUBLIC)},
-            {"content","<a href='https://other.test/u/user'>mention</a>"
-                       "<a href='https://other.test/tag'>tag</a>"
+            {"content","<span class='h-card'>"
+                       "<a class='u-url mention' "
+                       "href='https://other.test/@user'>mention</a></span>"
+                       "<a rel='tag' href='https://other.test/tag'>tag</a>"
                        "<a href='https://other.test/media'>media</a>"
                        "<a href='https://article.test/story'>article</a>"},
             {"tag",nlohmann::json::array({

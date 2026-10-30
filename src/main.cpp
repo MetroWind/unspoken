@@ -88,6 +88,16 @@ int main(int argc, char** argv)
                       mw::errorMsg(federation_init.error()));
         return 1;
     }
+    auto repaired = (*db_init)->repairMentionLinkPreviews(
+        config->url_root,config->link_previews_enabled);
+    if(!repaired)
+    {
+        spdlog::error("Failed to repair mention previews: {}",
+                      mw::errorMsg(repaired.error()));
+        return 1;
+    }
+    if(*repaired > 0)
+        spdlog::info("Corrected {} mention preview association(s)",*repaired);
     int64_t maintenance_now = mw::timeToSeconds(mw::Clock::now());
     auto pruned = unspoken::runInboxMaintenanceOnce(
         *config, **db_init, maintenance_now);

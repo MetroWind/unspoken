@@ -61,6 +61,11 @@ std::optional<std::string> selectPreviewUrl(
     std::string_view html, std::string_view origin,
     std::string_view canonical,
     const std::vector<std::string>& excluded_urls = {});
+// Keep semantic link exclusions before sanitization removes HTML markers.
+std::vector<std::string> previewExcludedUrlsFromHtml(std::string_view html);
+// Combine original HTML markers with structured mentions, tags, and media.
+std::vector<std::string> previewExcludedUrlsForObject(
+    const nlohmann::json& object);
 // Extract head metadata; relative images resolve against the final page URL.
 LinkPreview parsePreviewHtml(std::string_view html, std::string_view final_url,
                              std::string_view origin,

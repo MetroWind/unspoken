@@ -291,6 +291,17 @@ requires a compatible database backup; disabling previews is the reversible
 way to stop fetching while retaining cached metadata. Only one Unspoken
 process per database is supported for preview workers.
 
+
+At startup, Unspoken corrects preview associations that point to mention,
+hashtag, or inline-media links identified in retained original remote HTML
+or structured tags. This repairs older cards whose profile URL differed from
+an actor's canonical URL. It reselects the first eligible article link or
+clears the association, without changing the shared cached metadata. Posts
+without a preview remain untouched. This repair needs no schema change and
+makes no network requests; corrected pending article previews use the normal
+worker after startup.
+
+
 ## Home timeline boosts and replies
 
 The home timeline includes replies from followed accounts even when their

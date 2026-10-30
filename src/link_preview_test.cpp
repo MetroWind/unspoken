@@ -4,6 +4,7 @@
 #include "data_mock.hpp"
 #include "emoji.hpp"
 #include "service.hpp"
+#include "render.hpp"
 #include <filesystem>
 #include <functional>
 #include <inja.hpp>
@@ -528,4 +529,103 @@ TEST(LinkPreview, DeniedFirstDestinationDoesNotSelectLaterArticle)
     EXPECT_TRUE(http.requested_urls.empty());
 }
 
+
+TEST(LinkPreview, KeepsMentionProfileAliasesExcludedAfterSanitizing)
+{
+    nlohmann::json object = {
+        {"content","<span class='h-card'>"
+            "<a class='u-url mention' href='https://social.test/@person'>"
+            "@<span>person</span></a></span> "
+            "<a href='https://article.test/story'>@ordinary article</a>"},
+        {"tag",nlohmann::json::array({{{"type","Mention"},
+            {"href","https://social.test/users/person"}}})}};
+    auto html = sanitizeRemoteHtml(object["content"].get<std::string>());
+    EXPECT_EQ(html.find("class=\"u-url mention\""),std::string::npos);
+    auto excluded = previewExcludedUrlsForObject(object);
+    EXPECT_EQ(selectPreviewUrl(html,"","",excluded),
+              "https://article.test/story");
+    EXPECT_EQ(selectPreviewUrl(
+        "<span class='mention h-card'><a href='https://social.test/@person'>"
+        "person</a></span><a href='https://article.test/'>#article</a>","",""),
+        "https://article.test/");
+}
+
+TEST(LinkPreview, MissingMentionTagsStillHonorOriginalHtmlMarkers)
+{
+    for(const auto* markup : {
+        "<a class='mention' href='https://social.test/@person'>@person</a>",
+        "<span class='mention'><a href='https://social.test/@person'>"
+            "@person</a></span>",
+        "<a rel='tag' href='https://social.test/tags/topic'>#topic</a>",
+        "<a href='https://social.test/@person'><span class='mention'>"
+            "@person</span></a>"})
+    {
+        nlohmann::json object = {{"content",markup}};
+        EXPECT_FALSE(selectPreviewUrl(sanitizeRemoteHtml(markup),"","",
+            previewExcludedUrlsForObject(object)));
+    }
+}
+
+TEST(LinkPreview, RepairSavedMentionAssociationsWithoutBackfillingOtherPosts)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    auto make_post = [&](const std::string& suffix,bool article,
+                          bool mention = true)
+    {
+        auto input = previewPost("https://social.test/@person");
+        input.uri = "https://remote.test/post/"+suffix;
+        // Reproduce the old selection bug: only the canonical actor is excluded.
+        input.preview_excluded_urls = {"https://social.test/users/person"};
+        std::string html = mention ? "<a class='mention' " : "<a ";
+        html += "href='https://social.test/@person'>@person</a>";
+        if(article) html += "<a href='https://article.test/story'>article</a>";
+        input.content_html = sanitizeRemoteHtml(html);
+        auto stored = data->insertPost(input,{},"");
+        EXPECT_TRUE(stored);
+        nlohmann::json object = {{"id",*input.uri},{"type","Note"},
+            {"attributedTo","https://remote.test/author"},{"content",html},
+            {"tag",nlohmann::json::array({{{"type","Mention"},
+                {"href","https://social.test/users/person"}}})}};
+        if(!mention) object.erase("tag");
+        auto insert = data->connection().statementFromStr(
+            "INSERT INTO ap_objects(uri,owner_uri,local,document_json) "
+            "VALUES(?,?,0,?)");
+        EXPECT_TRUE(insert);
+        auto bound = insert->bind<std::string,std::string,std::string>(
+            *input.uri,"https://remote.test/author",object.dump());
+        EXPECT_TRUE(bound);
+        EXPECT_TRUE(data->connection().execute(std::move(*insert)));
+        return *stored;
+    };
+    auto mention_only = make_post("mention-only",false);
+    auto with_article = make_post("with-article",true);
+    // An ordinary article about a profile should keep the shared cached card.
+    auto ordinary = make_post("ordinary-profile-link",false,false);
+    auto no_preview = previewPost();
+    no_preview.previews_enabled = false;
+    no_preview.uri = "https://remote.test/old-unassociated";
+    ASSIGN_OR_FAIL(auto old,data->insertPost(no_preview,{},""));
+    ASSERT_TRUE(mention_only.link_preview_id);
+    EXPECT_EQ(with_article.link_preview_id,mention_only.link_preview_id);
+    EXPECT_EQ(ordinary.link_preview_id,mention_only.link_preview_id);
+    auto cached = successfulPreview("","").preview;
+    ASSERT_TRUE(data->completeLinkPreview(*ordinary.link_preview_id,cached));
+    EXPECT_EQ(data->repairMentionLinkPreviews("https://local.test/",true).value(),2);
+    EXPECT_FALSE(data->getPostById(mention_only.id).value()->link_preview_id);
+    auto repaired = data->getPostById(with_article.id).value();
+    ASSERT_TRUE(repaired->link_preview_id);
+    EXPECT_NE(repaired->link_preview_id,ordinary.link_preview_id);
+    EXPECT_EQ(data->getLinkPreviews({*repaired->link_preview_id}).value()
+        .begin()->second.url,"https://article.test/story");
+    EXPECT_EQ(data->getPostById(ordinary.id).value()->link_preview_id,
+              ordinary.link_preview_id);
+    EXPECT_FALSE(data->getPostById(old.id).value()->link_preview_id);
+    EXPECT_EQ(data->getLinkPreviews({*ordinary.link_preview_id}).value()
+        .begin()->second.status,PreviewStatus::READY);
+    EXPECT_EQ(data->repairMentionLinkPreviews("https://local.test/",true).value(),0);
+    auto disabled = make_post("disabled",true);
+    EXPECT_EQ(data->repairMentionLinkPreviews("https://local.test/",false).value(),1);
+    EXPECT_FALSE(data->getPostById(disabled.id).value()->link_preview_id);
+    EXPECT_EQ(data->getSchemaVersion().value(),6);
+}
 } // namespace unspoken
