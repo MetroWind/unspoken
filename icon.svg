@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="512"
+   height="512"
+   viewBox="0 0 512 512"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   sodipodi:docname="icon.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="px"
+     inkscape:zoom="2.1815204"
+     inkscape:cx="176.25322"
+     inkscape:cy="283.05946"
+     inkscape:window-width="3396"
+     inkscape:window-height="1366"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect3"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,29.919325,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <path
+       id="path1"
+       style="fill:#22df61;stroke-width:32;fill-opacity:1;stroke:#ffffff;stroke-opacity:1;stroke-dasharray:none;paint-order:stroke markers fill"
+       d="M 64 63.621094 L 64 259.93945 C 64.000166 364.59558 151.34387 448 256 448 C 290.96912 448 324.00512 438.68765 352.49609 422.38281 L 447.89453 461.0332 A 13.429295 13.429295 0 0 0 465.58789 444.08203 L 429.03125 341.41211 C 441.16621 316.82396 448 289.21328 448 259.93945 L 448 63.621094 L 354.41016 63.621094 L 354.41016 256.54492 C 354.41016 310.89545 310.35054 354.95508 256 354.95508 C 201.64946 354.95508 158 310.89545 158 256.54492 L 158 63.621094 L 64 63.621094 z " />
+  </g>
+</svg>
