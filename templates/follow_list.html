@@ -36,10 +36,10 @@
 </div>
 <nav class="pager" aria-label="Pagination">
 {% if has_previous %}
-  <a href="{{ list_url }}?min_id={{ previous_id }}">← newer</a>
+  <a href="{{ list_url }}?min_id={{ previous_id }}"><i class="nf nf-fa-arrow_left ui-icon" aria-hidden="true"></i> newer</a>
 {% endif %}
 {% if has_next %}
-  <a href="{{ list_url }}?max_id={{ next_id }}">older →</a>
+  <a href="{{ list_url }}?max_id={{ next_id }}">older <i class="nf nf-fa-arrow_right ui-icon" aria-hidden="true"></i></a>
 {% endif %}
 </nav>
 {% include "_footer.html" %}

@@ -324,3 +324,13 @@ Only public or unlisted targets are retained. The fetched post, author, boost,
 and timeline entry commit atomically. Replies do not require fetching an
 unknown parent to appear in the home timeline. Take a consistent database
 backup before this migration; older binaries require a compatible backup.
+
+## Interface icons
+
+UI icons use the symbol-only Nerd Fonts webfont, loaded from the official
+[Nerd Fonts stylesheet](https://www.nerdfonts.com/assets/css/webfont.css),
+with named `nf` classes as listed in its
+[cheat sheet](https://www.nerdfonts.com/cheat-sheet). No font installation is
+needed on the server or viewer's device. The stylesheet and font are loaded
+from Nerd Fonts; a custom Content Security Policy needs to permit that
+origin for styles and fonts.

@@ -1,6 +1,7 @@
 <article class="post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
 {% if post.is_boost %}
   <div class="boost-attribution">
+    <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i>
     <a href="{{ post.boosted_by.profile_url }}">{{ post.boosted_by.display_name }}</a>
     boosted
   </div>
@@ -20,7 +21,21 @@
       </span>
     </a>
     <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
-    <span class="vis vis-{{ post.visibility }}">{{ post.visibility }}</span>
+    <span class="vis vis-{{ post.visibility }}" role="img"
+{% if post.visibility == "followers" %}
+          title="followers-only" aria-label="followers-only">
+      <i class="nf nf-fa-users ui-icon" aria-hidden="true"></i>
+{% else if post.visibility == "direct" %}
+          title="direct message" aria-label="direct message">
+      <i class="nf nf-fa-envelope ui-icon" aria-hidden="true"></i>
+{% else if post.visibility == "unlisted" %}
+          title="unlisted" aria-label="unlisted">
+      <i class="nf nf-fa-unlock ui-icon" aria-hidden="true"></i>
+{% else %}
+          title="public" aria-label="public">
+      <i class="nf nf-fa-globe ui-icon" aria-hidden="true"></i>
+{% endif %}
+    </span>
   </div>
 
 {% if post.has_summary %}
@@ -72,9 +87,17 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
 {% if post.liked %}
       <input type="hidden" name="undo" value="1">
-      <button type="submit" class="linkbtn on">★ {{ post.like_count }}</button>
+      <button type="submit" class="linkbtn on" title="unlike"
+              aria-label="like, {{ post.like_count }} likes"
+              aria-pressed="true">
+        <i class="nf nf-fa-star ui-icon" aria-hidden="true"></i> {{ post.like_count }}
+      </button>
 {% else %}
-      <button type="submit" class="linkbtn">☆ {{ post.like_count }}</button>
+      <button type="submit" class="linkbtn" title="like"
+              aria-label="like, {{ post.like_count }} likes"
+              aria-pressed="false">
+        <i class="nf nf-fa-star_o ui-icon" aria-hidden="true"></i> {{ post.like_count }}
+      </button>
 {% endif %}
     </form>
 {% if post.can_boost %}
@@ -82,9 +105,17 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
 {% if post.boosted %}
       <input type="hidden" name="undo" value="1">
-      <button type="submit" class="linkbtn on">↻ {{ post.boost_count }}</button>
+      <button type="submit" class="linkbtn on" title="undo boost"
+              aria-label="boost, {{ post.boost_count }} boosts"
+              aria-pressed="true">
+        <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i> {{ post.boost_count }}
+      </button>
 {% else %}
-      <button type="submit" class="linkbtn">↻ {{ post.boost_count }}</button>
+      <button type="submit" class="linkbtn" title="boost"
+              aria-label="boost, {{ post.boost_count }} boosts"
+              aria-pressed="false">
+        <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i> {{ post.boost_count }}
+      </button>
 {% endif %}
     </form>
 {% endif %}
@@ -92,9 +123,15 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
 {% if post.bookmarked %}
       <input type="hidden" name="undo" value="1">
-      <button type="submit" class="linkbtn on">▮ saved</button>
+      <button type="submit" class="linkbtn on" title="remove bookmark"
+              aria-pressed="true">
+        <i class="nf nf-fa-bookmark ui-icon" aria-hidden="true"></i> saved
+      </button>
 {% else %}
-      <button type="submit" class="linkbtn">▯ save</button>
+      <button type="submit" class="linkbtn" title="bookmark"
+              aria-pressed="false">
+        <i class="nf nf-fa-bookmark_o ui-icon" aria-hidden="true"></i> save
+      </button>
 {% endif %}
     </form>
     <form class="inline react-form" method="post" action="{{ site.root }}post/{{ post.id }}/react">
@@ -103,14 +140,20 @@
       <button type="button" class="linkbtn emoji-picker-trigger"
               data-emoji-mode="react" aria-controls="emoji-picker"
               aria-haspopup="dialog" aria-expanded="false"
-              title="react" aria-label="react" hidden>☺</button>
+              title="react" aria-label="react" hidden>
+        <i class="nf nf-md-emoticon_outline ui-icon" aria-hidden="true"></i>
+      </button>
     </form>
-    <a class="linkbtn" href="{{ site.root }}p/{{ post.id }}">reply</a>
+    <a class="linkbtn" href="{{ site.root }}p/{{ post.id }}">
+      <i class="nf nf-fa-reply ui-icon" aria-hidden="true"></i> reply
+    </a>
 {% if post.can_delete %}
     <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/delete"
           onsubmit="return confirm('Delete this post?');">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="linkbtn danger">delete</button>
+      <button type="submit" class="linkbtn danger">
+        <i class="nf nf-md-delete ui-icon" aria-hidden="true"></i> delete
+      </button>
     </form>
 {% endif %}
   </div>

@@ -1,3 +1,5 @@
+@import url("https://www.nerdfonts.com/assets/css/webfont.css");
+
 /* unspoken — compact, technical, functional UI (design §16.8).
    Dense but readable: tight spacing, clear hierarchy, minimal chrome. */
 
@@ -36,6 +38,20 @@ pre {
     border: 1px solid var(--border);
     padding: 8px 10px;
     overflow-x: auto;
+}
+
+/* Symbols-only Nerd Font, shared with the official cheat-sheet classes. */
+.ui-icon
+{
+    display: inline-block;
+    width: 1.25em;
+    text-align: center;
+    vertical-align: -0.05em;
+}
+.linkbtn:focus-visible
+{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* ── Top bar ───────────────────────────────────────────────── */
@@ -181,14 +197,14 @@ button:hover { filter: brightness(1.08); }
 .dname { color: var(--fg); font-weight: 600; }
 .handle { color: var(--fg-dim); font-family: var(--mono); font-size: 0.92em; }
 .permalink { color: var(--fg-dim); margin-left: auto; font-family: var(--mono); }
-.vis {
-    font-size: 0.78em;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+.vis
+{
+    display: inline-flex;
+    align-items: center;
+    font-size: 1em;
+    line-height: 1;
     color: var(--fg-dim);
-    border: 1px solid var(--border);
-    padding: 0 4px;
-    border-radius: 2px;
+    padding: 2px;
 }
 .content { word-wrap: break-word; overflow-wrap: anywhere; }
 .content p:first-child { margin-top: 0; }
