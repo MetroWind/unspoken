@@ -401,6 +401,16 @@ mw::E<Post> Service::createPost(const User& author,
     }
 
     NewPost np;
+    np.preview_origin = config.url_root;
+    np.previews_enabled = config.link_previews_enabled;
+    np.preview_excluded_urls = mentioned_actors;
+    for(int64_t aid : p.attachment_ids)
+    {
+        ASSIGN_OR_RETURN(auto attachment, data.getAttachmentById(aid));
+        if(attachment) np.preview_excluded_urls.push_back(
+            attachment->remote_url.value_or(
+                localAttachmentUrl(config,*attachment)));
+    }
     np.local_author_id = author.id;
     np.content_html = rendered.html;
     np.content_source = p.source;
@@ -884,13 +894,24 @@ mw::E<nlohmann::json>
 Service::postView(const Post& p, const std::optional<User>& viewer) const
 {
     std::map<std::pair<bool, int64_t>, nlohmann::json> author_cache;
-    return postViewWithAuthorCache(p, viewer, author_cache);
+    std::vector<int64_t> ids;
+    ASSIGN_OR_RETURN(bool authorized, canViewPost(p,viewer));
+    if(!authorized)
+        return std::unexpected(mw::httpError(404,"Post not found"));
+    if(p.link_preview_id) ids.push_back(*p.link_preview_id);
+    std::map<int64_t, LinkPreview> previews;
+    if(!ids.empty())
+    {
+        ASSIGN_OR_RETURN(previews, data.getLinkPreviews(ids));
+    }
+    return postViewWithAuthorCache(p, viewer, author_cache, previews);
 }
 
 mw::E<nlohmann::json>
 Service::postViewWithAuthorCache(
     const Post& p, const std::optional<User>& viewer,
-    std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache) const
+    std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache,
+    const std::map<int64_t, LinkPreview>& preview_cache) const
 {
     auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
     nlohmann::json j;
@@ -905,6 +926,32 @@ Service::postViewWithAuthorCache(
     j["created_at"] = formatTimestamp(p.created_at);
     j["in_reply_to_uri"] = esc(p.in_reply_to_uri.value_or(""));
     j["is_reply"] = p.in_reply_to_uri.has_value();
+    j["has_link_preview"] = false;
+    if(p.link_preview_id)
+    {
+        auto entry = preview_cache.find(*p.link_preview_id);
+        if(entry != preview_cache.end() &&
+           entry->second.status == PreviewStatus::READY &&
+           !entry->second.title.empty())
+        {
+            const auto& preview = entry->second;
+            auto href = normalizePreviewUrl(preview.url,config.url_root);
+            if(href)
+            {
+                auto url = mw::URL::fromStr(*href);
+                auto image = validatePreviewImageUrl(
+                    preview.image,config.url_root);
+                j["has_link_preview"] = true;
+                j["link_preview"] = {
+                    {"href",esc(*href)}, {"title",esc(preview.title)},
+                    {"description",esc(preview.description)},
+                    {"display_host",esc(url->host())},
+                    {"image_url",esc(image.value_or(""))},
+                    {"has_image",image.has_value()}
+                };
+            }
+        }
+    }
 
     // ── Author ──
     nlohmann::json author;
@@ -1053,10 +1100,27 @@ Service::postViews(const std::vector<Post>& posts,
 {
     nlohmann::json arr = nlohmann::json::array();
     std::map<std::pair<bool, int64_t>, nlohmann::json> author_cache;
-    for(const auto& p : posts)
+    std::vector<int64_t> preview_ids;
+    std::vector<const Post*> visible_posts;
+    for(const auto& post : posts)
     {
-        ASSIGN_OR_RETURN(auto v,
-                         postViewWithAuthorCache(p, viewer, author_cache));
+        ASSIGN_OR_RETURN(bool authorized,canViewPost(post,viewer));
+        if(!authorized) continue;
+        visible_posts.push_back(&post);
+        if(post.link_preview_id) preview_ids.push_back(*post.link_preview_id);
+    }
+    std::sort(preview_ids.begin(),preview_ids.end());
+    preview_ids.erase(std::unique(preview_ids.begin(),preview_ids.end()),
+                      preview_ids.end());
+    std::map<int64_t, LinkPreview> previews;
+    if(!preview_ids.empty())
+    {
+        ASSIGN_OR_RETURN(previews,data.getLinkPreviews(preview_ids));
+    }
+    for(const auto* post : visible_posts)
+    {
+        ASSIGN_OR_RETURN(auto v, postViewWithAuthorCache(
+            *post, viewer, author_cache, previews));
         arr.push_back(std::move(v));
     }
     return arr;

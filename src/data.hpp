@@ -17,6 +17,7 @@
 #include <mw/error.hpp>
 
 #include "structs.hpp"
+#include "link_preview.hpp"
 
 namespace unspoken
 {
@@ -102,6 +103,10 @@ public:
     virtual mw::E<int64_t>
     collectUnreferencedRemoteActors(int64_t cutoff_seconds,
                                     int batch_size) const = 0;
+
+    // Batch cached metadata after callers have authorized their posts.
+    virtual mw::E<std::map<int64_t, LinkPreview>>
+    getLinkPreviews(const std::vector<int64_t>& ids) const = 0;
 
     // ── Posts ───────────────────────────────────────────────────
     // Inserts the post and its recipients. For local posts (uri unset)
@@ -291,6 +296,23 @@ public:
     static mw::E<std::unique_ptr<DataSourceSQLite>>
     fromFile(const std::string& db_file, int busy_timeout_ms = 5000);
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
+
+    // Upgrade application preview storage without backfilling old posts.
+    mw::E<void> migrate4To5() const;
+    // Associate the selected URL inside the current post transaction.
+    mw::E<void> associateLinkPreview(int64_t id, const NewPost& post) const;
+    // Read committed referenced pending work in bounded ID order.
+    mw::E<std::vector<int64_t>> pendingLinkPreviewIds(
+        int64_t after_id, int limit) const;
+    // Save only still-pending, referenced cache rows.
+    mw::E<void> completeLinkPreview(int64_t id,
+                                    const LinkPreview& result) const;
+    // Delete unused cache rows, excluding active worker IDs.
+    mw::E<void> collectLinkPreviews(
+        const std::vector<int64_t>& active_ids) const;
+    // Resolve one page of shared preview metadata with one query.
+    mw::E<std::map<int64_t, LinkPreview>> getLinkPreviews(
+        const std::vector<int64_t>& ids) const override;
 
     // Move federation tables to the library without changing protocol IDs.
     mw::E<void> migrate3To4() const;

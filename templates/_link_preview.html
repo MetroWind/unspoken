@@ -1,0 +1,15 @@
+{% if post.has_link_preview %}
+<a class="link-preview" href="{{ post.link_preview.href }}" rel="noopener noreferrer">
+{% if post.link_preview.has_image %}
+  <span class="link-preview-image">
+    <img src="{{ post.link_preview.image_url }}" alt=""
+         loading="lazy" decoding="async" referrerpolicy="no-referrer">
+  </span>
+{% endif %}
+  <span class="link-preview-copy">
+    <strong>{{ post.link_preview.title }}</strong>
+    <span>{{ post.link_preview.description }}</span>
+    <small>{{ post.link_preview.display_host }}</small>
+  </span>
+</a>
+{% endif %}

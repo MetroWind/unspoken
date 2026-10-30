@@ -388,6 +388,11 @@ std::string App::urlFor(const std::string& path) const
 
 void App::startJobWorkers()
 {
+    if(config.link_previews_enabled && !preview_worker)
+    {
+        preview_worker = std::make_unique<unspoken::LinkPreviewWorker>(config);
+        preview_worker->start();
+    }
     if(config.job_workers <= 0 || !job_worker_threads.empty()) return;
     job_workers_stop = false;
     for(int i = 0; i < config.job_workers; ++i)
@@ -401,6 +406,7 @@ void App::startJobWorkers()
 void App::stopJobWorkers()
 {
     job_workers_stop = true;
+    if(preview_worker) preview_worker->stop();
     for(auto& t : job_worker_threads)
     {
         if(t.joinable()) t.join();
@@ -461,6 +467,7 @@ void App::jobWorkerLoop(int worker_id) const
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
         }
+        if(*ran && preview_worker) preview_worker->wake();
         if(!*ran)
         {
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1128,6 +1135,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
     }
     if(respondIfError(write_tx.commit(), res))
         return;
+    if(preview_worker) preview_worker->wake();
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
@@ -1175,6 +1183,7 @@ void App::handleReply(const Request& req, Response& res) const
     }
     if(respondIfError(write_tx.commit(), res))
         return;
+    if(preview_worker) preview_worker->wake();
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
@@ -1215,6 +1224,7 @@ void App::handlePostDelete(const Request& req, Response& res) const
     if(respondIfError(ds->deletePost(id), res)) return;
     if(respondIfError(write_tx.commit(), res))
         return;
+    if(preview_worker) preview_worker->wake();
     res.set_redirect(urlFor());
 }
 
@@ -2155,6 +2165,7 @@ void App::handleSearch(const Request& req, Response& res) const
     ctx["post_results"] = results.posts;
     ctx["has_no_results"] = !query.empty() && results.users.empty()
         && results.posts.empty();
+    if(preview_worker) preview_worker->wake();
     render(res, 200, "search.html", ctx);
 }
 
@@ -2353,6 +2364,7 @@ void App::handleInbox(const Request& req, Response& res) const
                                 config, *ds, crypto, http, incomingRequest(req),
                                 endpoint_actor, now),
                             res);
+    if(preview_worker) preview_worker->wake();
     bool accepted = result.disposition != unspoken::InboxDisposition::DUPLICATE
         && result.disposition != unspoken::InboxDisposition::IGNORED;
     res.status = accepted ? 202 : 200;

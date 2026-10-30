@@ -29,19 +29,19 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 4;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 5;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
     "id, uri, local_author_id, remote_author_id, content_html, "
     "content_source, summary, sensitive, visibility, in_reply_to_uri, "
-    "created_at, published";
+    "created_at, published, link_preview_id";
 
 using PostRow = std::tuple<
     int64_t, std::string, std::optional<int64_t>, std::optional<int64_t>,
     std::string, std::optional<std::string>, std::optional<std::string>,
     int64_t, std::string, std::optional<std::string>, int64_t,
-    std::optional<std::string>>;
+    std::optional<std::string>, std::optional<int64_t>>;
 
 mw::E<Post> rowToPost(const PostRow& row)
 {
@@ -64,6 +64,7 @@ mw::E<Post> rowToPost(const PostRow& row)
     p.in_reply_to_uri = std::get<9>(row);
     p.created_at = std::get<10>(row);
     p.published = std::get<11>(row);
+    p.link_preview_id = std::get<12>(row);
     return p;
 }
 
@@ -346,6 +347,13 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         "ON remote_actors(retained_at, id);"));
 
     DO_OR_RETURN(db.execute(
+        "CREATE TABLE link_previews ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,url TEXT NOT NULL UNIQUE,"
+        "title TEXT,description TEXT,image TEXT,status INTEGER NOT NULL "
+        "DEFAULT 0 CHECK(status IN (0,1,2,3)));"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX idx_link_previews_status ON link_previews(status,id);"));
+    DO_OR_RETURN(db.execute(
         "CREATE TABLE IF NOT EXISTS posts ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " uri TEXT NOT NULL UNIQUE,"
@@ -358,7 +366,10 @@ mw::E<void> DataSourceSQLite::createSchema(mw::SQLite& db)
         " visibility TEXT NOT NULL,"
         " in_reply_to_uri TEXT,"
         " created_at INTEGER NOT NULL,"
-        " published TEXT);"));
+        " published TEXT,link_preview_id INTEGER "
+        "REFERENCES link_previews(id) ON DELETE SET NULL);"));
+    DO_OR_RETURN(db.execute(
+        "CREATE INDEX idx_posts_link_preview ON posts(link_preview_id);"));
     DO_OR_RETURN(db.execute(
         "CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);"));
     DO_OR_RETURN(db.execute(
@@ -547,9 +558,13 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
     // version at a time so each step can stay transactional.
     if(version == 0)
     {
+        ASSIGN_OR_RETURN(auto transaction,
+                         ap::Transaction::begin(*data_source->db));
         DO_OR_RETURN(createSchema(*data_source->db));
         DO_OR_RETURN(data_source->setSchemaVersion(3));
         DO_OR_RETURN(data_source->migrate3To4());
+        DO_OR_RETURN(data_source->setSchemaVersion(5));
+        DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
     {
@@ -577,6 +592,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate3To4());
                 version = 4;
+                continue;
+            }
+            if(version == 4)
+            {
+                DO_OR_RETURN(data_source->migrate4To5());
+                version = 5;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -1263,6 +1284,8 @@ DataSourceSQLite::insertPost(const NewPost& np,
                 return rollback(retained.error());
         }
 
+        auto associated = associateLinkPreview(new_id, np);
+        if(!associated) return rollback(associated.error());
         return db->execute("RELEASE unspoken_operation;");
     };
     DO_OR_RETURN(withDataWrite(*db, txn));
@@ -1347,6 +1370,8 @@ DataSourceSQLite::insertRemoteActorAndPost(
             if(!retained.has_value())
                 return rollback(retained.error());
         }
+        auto associated = associateLinkPreview(post_id, post);
+        if(!associated) return rollback(associated.error());
         return db->execute("RELEASE unspoken_operation;");
     };
     DO_OR_RETURN(withDataWrite(*db, txn));
@@ -1368,7 +1393,7 @@ mw::E<std::optional<Post>> DataSourceSQLite::getPostById(int64_t id) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1384,7 +1409,7 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1629,6 +1654,8 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
             if(!retained.has_value())
                 return rollback(retained.error());
         }
+        auto associated = associateLinkPreview(id, np);
+        if(!associated) return rollback(associated.error());
         return db->execute("RELEASE unspoken_operation;");
     };
     return withDataWrite(*db, txn);
@@ -1696,7 +1723,7 @@ DataSourceSQLite::timelinePublic(const Cursor& c, int limit) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1734,7 +1761,7 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1773,7 +1800,7 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1866,7 +1893,7 @@ DataSourceSQLite::homeTimelinePosts(
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1898,7 +1925,7 @@ DataSourceSQLite::threadFor(std::string_view root_uri) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -2078,7 +2105,7 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -2647,6 +2674,129 @@ mw::E<void> DataSourceSQLite::migrate3To4() const
         return setSchemaVersion(4);
     };
     return withDataWrite(*db, txn);
+}
+
+mw::E<void> DataSourceSQLite::migrate4To5() const
+{
+    ASSIGN_OR_RETURN(auto transaction, ap::Transaction::begin(*db));
+    DO_OR_RETURN(db->execute(
+        "CREATE TABLE link_previews ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,url TEXT NOT NULL UNIQUE,"
+        "title TEXT,description TEXT,image TEXT,"
+        "status INTEGER NOT NULL DEFAULT 0 CHECK(status IN (0,1,2,3)));"));
+    DO_OR_RETURN(db->execute(
+        "ALTER TABLE posts ADD COLUMN link_preview_id INTEGER "
+        "REFERENCES link_previews(id) ON DELETE SET NULL;"));
+    DO_OR_RETURN(db->execute(
+        "CREATE INDEX idx_posts_link_preview ON posts(link_preview_id);"));
+    DO_OR_RETURN(db->execute(
+        "CREATE INDEX idx_link_previews_status ON link_previews(status,id);"));
+    DO_OR_RETURN(setSchemaVersion(5));
+    return transaction.commit();
+}
+
+mw::E<void> DataSourceSQLite::associateLinkPreview(
+    int64_t id, const NewPost& post) const
+{
+    std::optional<int64_t> preview_id;
+    if(post.previews_enabled)
+    {
+        auto selected = selectPreviewUrl(post.content_html, post.preview_origin,
+                                         post.uri.value_or(""),
+                                         post.preview_excluded_urls);
+        if(selected)
+        {
+            ASSIGN_OR_RETURN(auto insert, db->statementFromStr(
+                "INSERT INTO link_previews(url) VALUES(?) "
+                "ON CONFLICT(url) DO NOTHING;"));
+            DO_OR_RETURN(insert.bind<std::string>(*selected));
+            DO_OR_RETURN(db->execute(std::move(insert)));
+            ASSIGN_OR_RETURN(auto lookup, db->statementFromStr(
+                "SELECT id FROM link_previews WHERE url=?;"));
+            DO_OR_RETURN(lookup.bind<std::string>(*selected));
+            ASSIGN_OR_RETURN(auto rows,
+                             db->eval<int64_t>(std::move(lookup)));
+            preview_id = std::get<0>(rows.at(0));
+        }
+    }
+    ASSIGN_OR_RETURN(auto update, db->statementFromStr(
+        "UPDATE posts SET link_preview_id=? WHERE id=?;"));
+    DO_OR_RETURN((update.bind<std::optional<int64_t>, int64_t>(preview_id,id)));
+    return db->execute(std::move(update));
+}
+
+mw::E<std::map<int64_t, LinkPreview>> DataSourceSQLite::getLinkPreviews(
+    const std::vector<int64_t>& ids) const
+{
+    std::map<int64_t, LinkPreview> result;
+    if(ids.empty()) return result;
+    // IDs are typed integers, not user-controlled SQL fragments.
+    std::string list;
+    for(auto id : ids)
+    {
+        if(!list.empty()) list += ',';
+        list += std::to_string(id);
+    }
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string,
+        std::optional<std::string>, std::optional<std::string>,
+        std::optional<std::string>, int64_t>(
+        "SELECT id,url,title,description,image,status FROM link_previews "
+        "WHERE id IN (" + list + ");")));
+    for(const auto& [id, url, title, description, image, status] : rows)
+    {
+        if(status < 0 || status > 3)
+            return std::unexpected(mw::runtimeError(
+                "Invalid link preview status in database"));
+        result.emplace(id, LinkPreview{id, url, title.value_or(""),
+            description.value_or(""), image.value_or(""),
+            static_cast<PreviewStatus>(status)});
+    }
+    return result;
+}
+
+mw::E<std::vector<int64_t>> DataSourceSQLite::pendingLinkPreviewIds(
+    int64_t after_id, int limit) const
+{
+    ASSIGN_OR_RETURN(auto query, db->statementFromStr(
+        "SELECT id FROM link_previews WHERE status=0 AND id>? "
+        "AND EXISTS(SELECT 1 FROM posts WHERE link_preview_id="
+        "link_previews.id) ORDER BY id LIMIT ?;"));
+    DO_OR_RETURN((query.bind<int64_t,int64_t>(after_id, limit)));
+    ASSIGN_OR_RETURN(auto rows, db->eval<int64_t>(std::move(query)));
+    std::vector<int64_t> result;
+    for(const auto& row : rows) result.push_back(std::get<0>(row));
+    return result;
+}
+
+mw::E<void> DataSourceSQLite::completeLinkPreview(
+    int64_t id, const LinkPreview& result) const
+{
+    if(result.status == PreviewStatus::PENDING)
+        return std::unexpected(mw::runtimeError("Preview is not terminal"));
+    ASSIGN_OR_RETURN(auto transaction, ap::Transaction::begin(*db));
+    ASSIGN_OR_RETURN(auto update, db->statementFromStr(
+        "UPDATE link_previews SET title=?,description=?,image=?,status=? "
+        "WHERE id=? AND status=0 AND EXISTS(SELECT 1 FROM posts "
+        "WHERE link_preview_id=link_previews.id);"));
+    DO_OR_RETURN((update.bind<std::string,std::string,std::string,
+        int64_t,int64_t>(result.title,result.description,result.image,
+                         static_cast<int64_t>(result.status),id)));
+    DO_OR_RETURN(db->execute(std::move(update)));
+    return transaction.commit();
+}
+
+mw::E<void> DataSourceSQLite::collectLinkPreviews(
+    const std::vector<int64_t>& active_ids) const
+{
+    std::string active = "0";
+    for(auto id : active_ids) active += "," + std::to_string(id);
+    ASSIGN_OR_RETURN(auto transaction, ap::Transaction::begin(*db));
+    DO_OR_RETURN(db->execute(
+        "DELETE FROM link_previews WHERE id IN (SELECT id "
+        "FROM link_previews WHERE NOT EXISTS(SELECT 1 FROM posts "
+        "WHERE link_preview_id=link_previews.id) AND id NOT IN (" +
+        active + ") ORDER BY id LIMIT 100);"));
+    return transaction.commit();
 }
 
 } // namespace unspoken

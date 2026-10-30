@@ -17,6 +17,7 @@
 #include "config.hpp"
 #include "data.hpp"
 #include "emoji.hpp"
+#include "link_preview.hpp"
 #include "structs.hpp"
 
 // The app module: the HTTP server, routing, and request handlers.
@@ -128,6 +129,7 @@ private:
     // mutable: inja::Environment::render_file is non-const.
     mutable inja::Environment templates;
 
+    std::unique_ptr<unspoken::LinkPreviewWorker> preview_worker;
     std::atomic<bool> job_workers_stop = false;
     std::vector<std::thread> job_worker_threads;
 };

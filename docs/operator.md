@@ -242,3 +242,51 @@ Unspoken retains responsibility for HTML sanitization and media serving.
 The library stores protocol snapshots independently of display projections.
 Private outbox activities are not publicly enumerable, and deleted public
 objects retain protocol tombstones after their application post is removed.
+
+## Stored link previews
+
+`link_previews.enabled` defaults to `true`. One application worker fetches
+at most one article link from each new local or retained remote post. This
+includes followers-only and direct posts: fetching reveals the URL and
+server IP to the destination, without sending post content, author identity,
+recipients, credentials, or federation signatures. Disable it with:
+
+```yaml
+link_previews:
+  enabled: false
+```
+
+Disabling stops the worker and new associations; saved cards remain usable.
+Re-enabling recovers referenced pending rows at startup and every 30 seconds.
+The queue holds at most 1000 distinct IDs, including active and delayed work;
+overflow remains pending in SQLite. Three attempts use delays of 30 seconds
+and five minutes, with integer Retry-After up to one hour. Retry budgets and
+deadlines live in memory and reset after a restart. Ready, unavailable, and
+failed rows are never automatically refreshed or retried. Old posts with no
+preview association are not backfilled.
+
+Fetching permits HTTP/HTTPS on default ports, explicitly validates redirects
+and resolved addresses, disables environment proxies, and limits each HTML
+attempt to 30 seconds and 1 MiB of decoded data. Development federation
+private-host exceptions do not apply. Logs contain row IDs, hosts, attempt
+counts, result classes, byte counts, and durations, without full query URLs
+or downloaded metadata. Inspect status totals with:
+
+```sql
+SELECT status, count(*) FROM link_previews GROUP BY status;
+-- 0 pending, 1 ready, 2 unavailable, 3 failed
+```
+
+Images load directly in the browser with no Referer header. Their hosts can
+observe viewer IPs, timing, and cookies permitted by the browser. A content
+warning controls display, and does not guarantee that a browser postpones
+image loading. HTTP images may be upgraded or blocked on HTTPS pages. Cards
+remain usable without an image. If adding a Content Security Policy, allow
+HTTP(S) image sources while retaining existing script/frame restrictions.
+
+Unused preview rows are collected hourly in batches of 100, excluding queued
+and running rows. There are no preview image files to back up. Take a
+consistent SQLite backup before upgrading to schema 5. Reverting the binary
+requires a compatible database backup; disabling previews is the reversible
+way to stop fetching while retaining cached metadata. Only one Unspoken
+process per database is supported for preview workers.

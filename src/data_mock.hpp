@@ -22,6 +22,9 @@ namespace unspoken
 class DataSourceMock : public DataSourceInterface
 {
 public:
+    // Cached application metadata, loaded in batches for authorized posts.
+    MOCK_METHOD((mw::E<std::map<int64_t, LinkPreview>>), getLinkPreviews,
+                (const std::vector<int64_t>&), (const, override));
     MOCK_METHOD(mw::E<int64_t>, getSchemaVersion, (), (const, override));
     MOCK_METHOD(mw::E<void>, migrate1To2, (), (const, override));
     MOCK_METHOD(mw::E<void>, migrate2To3, (), (const, override));

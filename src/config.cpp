@@ -303,6 +303,24 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
         readStr(child(oidc, "scopes"), config.oidc.scopes);
     }
 
+    auto previews = child(root, "link_previews");
+    if(previews.readable())
+    {
+        if(!previews.is_map())
+            return std::unexpected(mw::runtimeError(
+                "link_previews must be a map"));
+        auto enabled = child(previews,"enabled");
+        if(enabled.readable())
+        {
+            std::string value;
+            readStr(enabled,value);
+            if(value != "true" && value != "false")
+                return std::unexpected(mw::runtimeError(
+                    "link_previews.enabled must be true or false"));
+            config.link_previews_enabled = value == "true";
+        }
+    }
+
     ryml::ConstNodeRef ni = child(root, "nodeinfo");
     if(ni.readable() && ni.is_map())
     {

@@ -482,3 +482,39 @@ img.emoji { height: 1.3em; vertical-align: -0.25em; }
         grid-template-columns: 1fr;
     }
 }
+
+.link-preview {
+    display: flex;
+    margin: 1rem 0;
+    border: 1px solid currentColor;
+    border-radius: .4rem;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+}
+.link-preview:focus-visible {
+    outline: 3px solid currentColor;
+    outline-offset: 3px;
+}
+.link-preview-image {
+    flex: 0 0 10rem;
+    height: 8rem;
+    background: #8882;
+}
+.link-preview-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+.link-preview-copy {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+    padding: .8rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+    .link-preview { flex-direction: column; }
+    .link-preview-image { flex-basis: auto; width: 100%; }
+}

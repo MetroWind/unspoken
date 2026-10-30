@@ -60,6 +60,8 @@ struct Config
 
     // ─── Pagination ──────────────────────────────────────────────
     int posts_per_page = 20;
+    // Fetch and associate new post link previews when enabled.
+    bool link_previews_enabled = true;
 
     // ─── Federation tuning ───────────────────────────────────────
     int http_signature_skew_seconds = 300;

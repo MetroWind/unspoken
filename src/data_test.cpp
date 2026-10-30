@@ -70,11 +70,11 @@ RemoteActor sampleRemoteActor(const std::string& uri)
 
 } // namespace
 
-TEST(Data, SchemaVersionIsFour)
+TEST(Data, SchemaVersionIsFive)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 4);
+    EXPECT_EQ(v, 5);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -99,7 +99,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 4);
+    EXPECT_EQ(version, 5);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -173,7 +173,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 4);
+    EXPECT_EQ(version, 5);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -1345,7 +1345,7 @@ TEST(Data, OpensOlderVersionThreeSchema)
     }
     {
         ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(source->getSchemaVersion().value(), 4);
+        EXPECT_EQ(source->getSchemaVersion().value(), 5);
         ASSIGN_OR_FAIL(auto system, source->getSystemActor());
         EXPECT_FALSE(system.has_value());
         ASSIGN_OR_FAIL(auto migrated_keys,

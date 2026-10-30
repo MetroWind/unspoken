@@ -109,6 +109,8 @@ struct Post
     Visibility visibility = Visibility::PUBLIC;
     std::optional<std::string> in_reply_to_uri;
     int64_t created_at = 0;     // local insertion time (cursor ordering)
+    // Shared application-owned preview, independent of federation data.
+    std::optional<int64_t> link_preview_id;
     std::optional<std::string> published; // original timestamp (remote)
 };
 
@@ -126,6 +128,10 @@ struct NewPost
     Visibility visibility = Visibility::PUBLIC;
     std::optional<std::string> in_reply_to_uri;
     std::optional<std::string> published;
+    // Transient selection context; never serialized into ActivityPub.
+    std::string preview_origin;
+    bool previews_enabled = true;
+    std::vector<std::string> preview_excluded_urls;
 };
 
 // One row per (post, recipient) of the addressing audience. Used for

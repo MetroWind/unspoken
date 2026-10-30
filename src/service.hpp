@@ -87,7 +87,8 @@ public:
 
     // ── View models (nlohmann::json for Inja) ───────────────────────
     // Build a render-ready object for one post, resolving author,
-    // attachments, counts, and viewer-relative flags.
+    // attachments, counts, and viewer-relative flags. Unreadable posts
+    // return 404; page views omit them before loading shared metadata.
     mw::E<nlohmann::json>
     postView(const Post& p, const std::optional<User>& viewer) const;
     mw::E<nlohmann::json>
@@ -114,7 +115,8 @@ private:
     mw::E<nlohmann::json>
     postViewWithAuthorCache(
         const Post& post, const std::optional<User>& viewer,
-        std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache)
+        std::map<std::pair<bool, int64_t>, nlohmann::json>& author_cache,
+        const std::map<int64_t, LinkPreview>& preview_cache)
         const;
 
     const Config& config;

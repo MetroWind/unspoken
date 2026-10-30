@@ -21,9 +21,17 @@
   <details class="cw">
     <summary>{{ post.summary }}</summary>
     <div class="content">{{ post.content_html }}</div>
+    {% include "_link_preview.html" %}
   </details>
 {% else %}
   <div class="content">{{ post.content_html }}</div>
+{% if post.sensitive and post.has_link_preview %}
+  <details class="sensitive"><summary>sensitive link preview</summary>
+    {% include "_link_preview.html" %}
+  </details>
+{% else %}
+  {% include "_link_preview.html" %}
+{% endif %}
 {% endif %}
 
 {% if length(post.attachments) > 0 %}

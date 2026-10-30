@@ -61,6 +61,16 @@ set(INJA_USE_EMBEDDED_JSON FALSE)
 set(INJA_BUILD_TESTS FALSE)
 FetchContent_MakeAvailable(libmw ryml spdlog cxxopts json inja macrodown)
 
+get_target_property(UNSPOKEN_LIBMW_URL_DIR mw-url SOURCE_DIR)
+get_filename_component(UNSPOKEN_LIBMW_DIR
+    "${UNSPOKEN_LIBMW_URL_DIR}" DIRECTORY)
+# Until libmw exposes direct-proxy and decoded streaming controls.
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_SOURCE_DIR}/tools/harden_libmw.py"
+      "${UNSPOKEN_LIBMW_DIR}"
+  COMMAND_ERROR_IS_FATAL ANY)
+
 add_subdirectory(lib/actpub)
 
 set(UNSPOKEN_UNICODE_EMOJI_VERSION "17.0.0"
@@ -119,6 +129,8 @@ configure_file(
   @ONLY)
 
 set(SOURCE_FILES
+  src/link_preview.cpp
+  src/link_preview.hpp
   src/config.cpp
   src/config.hpp
   src/structs.hpp
@@ -199,6 +211,7 @@ if(UNSPOKEN_BUILD_TESTS)
     lib/actpub/tests/transaction_test.cpp
     lib/actpub/tests/store_test.cpp
     lib/actpub/tests/engine_test.cpp
+    src/link_preview_test.cpp
     src/config_test.cpp
     src/data_test.cpp
     src/auth_test.cpp

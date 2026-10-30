@@ -1076,7 +1076,7 @@ TEST(RemotePost, FetchByUriCachesAuthorAndStoresPost)
             {"id", "https://remote.test/o/1"},
             {"type", "Note"},
             {"attributedTo", "https://remote.test/u/bob"},
-            {"content", "<p>hello</p>"},
+            {"content", "<p><a href=\"https://article.test/search\">hello</a></p>"},
             {"to", std::string(AS_PUBLIC)},
         }).dump()),
         mw::HTTPResponse(200, nlohmann::json({
@@ -1097,6 +1097,8 @@ TEST(RemotePost, FetchByUriCachesAuthorAndStoresPost)
         c, *db, crypto, http, system, "https://remote.test/o/1"));
     EXPECT_EQ(post.uri, "https://remote.test/o/1");
     EXPECT_EQ(post.visibility, Visibility::PUBLIC);
+    ASSERT_TRUE(post.link_preview_id);
+    EXPECT_EQ(db->pendingLinkPreviewIds(0,10).value().size(),1u);
     ASSERT_TRUE(post.remote_author_id.has_value());
     ASSERT_EQ(http.get_urls.size(), 2u);
     EXPECT_EQ(http.get_urls[0], "https://remote.test/o/1");
@@ -1798,7 +1800,7 @@ TEST(FederationJobs, FetchThreadBackfillsAncestorsWithDepthCap)
             {"id", "https://remote.test/o/child"},
             {"type", "Note"},
             {"attributedTo", "https://remote.test/u/bob"},
-            {"content", "<p>child</p>"},
+            {"content", "<p><a href=\"https://article.test/thread\">child</a></p>"},
             {"inReplyTo", "https://remote.test/o/parent"},
             {"to", std::string(AS_PUBLIC)},
         }).dump()),
@@ -1820,7 +1822,11 @@ TEST(FederationJobs, FetchThreadBackfillsAncestorsWithDepthCap)
     ASSIGN_OR_FAIL(auto child,
                    db->getPostByUri("https://remote.test/o/child"));
     ASSERT_TRUE(child.has_value());
-    EXPECT_EQ(child->content_html, "<p>child</p>");
+    ASSERT_TRUE(child->link_preview_id);
+    EXPECT_EQ(db->pendingLinkPreviewIds(0,10).value().size(),1u);
+    EXPECT_EQ(child->content_html,
+        "<p><a href=\"https://article.test/thread\" "
+        "rel=\"nofollow noopener noreferrer\">child</a></p>");
     ASSIGN_OR_FAIL(auto parent,
                    db->getPostByUri("https://remote.test/o/parent"));
     ASSERT_TRUE(parent.has_value());
@@ -2971,4 +2977,60 @@ TEST(InboxDispatch, SignedUnknownDeletesDoNotGrowActorCache)
     EXPECT_EQ(http.get_urls.size(), 4u);
     ASSIGN_OR_FAIL(auto pruned, runInboxMaintenanceOnce(c, *db, NOW + 11));
     EXPECT_EQ(pruned, 4);
+}
+
+TEST(InboxDispatch, LinkPreviewsExcludeStructuredUrlsAndDeduplicate)
+{
+    Config config = testConfig();
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote,data->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+    nlohmann::json raw = {
+        {"id","https://remote.test/a/preview-create"},
+        {"type","Create"},{"actor",remote.uri},
+        {"object",{
+            {"id","https://remote.test/o/preview"},{"type","Note"},
+            {"attributedTo",remote.uri},{"to",std::string(AS_PUBLIC)},
+            {"content","<a href='https://other.test/u/user'>mention</a>"
+                       "<a href='https://other.test/tag'>tag</a>"
+                       "<a href='https://other.test/media'>media</a>"
+                       "<a href='https://article.test/story'>article</a>"},
+            {"tag",nlohmann::json::array({
+                {{"type","Mention"},{"href","https://other.test/u/user"}},
+                {{"type","Hashtag"},{"href","https://other.test/tag"}}})},
+            {"attachment",{{"type","Image"},
+                {"url","https://other.test/media"},{"mediaType","image/png"}}}
+        }}
+    };
+    ASSIGN_OR_FAIL(auto activity,parseActivity(raw));
+    ASSIGN_OR_FAIL(auto first,dispatchIncomingActivity(
+        config,*data,retainedSignature(remote),activity,100));
+    EXPECT_EQ(first.disposition,InboxDisposition::APPLIED);
+    ASSIGN_OR_FAIL(auto post,data->getPostByUri("https://remote.test/o/preview"));
+    ASSERT_TRUE(post);
+    ASSERT_TRUE(post->link_preview_id);
+    auto previews = data->getLinkPreviews({*post->link_preview_id}).value();
+    EXPECT_EQ(previews.begin()->second.url,"https://article.test/story");
+    ASSIGN_OR_FAIL(auto duplicate,dispatchIncomingActivity(
+        config,*data,retainedSignature(remote),activity,101));
+    EXPECT_EQ(duplicate.disposition,InboxDisposition::DUPLICATE);
+    EXPECT_EQ(data->pendingLinkPreviewIds(0,100).value().size(),1u);
+    EXPECT_FALSE(data->claimJob(101).value());
+    raw["type"] = "Update";
+    raw["id"] = "https://remote.test/a/preview-update";
+    raw["object"]["content"] = "<a href='https://new.test/article'>updated</a>";
+    ASSIGN_OR_FAIL(auto update,parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config,*data,retainedSignature(remote),
+                                         update,102));
+    ASSIGN_OR_FAIL(auto changed,data->getPostById(post->id));
+    EXPECT_NE(changed->link_preview_id,post->link_preview_id);
+    ASSERT_TRUE(changed->link_preview_id);
+    EXPECT_EQ(data->getLinkPreviews({*changed->link_preview_id}).value()
+        .begin()->second.url,"https://new.test/article");
+    raw["id"] = "https://remote.test/a/preview-remove";
+    raw["object"]["content"] = "link removed";
+    ASSIGN_OR_FAIL(auto removed,parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config,*data,retainedSignature(remote),
+                                         removed,103));
+    EXPECT_FALSE(data->getPostById(post->id).value()->link_preview_id);
 }

@@ -878,7 +878,8 @@ mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
 }
 
 mw::E<NewPost> remoteNotePostFromActivity(
-    const DataSourceInterface& data, const Activity& activity)
+    const Config& config, const DataSourceInterface& data,
+    const Activity& activity)
 {
     auto uri = normalizeRef(activity.object);
     if(!uri.has_value())
@@ -896,6 +897,24 @@ mw::E<NewPost> remoteNotePostFromActivity(
     if(remote_author.has_value()) remote_author_id = remote_author->id;
 
     NewPost np;
+    np.preview_origin = config.url_root;
+    np.previews_enabled = config.link_previews_enabled;
+    for(const char* field : {"tag", "attachment"})
+    {
+        auto entries = activity.object.value(field,nlohmann::json::array());
+        if(entries.is_object()) entries = nlohmann::json::array({entries});
+        if(!entries.is_array()) continue;
+        for(const auto& entry : entries)
+        {
+            if(!entry.is_object()) continue;
+            std::string type = jsonString(entry,"type");
+            if(std::string_view(field) == "tag" && type != "Mention" &&
+               type != "Hashtag") continue;
+            std::string url = jsonString(entry,
+                std::string_view(field) == "tag" ? "href" : "url");
+            if(!url.empty()) np.preview_excluded_urls.push_back(url);
+        }
+    }
     np.uri = *uri;
     np.remote_author_id = remote_author_id;
     auto remote_emoji = emojiTagsForObject(activity.object);
@@ -938,7 +957,7 @@ mw::E<bool> handleCreateActivity(const Config& config,
         return false;
     ASSIGN_OR_RETURN(auto existing, data.getPostByUri(*uri));
     if(existing.has_value()) return false;
-    ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(data, activity));
+    ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(config, data, activity));
     if(signature != nullptr && signature->actor_uri != activity.actor)
         return false;
     if(signature != nullptr && !signature->actor_was_retained)
@@ -1117,7 +1136,8 @@ mw::E<bool> handleDeleteActivity(const DataSourceInterface& data,
     return true;
 }
 
-mw::E<bool> handleUpdateActivity(const DataSourceInterface& data,
+mw::E<bool> handleUpdateActivity(const Config& config,
+                                 const DataSourceInterface& data,
                                  const Activity& activity,
                                  int64_t now_seconds)
 {
@@ -1189,7 +1209,7 @@ mw::E<bool> handleUpdateActivity(const DataSourceInterface& data,
     {
         return false;
     }
-    ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(data, activity));
+    ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(config, data, activity));
     DO_OR_RETURN(data.updatePost(
         existing->id, np, recipientsForObject(activity.object)));
     DO_OR_RETURN(storeRemoteAttachments(data, activity.object, existing->id));
@@ -1315,7 +1335,8 @@ public:
            object_type != "Image")
             return {};
         // Host content is a sanitized projection of the preserved wire object.
-        ASSIGN_OR_RETURN(auto post, remoteNotePostFromActivity(data, activity));
+        ASSIGN_OR_RETURN(auto post,
+                         remoteNotePostFromActivity(config, data, activity));
         if(existing)
         {
             if(activity.type == "Update")
@@ -2464,7 +2485,7 @@ mw::E<InboxDispatchResult> dispatchIncomingActivity(
         }
         else if(activity.type == "Update")
         {
-            ASSIGN_OR_RETURN(applied, handleUpdateActivity(data, activity,
+            ASSIGN_OR_RETURN(applied, handleUpdateActivity(config, data, activity,
                                                             now_seconds));
         }
 

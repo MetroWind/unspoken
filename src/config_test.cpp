@@ -28,6 +28,7 @@ Config validBase()
 TEST(Config, NormalizesTrailingSlashOnUrlRoot)
 {
     Config c = validBase();
+    EXPECT_TRUE(c.link_previews_enabled);
     c.url_root = "https://f.mws.rocks/fedi";
     ASSERT_TRUE(c.validateAndFinalize().has_value());
     EXPECT_EQ(c.url_root, "https://f.mws.rocks/fedi/");
@@ -65,6 +66,8 @@ seen_activity_retention_seconds: 11
 inbox_processing_lease_seconds: 12
 maintenance_batch_size: 13
 remote_actor_gc_grace_seconds: 14
+link_previews:
+  enabled: false
 oidc:
   issuer: "https://kc.example/realms/main"
   client_id: "unspoken"
@@ -81,6 +84,7 @@ oidc:
     EXPECT_EQ(config->inbox_processing_lease_seconds, 12);
     EXPECT_EQ(config->maintenance_batch_size, 13);
     EXPECT_EQ(config->remote_actor_gc_grace_seconds, 14);
+    EXPECT_FALSE(config->link_previews_enabled);
 }
 
 TEST(Config, FromYamlReadsVerbose)
@@ -242,4 +246,18 @@ TEST(Config, RejectsMissingAttachmentDir)
         (std::filesystem::temp_directory_path()
          / "unspoken_missing_attachment_dir").string();
     EXPECT_FALSE(c.validateAndFinalize().has_value());
+}
+
+TEST(Config, RejectsInvalidPreviewSwitch)
+{
+    auto path = std::filesystem::temp_directory_path()/
+                "unspoken_invalid_preview_config.yaml";
+    std::ofstream output(path);
+    output << "link_previews:\n  enabled: maybe\n";
+    output.close();
+    auto config = Config::fromYaml(path);
+    std::filesystem::remove(path);
+    ASSERT_FALSE(config);
+    EXPECT_NE(mw::errorMsg(config.error()).find("link_previews.enabled"),
+              std::string::npos);
 }
