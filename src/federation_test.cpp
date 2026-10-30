@@ -977,6 +977,35 @@ TEST(RemoteActor, RejectsMismatchedActorIdWithoutCaching)
     EXPECT_FALSE(cached.has_value());
 }
 
+TEST(RemoteActor, WebFingerAllowsOnlyBoundedPublicHttpsRedirects)
+{
+    ap::TransportConfig config;
+    FakeSession http;
+    http.response = mw::HTTPResponse(200, R"({"links":[{
+        "rel":"self", "type":"application/activity+json",
+        "href":"https://mastodon.remote.test/users/bob"
+    }]})");
+    ASSIGN_OR_FAIL(auto uri, ap::discoverActorUri(
+        config, http, "bob@remote.test"));
+    EXPECT_EQ(uri, "https://mastodon.remote.test/users/bob");
+    EXPECT_TRUE(http.follow);
+    EXPECT_EQ(http.redirections, 5);
+    EXPECT_EQ(http.protocols, "https");
+    EXPECT_EQ(http.redirect_protocols, "https");
+    ASSERT_TRUE(http.filter);
+    EXPECT_FALSE(http.filter({mw::AddressFamily::IPV4, {127, 0, 0, 1}, 443}));
+    EXPECT_FALSE(http.filter({mw::AddressFamily::IPV4, {10, 0, 0, 1}, 443}));
+    EXPECT_TRUE(http.filter({mw::AddressFamily::IPV4, {93, 184, 216, 34}, 443}));
+
+    config.dev.allow_http_url_root = true;
+    config.dev.outbound_allow_private_hosts = {"remote.test"};
+    ASSIGN_OR_FAIL(auto dev_uri, ap::discoverActorUri(
+        config, http, "bob@remote.test"));
+    EXPECT_EQ(dev_uri, uri);
+    EXPECT_FALSE(http.follow);
+    EXPECT_EQ(http.redirections, 0);
+}
+
 TEST(RemoteActor, WebFingerResolvesSelfLinkWithoutCachingActor)
 {
     Config c = testConfig();

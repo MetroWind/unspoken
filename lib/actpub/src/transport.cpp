@@ -882,6 +882,16 @@ mw::E<std::string> discoverActorUri(const TransportConfig& config,
         "/.well-known/webfinger?resource=" + percentEncode("acct:" + acct);
 
     DO_OR_RETURN(hardenOutboundSession(config, http, uri));
+    // WebFinger is unsigned and commonly delegated to another HTTPS host.
+    // The address filter still checks every connection, including redirects.
+    // Keep development private-host exceptions confined to their named host.
+    const bool dev_private_host = config.dev.allow_http_url_root &&
+        hostMatches(domain, config.dev.outbound_allow_private_hosts);
+    if(!dev_private_host)
+    {
+        DO_OR_RETURN(http.maxRedirections(5));
+        http.followRedirects(true);
+    }
     ASSIGN_OR_RETURN(auto req, webFingerRequest(config, uri));
     ASSIGN_OR_RETURN(auto bounded, getBounded(http, req, 2 * 1024 * 1024));
     const auto* res = &bounded;
