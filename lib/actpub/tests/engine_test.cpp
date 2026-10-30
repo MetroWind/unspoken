@@ -120,6 +120,58 @@ TEST_F(FederationEngine, IncomingProjectionAndReceiptCommitTogether)
         1);
 }
 
+TEST_F(FederationEngine, FollowersOnlyCreateReachesAcceptedLocalFollower)
+{
+    ap::Store store(*db);
+    ASSIGN_OR_FAIL(auto remote, store.getRemoteActorByUri(
+        remote_signer.actor_uri));
+    ASSERT_TRUE(remote);
+    const std::string followers = remote->uri + "/followers";
+    remote->actor_json = nlohmann::json({{"followers", followers}}).dump();
+    ASSERT_TRUE(store.upsertRemoteActor(*remote).has_value());
+    ap::Follow follow;
+    follow.follower_uri = config.system_actor_uri;
+    follow.followee_uri = remote->uri;
+    ASSERT_TRUE(store.addFollow(follow).has_value());
+    auto raw = create();
+    raw["to"] = nlohmann::json::array({followers});
+    raw["object"]["to"] = raw["to"];
+    auto req = request(raw);
+    ASSIGN_OR_FAIL(auto pending, session->prepareInbox(req, "", now));
+    ASSIGN_OR_FAIL(auto skipped, session->acceptInbox(std::move(pending), now));
+    EXPECT_FALSE(skipped.applied);
+    EXPECT_EQ(db->evalToValue<int64_t>(
+        "SELECT count(*) FROM host_events").value(), 0);
+
+    ASSERT_TRUE(store.setFollowState(follow.follower_uri, follow.followee_uri,
+                                    ap::FollowState::ACCEPTED).has_value());
+    // An unapplied inbox activity can be retried after recipient selection.
+    ASSIGN_OR_FAIL(auto prepared, session->prepareInbox(req, "", now));
+    ASSIGN_OR_FAIL(auto result, session->acceptInbox(std::move(prepared), now));
+    EXPECT_TRUE(result.applied);
+    EXPECT_EQ(db->evalToValue<int64_t>(
+        "SELECT count(*) FROM host_events").value(), 1);
+    ASSIGN_OR_FAIL(auto repeated, session->prepareInbox(req, "", now));
+    ASSIGN_OR_FAIL(auto duplicate,
+                   session->acceptInbox(std::move(repeated), now));
+    EXPECT_TRUE(duplicate.duplicate);
+    EXPECT_EQ(db->evalToValue<int64_t>(
+        "SELECT count(*) FROM host_events").value(), 1);
+
+    raw["id"] = "https://remote.test/create/2";
+    raw["object"]["id"] = "https://remote.test/article/2";
+    raw["to"] = nlohmann::json::array({"https://other.test/followers"});
+    raw["object"]["to"] = raw["to"];
+    auto unrelated_req = request(raw);
+    ASSIGN_OR_FAIL(auto unrelated,
+                   session->prepareInbox(unrelated_req, "", now));
+    ASSIGN_OR_FAIL(auto rejected,
+                   session->acceptInbox(std::move(unrelated), now));
+    EXPECT_FALSE(rejected.applied);
+    EXPECT_EQ(db->evalToValue<int64_t>(
+        "SELECT count(*) FROM host_events").value(), 1);
+}
+
 TEST_F(FederationEngine, FailedProjectionRollsBackObjectAndReceipt)
 {
     application.fail = true;

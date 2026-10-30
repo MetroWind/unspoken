@@ -686,6 +686,19 @@ Session::recipients(const Activity& activity) const
     ASSIGN_OR_RETURN(auto locals,
                      (db.eval<std::string, std::string>(
                          "SELECT uri,document_json FROM ap_local_actors")));
+    ASSIGN_OR_RETURN(auto remote, store.getRemoteActorByUri(activity.actor));
+    std::optional<std::string> remote_followers;
+    if(remote)
+    {
+        const auto doc = nlohmann::json::parse(
+            remote->actor_json, nullptr, false);
+        if(doc.is_object())
+            remote_followers = normalizeRef(
+                doc.value("followers", nlohmann::json()));
+    }
+    const bool to_remote_followers = remote_followers &&
+        std::find(addresses.begin(), addresses.end(), *remote_followers)
+            != addresses.end();
     for(const auto& row : locals)
     {
         const auto& uri = std::get<0>(row);
@@ -701,6 +714,11 @@ Session::recipients(const Activity& activity) const
         bool is_public =
             publicDocument(activity.raw) ||
             (activity.object.is_object() && publicDocument(activity.object));
+        if(!addressed && to_remote_followers)
+        {
+            ASSIGN_OR_RETURN(auto follow, store.getFollow(uri, activity.actor));
+            addressed = follow && follow->state == FollowState::ACCEPTED;
+        }
         if(!addressed && is_public)
         {
             ASSIGN_OR_RETURN(auto follow, store.getFollow(uri, activity.actor));
