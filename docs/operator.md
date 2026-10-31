@@ -388,4 +388,6 @@ retention, cannot be recovered through this repair.
 Locally composed mentions use profile links derived from resolved Mention
 tags and post recipients. Older local posts with plain mention spans are
 linked when displayed, without rewriting saved posts or making network
-requests. Self-mentions retain their original text and addressing.
+requests. Displayed mention links show only `@username`, with the full handle in a
+tooltip and screen-reader label. Stored text, profile URLs, self-mentions,
+and federation addressing are preserved.

@@ -1427,9 +1427,33 @@ TEST(ServiceView, LinksLegacyLocalAndRemoteMentionsWithoutRewritingPosts)
     EXPECT_NE(html.find("href=\"https://f.test/u/mw\""),std::string::npos);
     EXPECT_NE(html.find("href=\"https://m.jinwei.me/users/clark\""),
               std::string::npos);
-    EXPECT_NE(html.find(">@clark@m.jinwei.me</a>"),std::string::npos);
+    EXPECT_NE(html.find(">@clark</a>"),std::string::npos);
+    EXPECT_NE(html.find("title=\"@clark@m.jinwei.me\""),std::string::npos);
+    EXPECT_NE(html.find(">@mw</a>"),std::string::npos);
+    EXPECT_NE(html.find("title=\"@mw@f.test\""),std::string::npos);
     EXPECT_EQ(data->getPostById(post.id).value()->content_html,old.content_html);
     auto object = noteJson(config,post,author,recipients,{},&emoji);
     EXPECT_NE(object["content"].get<std::string>().find(
         "href=\"https://m.jinwei.me/users/clark\""),std::string::npos);
+}
+
+TEST(Render, ShortMentionLabelsPreserveAccountIdentityAndOrdinaryLinks)
+{
+    const std::string html =
+        "<p><a class=\"mention\" href=\"https://one.test/users/bob\">"
+        "@bob@one.test</a> "
+        "<a class=\"mention\" href=\"https://two.test/users/bob\">"
+        "@bob@two.test</a> "
+        "<a href=\"https://article.test/\">@bob@three.test</a></p>";
+    auto displayed = shortenMentionLabels(html);
+    EXPECT_NE(displayed.find("title=\"@bob@one.test\""),std::string::npos);
+    EXPECT_NE(displayed.find("title=\"@bob@two.test\""),std::string::npos);
+    EXPECT_NE(displayed.find("aria-label=\"@bob@two.test\""),std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://one.test/users/bob\""),
+              std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://two.test/users/bob\""),
+              std::string::npos);
+    EXPECT_NE(displayed.find(">@bob</a>"),std::string::npos);
+    EXPECT_NE(displayed.find(">@bob@three.test</a>"),std::string::npos);
+    EXPECT_EQ(shortenMentionLabels(displayed),displayed);
 }

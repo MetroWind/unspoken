@@ -1,6 +1,7 @@
 #include "render.hpp"
 
 #include <cctype>
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <memory>
@@ -286,6 +287,66 @@ bool linkMentionNodes(xmlNode* node,
     return changed;
 }
 
+bool shortenMentionNodes(xmlNode* node)
+{
+    bool changed = false;
+    for(; node; node = node->next)
+    {
+        if(node->type != XML_ELEMENT_NODE) continue;
+        auto classes = attrValue(node,"class");
+        if(xmlStrEqual(node->name,BAD_CAST "a") && classes &&
+           *classes == "mention")
+        {
+            std::unique_ptr<xmlChar,decltype(xmlFree)> text(
+                xmlNodeGetContent(node),xmlFree);
+            std::string full = text ?
+                reinterpret_cast<const char*>(text.get()) : "";
+            auto separator = full.find('@',1);
+            if(full.starts_with('@') && separator > 1 &&
+               separator != std::string::npos && separator+1 < full.size() &&
+               full.find('@',separator+1) == std::string::npos &&
+               std::none_of(full.begin(),full.end(),[](unsigned char c)
+                            { return std::isspace(c); }))
+            {
+                auto local = full.substr(0,separator);
+                xmlSetProp(node,BAD_CAST "title",BAD_CAST full.c_str());
+                xmlSetProp(node,BAD_CAST "aria-label",BAD_CAST full.c_str());
+                xmlNodeSetContent(node,BAD_CAST "");
+                xmlAddChild(node,xmlNewText(BAD_CAST local.c_str()));
+                changed = true;
+            }
+        }
+        changed = shortenMentionNodes(node->children) || changed;
+    }
+    return changed;
+}
+
+std::string transformMentionHtml(std::string_view html,
+    const std::map<std::string,std::string>& links, bool shorten_labels)
+{
+    if(html.empty() || (!shorten_labels && links.empty()) ||
+       html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+        return std::string(html);
+    std::unique_ptr<xmlDoc,decltype(&xmlFreeDoc)> doc(
+        htmlReadMemory(html.data(),static_cast<int>(html.size()),nullptr,
+            "UTF-8",HTML_PARSE_NONET | HTML_PARSE_NODEFDTD |
+            HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING),&xmlFreeDoc);
+    if(!doc) return std::string(html);
+    auto* body = findBody(doc->children);
+    if(!body) return std::string(html);
+    bool changed = !links.empty() && linkMentionNodes(body->children,links,false);
+    if(shorten_labels) changed = shortenMentionNodes(body->children) || changed;
+    if(!changed) return std::string(html);
+    std::unique_ptr<xmlBuffer,decltype(&xmlBufferFree)> buffer(
+        xmlBufferCreate(),&xmlBufferFree);
+    if(!buffer) return std::string(html);
+    for(auto* node = body->children; node; node = node->next)
+        if(htmlNodeDump(buffer.get(),doc.get(),node) < 0)
+            return std::string(html);
+    return std::string(reinterpret_cast<const char*>(xmlBufferContent(buffer.get())),
+                        xmlBufferLength(buffer.get()));
+}
+
 } // namespace
 
 std::string renderMarkdown(const std::string& source)
@@ -404,23 +465,13 @@ std::string linkMentions(std::string_view html, const nlohmann::json& tags)
            !url->password().empty()) continue;
         links.emplace(name->get<std::string>(),href->get<std::string>());
     }
-    if(links.empty()) return std::string(html);
-    std::unique_ptr<xmlDoc,decltype(&xmlFreeDoc)> doc(
-        htmlReadMemory(html.data(),static_cast<int>(html.size()),nullptr,
-            "UTF-8",HTML_PARSE_NONET | HTML_PARSE_NODEFDTD |
-            HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING),&xmlFreeDoc);
-    if(!doc) return std::string(html);
-    auto* body = findBody(doc->children);
-    if(!body || !linkMentionNodes(body->children,links,false))
-        return std::string(html);
-    std::unique_ptr<xmlBuffer,decltype(&xmlBufferFree)> buffer(
-        xmlBufferCreate(),&xmlBufferFree);
-    if(!buffer) return std::string(html);
-    for(auto* node = body->children; node; node = node->next)
-        if(htmlNodeDump(buffer.get(),doc.get(),node) < 0)
-            return std::string(html);
-    return std::string(reinterpret_cast<const char*>(xmlBufferContent(buffer.get())),
-                        xmlBufferLength(buffer.get()));
+    return transformMentionHtml(html,links,false);
+}
+
+std::string shortenMentionLabels(std::string_view html)
+{
+    if(html.find("mention") == std::string::npos) return std::string(html);
+    return transformMentionHtml(html,{},true);
 }
 
 std::string sanitizeRemoteHtml(std::string_view html)

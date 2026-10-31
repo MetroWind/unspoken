@@ -61,6 +61,10 @@ RenderedPostContent parsePostContent(const std::string& source,
 // Preserve visible text and existing anchors; perform no network resolution.
 std::string linkMentions(std::string_view html, const nlohmann::json& tags);
 
+// Display marked mention links as @username, keeping the full handle in
+// title and accessibility labels. Preserve profile URLs and other text.
+std::string shortenMentionLabels(std::string_view html);
+
 // Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
 // escaping decoded text and attributes once before storage or display.
 std::string sanitizeRemoteHtml(std::string_view html);

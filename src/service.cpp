@@ -920,14 +920,15 @@ Service::postViewWithAuthorCache(
     j["id"] = p.id;
     j["uri"] = esc(p.uri);
     j["url"] = esc(p.uri); // local posts: the uri is the canonical URL
-    j["content_html"] = p.content_html; // already rendered/sanitized HTML
+    std::string content_html = p.content_html; // rendered/sanitized HTML
     if(p.local_author_id && p.content_source &&
        p.content_html.find("<span class=\"mention\"") != std::string::npos)
     {
         ASSIGN_OR_RETURN(auto recipients,data.getPostRecipients(p.id));
-        j["content_html"] = linkMentions(p.content_html,
+        content_html = linkMentions(p.content_html,
             postTagsForSource(config,recipients,*p.content_source,&emoji));
     }
+    j["content_html"] = shortenMentionLabels(content_html);
     j["summary"] = esc(p.summary.value_or(""));
     j["has_summary"] = p.summary.has_value() && !p.summary->empty();
     j["sensitive"] = p.sensitive;
