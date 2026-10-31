@@ -129,6 +129,8 @@ configure_file(
   @ONLY)
 
 set(SOURCE_FILES
+  src/follow_import.cpp
+  src/follow_import.hpp
   src/link_preview.cpp
   src/link_preview.hpp
   src/config.cpp
@@ -212,6 +214,7 @@ if(UNSPOKEN_BUILD_TESTS)
     lib/actpub/tests/store_test.cpp
     lib/actpub/tests/engine_test.cpp
     src/link_preview_test.cpp
+    src/follow_import_test.cpp
     src/config_test.cpp
     src/data_test.cpp
     src/auth_test.cpp

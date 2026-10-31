@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 
 #include <cxxopts.hpp>
@@ -10,6 +11,7 @@
 #include "config.hpp"
 #include "data.hpp"
 #include "federation.hpp"
+#include "follow_import.hpp"
 
 int main(int argc, char** argv)
 {
@@ -18,6 +20,10 @@ int main(int argc, char** argv)
     cmd_options.add_options()
         ("c,config", "Config file",
          cxxopts::value<std::string>()->default_value("/etc/unspoken.yaml"))
+        ("import-follows", "Import one account handle per line, then exit",
+         cxxopts::value<std::string>())
+        ("user", "Local username for --import-follows",
+         cxxopts::value<std::string>())
         ("v,verbose", "Verbose (debug) logging")
         ("h,help", "Print this message.");
     auto opts = cmd_options.parse(argc, argv);
@@ -26,6 +32,25 @@ int main(int argc, char** argv)
     {
         std::cout << cmd_options.help() << std::endl;
         return 0;
+    }
+
+    const bool importing = opts.count("import-follows") > 0;
+    if(importing != (opts.count("user") > 0) ||
+       (importing && opts["user"].as<std::string>().empty()))
+    {
+        std::cerr << "Use --import-follows FILE with --user USERNAME.\n";
+        return 1;
+    }
+    std::ifstream follows;
+    if(importing)
+    {
+        follows.open(opts["import-follows"].as<std::string>());
+        if(!follows)
+        {
+            std::cerr << "Cannot open follow list: "
+                      << opts["import-follows"].as<std::string>() << '\n';
+            return 1;
+        }
     }
 
     spdlog::set_pattern("[%l] %v");
@@ -78,6 +103,19 @@ int main(int argc, char** argv)
                       mw::errorMsg(db_init.error()));
         return 1;
     }
+    std::optional<unspoken::User> import_user;
+    if(importing)
+    {
+        auto user = (*db_init)->getUserByUsername(opts["user"].as<std::string>());
+        if(!user || !*user)
+        {
+            spdlog::error("Cannot import for local user {}: {}",
+                opts["user"].as<std::string>(),
+                user ? "account not found" : mw::errorMsg(user.error()));
+            return 1;
+        }
+        import_user = **user;
+    }
     mw::Crypto federation_crypto;
     mw::HTTPSession federation_http;
     auto federation_init = unspoken::initializeFederationLibrary(
@@ -87,6 +125,20 @@ int main(int argc, char** argv)
         spdlog::error("Failed to initialize federation: {}",
                       mw::errorMsg(federation_init.error()));
         return 1;
+    }
+    if(importing)
+    {
+        auto result = unspoken::importFollows(*config,**db_init,
+            federation_crypto,federation_http,*import_user,follows,std::cout);
+        if(!result)
+        {
+            spdlog::error("Follow import stopped: {}",mw::errorMsg(result.error()));
+            return 1;
+        }
+        std::cout << "Import complete: " << result->queued << " queued, "
+                  << result->local << " local, " << result->skipped
+                  << " skipped, " << result->failed << " failed.\n";
+        return result->failed == 0 ? 0 : 1;
     }
     auto repaired = (*db_init)->repairMentionLinkPreviews(
         config->url_root,config->link_previews_enabled);

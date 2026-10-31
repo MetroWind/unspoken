@@ -334,3 +334,34 @@ with named `nf` classes as listed in its
 needed on the server or viewer's device. The stylesheet and font are loaded
 from Nerd Fonts; a custom Content Security Policy needs to permit that
 origin for styles and fonts.
+
+## Importing follows
+
+Import a plain-text list containing one `@user@domain` (or `user@domain`)
+per line for an existing local account:
+
+```sh
+unspoken --config /etc/unspoken/config.yaml \
+    --import-follows follows.txt --user YOUR_USERNAME
+```
+
+The command resolves accounts sequentially, pauses 250 ms between unique
+entries, and exits after saving the follows. New remote follows are pending
+until their servers accept them. Delivery uses the normal persisted job queue
+and retry policy; keep the server running to deliver requests and receive
+acceptances, or start it afterward to drain the queue. Local follows are
+accepted immediately.
+
+Existing accepted or pending follows, duplicate entries, and self-follows
+are skipped. The import adds relationships without removing existing ones.
+Blank lines and lines starting with `#` are ignored. Resolution or per-account
+write failures are reported and do not stop later entries. The summary counts
+queued, local, skipped, and failed entries; any failed entry produces a
+nonzero exit status. Rerun the same file to retry failures without duplicating
+successful follows. WebFinger resolution may still contact remote servers
+when rerunning. Each new remote actor, pending follow, and delivery job is
+committed together. Network resolution happens outside write transactions.
+
+This command starts no HTTP server or workers, offers no dry-run mode, and
+requires no additional database migration. Keep personal follow-list files
+out of source control.

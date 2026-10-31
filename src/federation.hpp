@@ -164,6 +164,11 @@ mw::E<int64_t> enqueueDeliveryJob(const DataSourceInterface& data,
 mw::E<std::vector<std::string>> deliveryInboxesForRecipients(
     const Config& config, const DataSourceInterface& data,
     const std::vector<PostRecipient>& recipients);
+// Publish a Follow and enqueue delivery inside the caller's write boundary.
+mw::E<void> enqueueFollowActivity(
+    const Config& config, const DataSourceInterface& data, const User& viewer,
+    std::string_view target_actor_uri, std::string_view activity_id,
+    int64_t now);
 mw::E<std::vector<int64_t>> enqueueOutboundDelivery(
     const Config& config, const DataSourceInterface& data,
     std::string_view signer_actor_uri, const nlohmann::json& activity,

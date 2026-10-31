@@ -1260,29 +1260,6 @@ mw::E<unspoken::RemoteActor> ensureRemoteActor(
         config, data, crypto, http, system_actor, actor_uri, now_seconds);
 }
 
-mw::E<void> enqueueFollowActivity(
-    const Config& config, const unspoken::DataSourceInterface& data,
-    const unspoken::User& viewer, std::string_view target_actor_uri,
-    std::string_view activity_id, int64_t now)
-{
-    const std::string actor_uri = config.url_root + "u/" + viewer.username;
-    nlohmann::json activity = {
-        {"@context", "https://www.w3.org/ns/activitystreams"},
-        {"id", std::string(activity_id)},
-        {"type", "Follow"},
-        {"actor", actor_uri},
-        {"object", std::string(target_actor_uri)},
-        {"to", nlohmann::json::array({std::string(target_actor_uri)})},
-    };
-    std::vector<unspoken::PostRecipient> recipients = {
-        {0, std::string(target_actor_uri), "to"},
-    };
-    ASSIGN_OR_RETURN(auto jobs, unspoken::enqueueOutboundDelivery(
-        config, data, actor_uri, activity, recipients, now));
-    (void)jobs;
-    return {};
-}
-
 mw::E<void> enqueueUndoFollowActivity(
     const Config& config, const unspoken::DataSourceInterface& data,
     const unspoken::User& viewer, const unspoken::Follow& follow,
@@ -1763,7 +1740,7 @@ void App::handleFollow(const Request& req, Response& res) const
     if(respondIfError(svc.setFollowActor(
         *viewer, target_actor, true, unspoken::FollowState::PENDING,
         activity_id), res)) return;
-    if(respondIfError(enqueueFollowActivity(
+    if(respondIfError(unspoken::enqueueFollowActivity(
         config, *ds, *viewer, target_actor, activity_id, now), res)) return;
     if(respondIfError(write_tx.commit(), res))
         return;
