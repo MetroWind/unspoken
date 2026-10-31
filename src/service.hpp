@@ -99,6 +99,10 @@ public:
     mw::E<nlohmann::json>
     postViews(const std::vector<Post>& posts,
               const std::optional<User>& viewer) const;
+    // Order visible replies beneath their parents with capped indentation
+    // and connector metadata. Missing or hidden parents start new roots.
+    mw::E<nlohmann::json> threadViews(const std::vector<Post>& posts,
+        const std::optional<User>& viewer) const;
     // Persist a complete local profile update after service validation.
     mw::E<void> updateProfile(const User& user,
                               const UserProfileUpdate& update) const;

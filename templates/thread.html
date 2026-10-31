@@ -2,7 +2,17 @@
 <h1 class="page-title">thread</h1>
 <div class="timeline thread">
 {% for post in posts %}
+  <div class="thread-row thread-depth-{{ post.thread_depth }}">
+    <div class="thread-guides" aria-hidden="true">
+{% for guide in post.thread_guides %}
+      <span class="thread-guide thread-level-{{ guide.level }}{% if guide.branch %} branch{% endif %}{% if guide.last %} last{% endif %}"></span>
+{% endfor %}
+    </div>
+{% if post.show_parent %}
+    <a class="thread-parent" href="#p{{ post.parent_id }}">replying to {{ post.parent_handle }}</a>
+{% endif %}
 {% include "_post.html" %}
+  </div>
 {% endfor %}
 </div>
 

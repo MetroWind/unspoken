@@ -396,3 +396,9 @@ Outgoing posts represent custom emoji as `:shortcode:` text with ActivityPub
 Emoji tags so Mastodon and other receivers render their own inline images.
 Local display retains the stored emoji images. Already delivered posts are
 not automatically updated on remote servers.
+
+Thread pages group replies beneath their parent with connector lines and
+chronological siblings. Indentation stops after four levels (with smaller
+steps on mobile); deeper replies link back to their parent. The permalink's
+post remains highlighted. Missing or unreadable parents start separate roots,
+without exposing hidden post content or author information.

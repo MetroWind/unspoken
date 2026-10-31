@@ -1297,6 +1297,8 @@ TEST(ServiceView, PagesDeferEmojiCatalogUntilPickerOpens)
 
     ctx["reply_to_id"] = post.id;
     ctx["reply_prefill"] = "@alice ";
+    ASSIGN_OR_FAIL(auto thread_views,svc.threadViews({post},alice));
+    ctx["posts"] = thread_views;
     html = templates.render_file("thread.html", ctx);
     first = html.find(catalog);
     ASSERT_NE(first, std::string::npos);
@@ -1502,4 +1504,74 @@ TEST(Render, FederationEmojiShortcodesPreserveOtherHtml)
     EXPECT_NE(content.find("alt=\"not a shortcode\""),std::string::npos);
     EXPECT_NE(content.find("&amp; text"),std::string::npos);
     EXPECT_EQ(emojiShortcodesForFederation(content),content);
+}
+
+TEST(ServiceView, ThreadBranchesStayWithParentsAndCapIndentation)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author,data->createUser(NewUser{
+        "mw","mw","","iss","mw","PRIV","PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    std::vector<Post> posts;
+    for(int64_t i = 1; i <= 8; ++i)
+    {
+        Post post;
+        post.id = i;
+        post.uri = "https://f.test/p/" + std::to_string(i);
+        post.local_author_id = author.id;
+        post.content_html = "<p>reply</p>";
+        post.created_at = i;
+        if(i > 1) post.in_reply_to_uri = posts.back().uri;
+        posts.push_back(post);
+    }
+    // The second child predates the first child's own replies.
+    posts[2].in_reply_to_uri = posts[0].uri;
+    posts[3].in_reply_to_uri = posts[1].uri;
+    ASSIGN_OR_FAIL(auto views,service.threadViews(posts,std::nullopt));
+    std::vector<int64_t> ids;
+    for(const auto& view : views) ids.push_back(view["id"]);
+    EXPECT_EQ(ids,(std::vector<int64_t>{1,2,4,5,6,7,8,3}));
+    EXPECT_EQ(views[1]["thread_depth"],1);
+    EXPECT_EQ(views[2]["thread_depth"],2);
+    EXPECT_TRUE(views[2]["thread_guides"][0]["last"] == false);
+    EXPECT_EQ(views[6]["thread_depth"],4);
+    EXPECT_EQ(views[6]["parent_id"],7);
+    EXPECT_EQ(views[6]["parent_handle"],"@mw@f.test");
+    EXPECT_TRUE(views[6]["show_parent"].get<bool>());
+    EXPECT_EQ(views[7]["thread_depth"],1);
+    EXPECT_TRUE(views[7]["thread_guides"][0]["last"].get<bool>());
+
+    nlohmann::json ctx = {
+        {"site",{{"title","Test"},{"root","/"},{"commit","test"}}},
+        {"logged_in",false}, {"error",""}, {"focus_id",8}, {"posts",views}};
+    inja::Environment templates("templates/");
+    auto html = templates.render_file("thread.html",ctx);
+    EXPECT_NE(html.find("thread-depth-4"),std::string::npos);
+    EXPECT_NE(html.find("thread-guide thread-level-1 branch last"),
+              std::string::npos);
+    EXPECT_NE(html.find("href=\"#p7\">replying to @mw@f.test"),
+              std::string::npos);
+    EXPECT_NE(html.find("post focus\" id=\"p8\""),std::string::npos);
+
+    // Missing parents form roots; cyclic input still emits each post once.
+    posts[0].in_reply_to_uri = posts[1].uri;
+    posts[2].in_reply_to_uri = "https://missing.test/post";
+    ASSIGN_OR_FAIL(auto cycles,service.threadViews(posts,std::nullopt));
+    EXPECT_EQ(cycles.size(),posts.size());
+    EXPECT_EQ(cycles[0]["id"],3);
+    EXPECT_EQ(cycles[0]["thread_depth"],0);
+
+    posts[1].visibility = Visibility::DIRECT;
+    ASSIGN_OR_FAIL(auto filtered,service.threadViews(posts,std::nullopt));
+    EXPECT_EQ(filtered.size(),posts.size()-1);
+    for(const auto& view : filtered)
+    {
+        EXPECT_NE(view["id"],2);
+        if(view["id"] == 4)
+        {
+            EXPECT_EQ(view["thread_depth"],0);
+        }
+    }
 }

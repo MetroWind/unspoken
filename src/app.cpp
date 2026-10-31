@@ -963,7 +963,7 @@ void App::handlePostView(const Request& req, Response& res) const
         if(ok) visible_thread.push_back(std::move(p));
     }
     if(visible_thread.empty()) visible_thread.push_back(*post);
-    ASSIGN_OR_RESPOND_ERROR(auto views, svc.postViews(visible_thread, viewer),
+    ASSIGN_OR_RESPOND_ERROR(auto views, svc.threadViews(visible_thread, viewer),
                             res);
 
     auto ctx = baseContext(req, viewer);

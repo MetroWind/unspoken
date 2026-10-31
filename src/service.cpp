@@ -1233,4 +1233,88 @@ Service::postViews(const std::vector<Post>& posts,
     return arr;
 }
 
+mw::E<nlohmann::json> Service::threadViews(const std::vector<Post>& posts,
+    const std::optional<User>& viewer) const
+{
+    ASSIGN_OR_RETURN(auto views,postViews(posts,viewer));
+    std::map<int64_t,nlohmann::json> by_id;
+    for(auto& view : views) by_id.emplace(view["id"].get<int64_t>(),view);
+    std::map<std::string,const Post*> by_uri;
+    std::vector<const Post*> ordered;
+    for(const auto& post : posts)
+        if(by_id.contains(post.id) && by_uri.emplace(post.uri,&post).second)
+            ordered.push_back(&post);
+    std::sort(ordered.begin(),ordered.end(),[](const Post* a, const Post* b)
+    {
+        if(a->created_at != b->created_at) return a->created_at < b->created_at;
+        return a->id < b->id;
+    });
+    std::map<std::string,std::vector<const Post*>> children;
+    std::vector<const Post*> roots;
+    for(const auto* post : ordered)
+    {
+        if(post->in_reply_to_uri && by_uri.contains(*post->in_reply_to_uri) &&
+           *post->in_reply_to_uri != post->uri)
+            children[*post->in_reply_to_uri].push_back(post);
+        else roots.push_back(post);
+    }
+    struct PendingPost
+    {
+        const Post* post;
+        size_t depth;
+        std::vector<bool> rails;
+    };
+    constexpr size_t MAX_THREAD_DEPTH = 4;
+    std::set<int64_t> seen;
+    nlohmann::json result = nlohmann::json::array();
+    // A second pass renders malformed cycles once without recursion.
+    roots.insert(roots.end(),ordered.begin(),ordered.end());
+    for(const auto* root : roots)
+    {
+        std::vector<PendingPost> pending = {{root,0,{}}};
+        while(!pending.empty())
+        {
+            auto item = std::move(pending.back());
+            pending.pop_back();
+            const auto& post = *item.post;
+            if(!seen.insert(post.id).second) continue;
+            auto view = by_id.at(post.id);
+            auto depth = item.depth;
+            view["thread_depth"] = std::min(depth,MAX_THREAD_DEPTH);
+            view["thread_guides"] = nlohmann::json::array();
+            for(size_t level = 0; level < std::min(depth,MAX_THREAD_DEPTH);
+                ++level)
+            {
+                bool branch = level + 1 == depth;
+                if(item.rails[level] || branch)
+                    view["thread_guides"].push_back({
+                        {"level",level+1}, {"branch",branch},
+                        {"last",branch && !item.rails[level]}});
+            }
+            view["show_parent"] = false;
+            if(depth >= MAX_THREAD_DEPTH && post.in_reply_to_uri)
+            {
+                auto parent = by_uri.find(*post.in_reply_to_uri);
+                if(parent != by_uri.end())
+                {
+                    const auto& parent_view = by_id.at(parent->second->id);
+                    view["show_parent"] = true;
+                    view["parent_id"] = parent->second->id;
+                    view["parent_handle"] = parent_view["author"]["handle"];
+                }
+            }
+            result.push_back(std::move(view));
+            const auto& replies = children[post.uri];
+            for(size_t i = replies.size(); i > 0; --i)
+            {
+                auto rails = item.rails;
+                if(depth < MAX_THREAD_DEPTH)
+                    rails.push_back(i < replies.size());
+                pending.push_back({replies[i-1],depth+1,std::move(rails)});
+            }
+        }
+    }
+    return result;
+}
+
 } // namespace unspoken
