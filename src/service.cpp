@@ -22,6 +22,7 @@
 #include "config.hpp"
 #include "data.hpp"
 #include "render.hpp"
+#include "federation.hpp"
 #include "structs.hpp"
 
 namespace unspoken
@@ -400,6 +401,8 @@ mw::E<Post> Service::createPost(const User& author,
             mentioned_actors.push_back(uri);
     }
 
+    std::vector<PostRecipient> recipients =
+        recipientsFor(p.visibility,author.username,mentioned_actors);
     NewPost np;
     np.preview_origin = config.url_root;
     np.previews_enabled = config.link_previews_enabled;
@@ -412,15 +415,14 @@ mw::E<Post> Service::createPost(const User& author,
                 localAttachmentUrl(config,*attachment)));
     }
     np.local_author_id = author.id;
-    np.content_html = rendered.html;
+    np.content_html = linkMentions(rendered.html,
+        postTagsForSource(config,recipients,p.source,&emoji));
     np.content_source = p.source;
     np.summary = p.summary;
     np.sensitive = p.sensitive;
     np.visibility = p.visibility;
     np.in_reply_to_uri = p.in_reply_to_uri;
 
-    std::vector<PostRecipient> recipients =
-        recipientsFor(p.visibility, author.username, mentioned_actors);
     std::string prefix = config.url_root + "p/";
     ASSIGN_OR_RETURN(Post post, data.insertPost(np, recipients, prefix));
 
@@ -919,6 +921,13 @@ Service::postViewWithAuthorCache(
     j["uri"] = esc(p.uri);
     j["url"] = esc(p.uri); // local posts: the uri is the canonical URL
     j["content_html"] = p.content_html; // already rendered/sanitized HTML
+    if(p.local_author_id && p.content_source &&
+       p.content_html.find("<span class=\"mention\"") != std::string::npos)
+    {
+        ASSIGN_OR_RETURN(auto recipients,data.getPostRecipients(p.id));
+        j["content_html"] = linkMentions(p.content_html,
+            postTagsForSource(config,recipients,*p.content_source,&emoji));
+    }
     j["summary"] = esc(p.summary.value_or(""));
     j["has_summary"] = p.summary.has_value() && !p.summary->empty();
     j["sensitive"] = p.sensitive;

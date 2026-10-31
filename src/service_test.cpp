@@ -16,6 +16,7 @@
 #include "emoji.hpp"
 #include "render.hpp"
 #include "service.hpp"
+#include "federation.hpp"
 #include "structs.hpp"
 
 using namespace unspoken;
@@ -1350,4 +1351,85 @@ TEST(ServiceTimeline, RendersFollowedLocalBoostWithEscapedAttribution)
     EXPECT_NE(html.find("&lt;Bob &amp; Co&gt;"),std::string::npos);
     EXPECT_NE(html.find("A post from somebody else"),std::string::npos);
     EXPECT_EQ(html.find("<Bob & Co>"),std::string::npos);
+}
+
+TEST(Render, MentionLinksUseResolvedTagsAndEscapeAttributes)
+{
+    const std::string html = "<p><span class=\"mention\">@bob@remote.test</span> "
+        "<span class=\"mention\">@unresolved</span> "
+        "ordinary @plain@example.test</p>";
+    nlohmann::json tags = nlohmann::json::array({
+        {{"type","Mention"},{"name","@bob@remote.test"},
+         {"href","https://remote.test/users/bob?a=1&b=2"}},
+        {{"type","Mention"},{"name","@unresolved"},
+         {"href","javascript:alert(1)"}}});
+    auto linked = linkMentions(html,tags);
+    EXPECT_NE(linked.find("<a class=\"mention\""),std::string::npos);
+    EXPECT_NE(linked.find("href=\"https://remote.test/users/bob?a=1&amp;b=2\""),
+              std::string::npos);
+    EXPECT_NE(linked.find("ordinary @plain@example.test"),std::string::npos);
+    EXPECT_NE(linked.find("<span class=\"mention\">@unresolved</span>"),
+              std::string::npos);
+    EXPECT_EQ(linked.find("javascript:"),std::string::npos);
+    EXPECT_EQ(linkMentions(linked,tags),linked);
+}
+
+TEST(Render, MentionLinksNeverNestAnchorsOrLinkOrdinaryText)
+{
+    const std::string html = "<p><a href=\"https://existing.test/\">"
+        "<span class=\"mention\">@bob</span></a> "
+        "<code>@bob</code><span>@bob</span></p>";
+    nlohmann::json tags = nlohmann::json::array({
+        {{"type","Mention"},{"name","@bob"},
+         {"href","https://local.test/u/bob"}}});
+    EXPECT_EQ(linkMentions(html,tags),html);
+}
+
+TEST(ServicePosting, SelfMentionsAreLinkedWithoutChangingAddressing)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author,data->createUser(NewUser{
+        "mw","mw","","iss","mw","PRIV","PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ComposeParams input;
+    input.source = "@mw@f.test hello";
+    ASSIGN_OR_FAIL(auto post,service.createPost(author,input));
+    EXPECT_NE(post.content_html.find("href=\"https://f.test/u/mw\""),
+              std::string::npos);
+    EXPECT_NE(post.content_html.find(">@mw@f.test</a>"),std::string::npos);
+    ASSIGN_OR_FAIL(auto recipients,data->getPostRecipients(post.id));
+    EXPECT_EQ(recipient(recipients,"https://f.test/u/mw"),"to");
+    auto object = noteJson(config,post,author,recipients,{},&emoji);
+    EXPECT_EQ(object["tag"][0]["name"],"@mw@f.test");
+    EXPECT_EQ(object["tag"][0]["href"],"https://f.test/u/mw");
+    EXPECT_FALSE(post.link_preview_id);
+}
+
+TEST(ServiceView, LinksLegacyLocalAndRemoteMentionsWithoutRewritingPosts)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author,data->createUser(NewUser{
+        "mw","mw","","iss","mw","PRIV","PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    NewPost old;
+    old.local_author_id = author.id;
+    old.content_source = "@mw@f.test @clark@m.jinwei.me hello";
+    old.content_html = parsePostContent(*old.content_source,emoji).html;
+    auto recipients = service.recipientsFor(Visibility::PUBLIC,"mw",
+        {"https://f.test/u/mw","https://m.jinwei.me/users/clark"});
+    ASSIGN_OR_FAIL(auto post,data->insertPost(old,recipients,config.url_root+"p/"));
+    ASSIGN_OR_FAIL(auto view,service.postView(post,std::nullopt));
+    auto html = view["content_html"].get<std::string>();
+    EXPECT_NE(html.find("href=\"https://f.test/u/mw\""),std::string::npos);
+    EXPECT_NE(html.find("href=\"https://m.jinwei.me/users/clark\""),
+              std::string::npos);
+    EXPECT_NE(html.find(">@clark@m.jinwei.me</a>"),std::string::npos);
+    EXPECT_EQ(data->getPostById(post.id).value()->content_html,old.content_html);
+    auto object = noteJson(config,post,author,recipients,{},&emoji);
+    EXPECT_NE(object["content"].get<std::string>().find(
+        "href=\"https://m.jinwei.me/users/clark\""),std::string::npos);
 }

@@ -1078,10 +1078,8 @@ mw::E<bool> handleEmojiReactActivity(const DataSourceInterface& data,
     if(!object_uri.has_value()) return false;
     ASSIGN_OR_RETURN(auto post, data.getPostByUri(*object_uri));
     if(!post.has_value()) return false;
-    std::string emoji = jsonString(activity.raw, "content");
-    if(emoji.empty())
-        emoji = jsonString(activity.raw, "name");
-    if(emoji.empty()) return false;
+    std::string emoji = ap::reactionContent(activity.raw);
+    if(emoji.empty() || emoji.size() > 256) return false;
     Reaction reaction;
     reaction.actor_uri = activity.actor;
     reaction.post_uri = *object_uri;
@@ -1251,7 +1249,7 @@ mw::E<bool> handleUndoActivity(const DataSourceInterface& data,
     }
     if(wrapped.type == "EmojiReact" && object_uri.has_value())
     {
-        std::string emoji = jsonString(wrapped.raw, "content");
+        std::string emoji = ap::reactionContent(wrapped.raw);
         if(emoji.empty())
             emoji = jsonString(wrapped.raw, "name");
         if(!emoji.empty())
@@ -1565,6 +1563,13 @@ nlohmann::json systemActorJson(const Config& config,
     return j;
 }
 
+nlohmann::json postTagsForSource(
+    const Config& config, const std::vector<PostRecipient>& recipients,
+    std::string_view source, const EmojiRegistry* emoji)
+{
+    return tagsForPostSource(config,recipients,source,emoji);
+}
+
 nlohmann::json noteJson(const Config& config, const Post& post,
                         const User& author,
                         const std::vector<PostRecipient>& recipients,
@@ -1617,7 +1622,11 @@ nlohmann::json noteJson(const Config& config, const Post& post,
     {
         nlohmann::json tags = tagsForPostSource(config, recipients,
                                                 *post.content_source, emoji);
-        if(!tags.empty()) j["tag"] = tags;
+        if(!tags.empty())
+        {
+            j["content"] = linkMentions(post.content_html,tags);
+            j["tag"] = tags;
+        }
     }
     return j;
 }
@@ -2612,7 +2621,11 @@ mw::E<void> initializeFederationLibrary(const Config& config,
     auto policy = libraryConfig(config);
     ap::Session session(policy, data.connection(), crypto, http, application);
     DO_OR_RETURN(session.migrate());
-    return importApplicationState(config, data, session);
+    DO_OR_RETURN(importApplicationState(config, data, session));
+    ASSIGN_OR_RETURN(auto restored,session.restoreEmojiReactions());
+    if(restored > 0)
+        spdlog::info("Repaired {} retained emoji reaction activities",restored);
+    return {};
 }
 
 mw::E<InboxDispatchResult>

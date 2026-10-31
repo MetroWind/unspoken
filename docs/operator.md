@@ -365,3 +365,27 @@ committed together. Network resolution happens outside write transactions.
 This command starts no HTTP server or workers, offers no dry-run mode, and
 requires no additional database migration. Keep personal follow-list files
 out of source control.
+
+## Misskey-compatible reactions
+
+Emoji-bearing `Like` activities are normalized to reactions using `content`
+or `_misskey_reaction`, while ordinary Likes remain favorites. Raw ActivityPub
+documents are preserved for signature and receipt identity. Misskey can deliver
+reactions to followers without `to` or `cc`; these are considered for accepted
+local followers, with target visibility checks. Explicit recipient lists are
+respected. An unfamiliar public target is fetched before the write transaction
+and retained atomically with its reaction, so a reaction arriving before a
+boost is preserved. Undo removes the corresponding reaction.
+
+At startup, Unspoken repairs reaction metadata from retained, verified inbox
+activities for known public or unlisted posts. This converts previously
+misclassified Likes and recovers ignored reaction activities where possible.
+Matching saved Undo activities prevent removed reactions from being restored.
+The repair is idempotent, makes no network requests, and needs no schema change.
+Activities never delivered to this server, or already removed by inbox
+retention, cannot be recovered through this repair.
+
+Locally composed mentions use profile links derived from resolved Mention
+tags and post recipients. Older local posts with plain mention spans are
+linked when displayed, without rewriting saved posts or making network
+requests. Self-mentions retain their original text and addressing.

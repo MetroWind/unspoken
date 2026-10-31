@@ -520,6 +520,23 @@ std::optional<std::string> normalizeRef(const nlohmann::json& field)
     return std::nullopt;
 }
 
+std::string reactionContent(const nlohmann::json& activity)
+{
+    if(!activity.is_object()) return "";
+    for(const char* key : {"content", "_misskey_reaction",
+        "misskey:_misskey_reaction",
+        "https://misskey-hub.net/ns#_misskey_reaction"})
+    {
+        auto value = activity.find(key);
+        if(value != activity.end() && value->is_string() &&
+           !value->get_ref<const std::string&>().empty())
+            return value->get<std::string>();
+    }
+    if(jsonString(activity,"type") == "EmojiReact")
+        return jsonString(activity,"name");
+    return "";
+}
+
 mw::E<Activity> parseActivity(const nlohmann::json& raw)
 {
     if(!raw.is_object())
@@ -553,6 +570,8 @@ mw::E<Activity> parseActivity(const nlohmann::json& raw)
     appendAll(activity.cc,
               normalizeAddressing(raw.value("bcc", nlohmann::json())));
     activity.raw = raw;
+    if(activity.type == "Like" && !reactionContent(raw).empty())
+        activity.type = "EmojiReact";
     return activity;
 }
 

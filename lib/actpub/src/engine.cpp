@@ -641,7 +641,8 @@ mw::E<PreparedInbox> Session::prepareInbox(const IncomingHttpRequest& request,
             }
         }
     }
-    if(prepared.activity.type == "Announce" &&
+    if((prepared.activity.type == "Announce" ||
+        prepared.activity.type == "EmojiReact") &&
        prepared.activity.actor == prepared.verified.actor_uri)
     {
         auto uri = normalizeRef(prepared.activity.object);
@@ -660,7 +661,7 @@ mw::E<PreparedInbox> Session::prepareInbox(const IncomingHttpRequest& request,
             ASSIGN_OR_RETURN(auto known,object(*uri));
             if(!known)
             {
-                // Ignore embedded boost content: obtain the origin's document.
+                // Ignore embedded interaction content; fetch the origin document.
                 ASSIGN_OR_RETURN(auto doc,fetchObject(*uri));
                 auto type = stringField(doc,"type");
                 auto owner = normalizeRef(doc.value("attributedTo",
@@ -687,8 +688,8 @@ mw::E<PreparedInbox> Session::prepareInbox(const IncomingHttpRequest& request,
                                 config.transport,crypto,http,signing_actor,*owner));
                             author = std::move(fetched);
                         }
-                        prepared.announced_object = std::move(doc);
-                        prepared.announced_author = std::move(author);
+                        prepared.interaction_object = std::move(doc);
+                        prepared.interaction_author = std::move(author);
                     }
                 }
             }
@@ -736,6 +737,13 @@ Session::recipients(const Activity& activity) const
                 addresses.push_back(stringField(*doc, "attributedTo"));
         }
     }
+    bool followed_reaction = activity.type == "EmojiReact";
+    if(activity.type == "Undo" && activity.object.is_object())
+    {
+        auto original = parseActivity(activity.object);
+        followed_reaction = original && original->type == "EmojiReact" &&
+                            original->actor == activity.actor;
+    }
     ASSIGN_OR_RETURN(auto locals,
                      (db.eval<std::string, std::string>(
                          "SELECT uri,document_json FROM ap_local_actors")));
@@ -770,6 +778,14 @@ Session::recipients(const Activity& activity) const
         if(!addressed && to_remote_followers)
         {
             ASSIGN_OR_RETURN(auto follow, store.getFollow(uri, activity.actor));
+            addressed = follow && follow->state == FollowState::ACCEPTED;
+        }
+        // Misskey delivers reactions to followers without to/cc fields.
+        // The protocol handler still verifies access to the target object.
+        if(!addressed && followed_reaction &&
+           activity.to.empty() && activity.cc.empty())
+        {
+            ASSIGN_OR_RETURN(auto follow,store.getFollow(uri,activity.actor));
             addressed = follow && follow->state == FollowState::ACCEPTED;
         }
         if(!addressed && is_public)
@@ -974,7 +990,7 @@ mw::E<bool> Session::applyProtocol(Transaction& tx,
             ASSIGN_OR_RETURN(auto rows, store.reactionsForPost(*object_uri));
             for(const auto& row : rows)
                 if(row.actor_uri == activity.actor &&
-                   row.emoji == stringField(original.raw, "content") &&
+                   row.emoji == reactionContent(original.raw) &&
                    (!row.activity_uri || *row.activity_uri == original.id))
                 {
                     DO_OR_RETURN(store.removeReaction(activity.actor,
@@ -1013,20 +1029,21 @@ mw::E<bool> Session::applyProtocol(Transaction& tx,
     }
     if(activity.type == "EmojiReact")
     {
-        auto emoji = stringField(activity.raw, "content");
-        if(emoji.empty())
-            emoji = stringField(activity.raw, "name");
+        auto emoji = reactionContent(activity.raw);
         if(emoji.empty() || emoji.size() > 256)
             return false;
+        ASSIGN_OR_RETURN(auto readable,objectForActor(*target,recipient));
+        if(!readable) return false;
         Reaction reaction;
         reaction.actor_uri = activity.actor;
         reaction.post_uri = *target;
         reaction.emoji = emoji;
         reaction.activity_uri = activity.id;
         reaction.created_at = now;
-        auto tags = activity.raw.find("tag");
-        if(tags != activity.raw.end() && tags->is_array())
-            for(const auto& tag : *tags)
+        auto tags = activity.raw.value("tag",nlohmann::json::array());
+        if(tags.is_object()) tags = nlohmann::json::array({tags});
+        if(tags.is_array())
+            for(const auto& tag : tags)
                 if(tag.is_object() && stringField(tag, "type") == "Emoji" &&
                    (stringField(tag, "name") == emoji ||
                     ":" + stringField(tag, "name") + ":" == emoji) &&
@@ -1043,6 +1060,12 @@ mw::E<bool> Session::applyProtocol(Transaction& tx,
                     }
                 }
         DO_OR_RETURN(store.addReaction(reaction));
+        // Clean up the same activity if an older version stored it as a Like.
+        ASSIGN_OR_RETURN(auto likes,store.likesForPost(*target));
+        for(const auto& like : likes)
+            if(like.actor_uri == activity.actor &&
+               like.activity_uri == std::optional<std::string>(activity.id))
+                DO_OR_RETURN(store.removeLike(activity.actor,*target));
         return true;
     }
     return false;
@@ -1119,21 +1142,21 @@ mw::E<InboxResult> Session::acceptInbox(PreparedInbox&& prepared, int64_t now)
                 ASSIGN_OR_RETURN(auto actor, store.upsertRemoteActor(
                                                  prepared.verified.actor));
                 (void)actor;
-                if(prepared.announced_object && prepared.announced_author)
+                if(prepared.interaction_object && prepared.interaction_author)
                 {
-                    auto uri = normalizeRef(*prepared.announced_object);
+                    auto uri = normalizeRef(*prepared.interaction_object);
                     ASSIGN_OR_RETURN(auto known,object(*uri));
                     if(!known)
                     {
                         ASSIGN_OR_RETURN(auto author,store.upsertRemoteActor(
-                            *prepared.announced_author));
-                        DO_OR_RETURN(writeObject(db,*prepared.announced_object,
+                            *prepared.interaction_author));
+                        DO_OR_RETURN(writeObject(db,*prepared.interaction_object,
                                                  author.uri,false));
                         Activity imported;
                         imported.id = *uri + "#fetch";
                         imported.type = "Create";
                         imported.actor = author.uri;
-                        imported.object = *prepared.announced_object;
+                        imported.object = *prepared.interaction_object;
                         imported.raw = {{"id",imported.id},{"type","Create"},
                             {"actor",author.uri},{"object",imported.object}};
                         DO_OR_RETURN(application.apply(tx,
@@ -1432,6 +1455,116 @@ mw::E<void> Session::fetchThread(std::string_view uri, int depth,
         }
     }
     return {};
+}
+
+
+mw::E<int64_t> Session::restoreEmojiReactions()
+{
+    int64_t repaired = 0;
+    std::string after_uri;
+    while(true)
+    {
+        ASSIGN_OR_RETURN(auto query,db.statementFromStr(
+            "SELECT activity_uri,actor_uri,document_json,processed_at "
+            "FROM ap_inbox_activities WHERE activity_uri>? "
+            "AND json_valid(document_json) AND "
+            "json_extract(document_json,'$.type') IN ('Like','EmojiReact') "
+            "ORDER BY activity_uri LIMIT 100;"));
+        DO_OR_RETURN(query.bind<std::string>(after_uri));
+        ASSIGN_OR_RETURN(auto rows,(db.eval<std::string,std::string,
+            std::string,int64_t>(std::move(query))));
+        if(rows.empty()) break;
+        for(const auto& [id,actor_uri,document,received_at] : rows)
+        {
+            after_uri = id;
+            auto raw = nlohmann::json::parse(document,nullptr,false);
+            auto parsed = parseActivity(raw);
+            if(!parsed || !validFields(raw) || parsed->type != "EmojiReact" ||
+               parsed->id != id || parsed->actor != actor_uri) continue;
+            auto target = normalizeRef(parsed->object);
+            auto emoji = reactionContent(raw);
+            if(!target || emoji.empty() || emoji.size() > 256) continue;
+            ASSIGN_OR_RETURN(auto tx,Transaction::begin(db));
+            ASSIGN_OR_RETURN(auto doc,object(*target));
+            // Historical repair only imports metadata for public objects.
+            if(!doc || !publicDocument(*doc)) continue;
+            ASSIGN_OR_RETURN(auto actor,store.getRemoteActorByUri(actor_uri));
+            if(!actor) continue;
+            ASSIGN_OR_RETURN(auto undos,db.statementFromStr(
+                "SELECT document_json FROM ap_inbox_activities "
+                "WHERE actor_uri=? AND json_valid(document_json) "
+                "AND json_extract(document_json,'$.type')='Undo' "
+                "AND json_extract(document_json,'$.object.id')=?;"));
+            DO_OR_RETURN((undos.bind<std::string,std::string>(actor_uri,id)));
+            ASSIGN_OR_RETURN(auto undo_rows,db.eval<std::string>(std::move(undos)));
+            bool undone = false;
+            for(const auto& row : undo_rows)
+            {
+                auto undo = parseActivity(nlohmann::json::parse(
+                    std::get<0>(row),nullptr,false));
+                if(!undo || undo->actor != actor_uri) continue;
+                auto original = parseActivity(undo->object);
+                if(original && original->type == "EmojiReact" &&
+                   original->actor == actor_uri && original->id == id &&
+                   normalizeRef(original->object) == target &&
+                   reactionContent(original->raw) == emoji) undone = true;
+            }
+            ASSIGN_OR_RETURN(auto reactions,store.reactionsForPost(*target));
+            bool exists = false;
+            bool matching = false;
+            for(const auto& reaction : reactions)
+                if(reaction.actor_uri == actor_uri && reaction.emoji == emoji)
+                {
+                    exists = true;
+                    matching = reaction.activity_uri ==
+                               std::optional<std::string>(id);
+                }
+            ASSIGN_OR_RETURN(auto likes,store.likesForPost(*target));
+            bool legacy_like = false;
+            for(const auto& like : likes)
+                if(like.actor_uri == actor_uri && like.activity_uri ==
+                    std::optional<std::string>(id)) legacy_like = true;
+            if(undone)
+            {
+                if(matching)
+                    DO_OR_RETURN(store.removeReaction(actor_uri,*target,emoji));
+                if(legacy_like)
+                    DO_OR_RETURN(store.removeLike(actor_uri,*target));
+                DO_OR_RETURN(tx.commit());
+                if(matching || legacy_like) ++repaired;
+                continue;
+            }
+            // Preserve a distinct activity for the same reaction pair.
+            if(exists && (!matching || !legacy_like)) continue;
+            ASSIGN_OR_RETURN(auto targets,recipients(*parsed));
+            bool applied = false;
+            for(const auto& recipient : targets)
+            {
+                ValidatedActivity validated(*parsed);
+                ASSIGN_OR_RETURN(auto decision,
+                    application.decide(tx,validated,{recipient}));
+                if(decision != Decision::ACCEPT) continue;
+                PreparedInbox prepared;
+                prepared.activity = *parsed;
+                ASSIGN_OR_RETURN(applied,applyProtocol(tx,prepared,recipient,
+                                                       decision,received_at));
+                if(applied)
+                {
+                    DO_OR_RETURN(application.apply(tx,
+                        {*parsed,recipient,*actor,true}));
+                    break;
+                }
+            }
+            if(!applied) continue;
+            ASSIGN_OR_RETURN(auto update,db.statementFromStr(
+                "UPDATE ap_inbox_activities SET applied=1 WHERE activity_uri=?"));
+            DO_OR_RETURN(update.bind<std::string>(id));
+            DO_OR_RETURN(db.execute(std::move(update)));
+            DO_OR_RETURN(tx.commit());
+            ++repaired;
+        }
+    }
+    return repaired;
 }
 
 } // namespace ap

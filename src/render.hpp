@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 #include "emoji.hpp"
 
@@ -55,6 +56,10 @@ std::string renderPostContent(const std::string& source,
 // the MacroDown syntax tree.
 RenderedPostContent parsePostContent(const std::string& source,
                                      const EmojiRegistry& emoji);
+
+// Turn marked mention spans into profile links using resolved Mention tags.
+// Preserve visible text and existing anchors; perform no network resolution.
+std::string linkMentions(std::string_view html, const nlohmann::json& tags);
 
 // Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
 // escaping decoded text and attributes once before storage or display.

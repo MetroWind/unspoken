@@ -4,6 +4,7 @@
 #include <format>
 #include <limits>
 #include <memory>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -13,9 +14,11 @@
 #include <vector>
 
 #include <libxml/HTMLparser.h>
+#include <libxml/HTMLtree.h>
 #include <libxml/tree.h>
 
 #include <mw/utils.hpp>
+#include <mw/url.hpp>
 #include <macrodown.h>
 
 #include "emoji.hpp"
@@ -237,6 +240,52 @@ macrodown::MacroDown markupParser()
     return md;
 }
 
+xmlNode* findBody(xmlNode* node)
+{
+    for(; node; node = node->next)
+    {
+        if(node->type == XML_ELEMENT_NODE &&
+           xmlStrEqual(node->name,BAD_CAST "body")) return node;
+        if(auto* found = findBody(node->children)) return found;
+    }
+    return nullptr;
+}
+
+bool linkMentionNodes(xmlNode* node,
+    const std::map<std::string,std::string>& links, bool inside_anchor)
+{
+    bool changed = false;
+    for(; node; node = node->next)
+    {
+        if(node->type != XML_ELEMENT_NODE) continue;
+        bool anchor = xmlStrEqual(node->name,BAD_CAST "a");
+        if(!inside_anchor && !anchor &&
+           xmlStrEqual(node->name,BAD_CAST "span"))
+        {
+            auto classes = attrValue(node,"class");
+            if(classes && *classes == "mention")
+            {
+                std::unique_ptr<xmlChar,decltype(xmlFree)> text(
+                    xmlNodeGetContent(node),xmlFree);
+                auto match = links.find(text ?
+                    reinterpret_cast<const char*>(text.get()) : "");
+                if(match != links.end())
+                {
+                    xmlNodeSetName(node,BAD_CAST "a");
+                    xmlSetProp(node,BAD_CAST "href",BAD_CAST match->second.c_str());
+                    xmlSetProp(node,BAD_CAST "rel",
+                               BAD_CAST "mention noopener noreferrer");
+                    anchor = true;
+                    changed = true;
+                }
+            }
+        }
+        changed = linkMentionNodes(node->children,links,
+                                    inside_anchor || anchor) || changed;
+    }
+    return changed;
+}
+
 } // namespace
 
 std::string renderMarkdown(const std::string& source)
@@ -332,6 +381,46 @@ RenderedPostContent parsePostContent(const std::string& source,
     });
     out.html = substituteEmoji(md.render(*root), emoji);
     return out;
+}
+
+std::string linkMentions(std::string_view html, const nlohmann::json& tags)
+{
+    if(!tags.is_array() || html.empty() ||
+       html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+        return std::string(html);
+    std::map<std::string,std::string> links;
+    for(const auto& tag : tags)
+    {
+        if(!tag.is_object()) continue;
+        auto type = tag.find("type");
+        auto name = tag.find("name");
+        auto href = tag.find("href");
+        if(type == tag.end() || *type != "Mention" || name == tag.end() ||
+           !name->is_string() || href == tag.end() || !href->is_string())
+            continue;
+        auto url = mw::URL::fromStr(href->get<std::string>());
+        if(!url || (url->scheme() != "https" && url->scheme() != "http") ||
+           url->host().empty() || !url->user().empty() ||
+           !url->password().empty()) continue;
+        links.emplace(name->get<std::string>(),href->get<std::string>());
+    }
+    if(links.empty()) return std::string(html);
+    std::unique_ptr<xmlDoc,decltype(&xmlFreeDoc)> doc(
+        htmlReadMemory(html.data(),static_cast<int>(html.size()),nullptr,
+            "UTF-8",HTML_PARSE_NONET | HTML_PARSE_NODEFDTD |
+            HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING),&xmlFreeDoc);
+    if(!doc) return std::string(html);
+    auto* body = findBody(doc->children);
+    if(!body || !linkMentionNodes(body->children,links,false))
+        return std::string(html);
+    std::unique_ptr<xmlBuffer,decltype(&xmlBufferFree)> buffer(
+        xmlBufferCreate(),&xmlBufferFree);
+    if(!buffer) return std::string(html);
+    for(auto* node = body->children; node; node = node->next)
+        if(htmlNodeDump(buffer.get(),doc.get(),node) < 0)
+            return std::string(html);
+    return std::string(reinterpret_cast<const char*>(xmlBufferContent(buffer.get())),
+                        xmlBufferLength(buffer.get()));
 }
 
 std::string sanitizeRemoteHtml(std::string_view html)

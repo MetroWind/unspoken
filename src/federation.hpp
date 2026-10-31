@@ -60,6 +60,11 @@ nlohmann::json actorJson(
     const std::vector<RenderedProfileField>& fields);
 nlohmann::json systemActorJson(const Config& config,
                                std::string_view public_key_pem);
+// Derive structured tags from local source and its resolved recipients.
+// This is a pure projection and never resolves handles over the network.
+nlohmann::json postTagsForSource(
+    const Config& config, const std::vector<PostRecipient>& recipients,
+    std::string_view source, const EmojiRegistry* emoji = nullptr);
 nlohmann::json noteJson(const Config& config, const Post& post,
                         const User& author,
                         const std::vector<PostRecipient>& recipients,

@@ -37,7 +37,10 @@ struct SignatureEnvelope
 std::optional<std::string> normalizeRef(const nlohmann::json& field);
 // Normalize addressing without fetching remote contexts.
 std::vector<std::string> normalizeAddressing(const nlohmann::json& field);
-// Parse an activity envelope; its content remains untrusted for rendering.
+// Read native and Misskey-compatible emoji reaction values without changing raw.
+std::string reactionContent(const nlohmann::json& activity);
+// Parse an activity envelope, normalizing emoji-bearing Likes to EmojiReact.
+// Its raw document remains unmodified and untrusted for rendering.
 mw::E<Activity> parseActivity(const nlohmann::json& raw);
 // Recognize supported spellings of the public audience.
 bool isPublicAddress(std::string_view uri);

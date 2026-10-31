@@ -104,9 +104,9 @@ private:
     std::string endpoint_actor;
     std::vector<std::pair<std::string, std::string>> forward_collections;
     nlohmann::json forward_document;
-    // Origin-fetched public boost target, staged until inbox commit.
-    std::optional<nlohmann::json> announced_object;
-    std::optional<RemoteActor> announced_author;
+    // Origin-fetched public interaction target, staged until inbox commit.
+    std::optional<nlohmann::json> interaction_object;
+    std::optional<RemoteActor> interaction_author;
     int64_t prepared_at = 0;
     const void* session_identity = nullptr;
     friend class Session;
@@ -136,6 +136,9 @@ public:
     Session(const FederationConfig& config, mw::SQLite& db,
             mw::CryptoInterface& crypto, mw::HTTPSessionInterface& http,
             Application& application);
+    // Restore emoji reactions from verified retained inbox records, honoring
+    // matching Undo activities. No network I/O or synthetic activity IDs.
+    mw::E<int64_t> restoreEmojiReactions();
     // Initialize the library's schema before routes/workers run.
     mw::E<void> migrate();
     // Persist a host-supplied actor identity; never infer it from a URL prefix.

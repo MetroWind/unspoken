@@ -3213,3 +3213,162 @@ TEST_F(FollowedInbox, TargetWithoutCanonicalIdIsNotRetained)
     EXPECT_EQ(http.get_urls.size(),1u);
     EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
 }
+
+TEST(ActivityStreams, NormalizesMisskeyLikesWithoutChangingWireDocuments)
+{
+    for(const char* field : {"content","_misskey_reaction",
+        "misskey:_misskey_reaction",
+        "https://misskey-hub.net/ns#_misskey_reaction"})
+    {
+        nlohmann::json raw = {{"id","https://remote.test/likes/1"},
+            {"type","Like"},{"actor","https://remote.test/user"},
+            {"object","https://other.test/post"},{field,"❤"}};
+        ASSIGN_OR_FAIL(auto activity,parseActivity(raw));
+        EXPECT_EQ(activity.type,"EmojiReact");
+        EXPECT_EQ(activity.raw,raw);
+        EXPECT_EQ(ap::reactionContent(activity.raw),"❤");
+    }
+    nlohmann::json ordinary = {{"id","https://remote.test/likes/2"},
+        {"type","Like"},{"actor","https://remote.test/user"},
+        {"object","https://other.test/post"}};
+    EXPECT_EQ(parseActivity(ordinary).value().type,"Like");
+}
+
+TEST_F(FollowedInbox, MisskeyReactionBeforeBoostIsRetainedAndRendered)
+{
+    programTarget();
+    nlohmann::json reaction = {{"id","https://remote.test/likes/heart"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},
+        {"content","❤"},{"_misskey_reaction","❤"}};
+    ASSIGN_OR_FAIL(auto result,receive(reaction));
+    EXPECT_EQ(result.disposition,InboxDisposition::APPLIED);
+    EXPECT_EQ(http.get_urls.size(),2u);
+    ASSIGN_OR_FAIL(auto post,data->getPostByUri("https://other.test/o/original"));
+    ASSERT_TRUE(post);
+    EXPECT_TRUE(data->likesForPost(post->uri).value().empty());
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    EXPECT_TRUE(service.homeTimeline(viewer,{}).value().empty());
+    ASSERT_TRUE(receive(announce()));
+    EXPECT_EQ(http.get_urls.size(),2u);
+    auto timeline = service.homeTimeline(viewer,{}).value();
+    ASSERT_EQ(timeline.size(),1u);
+    ASSIGN_OR_FAIL(auto view,service.postView(timeline.front(),viewer));
+    ASSERT_EQ(view["reactions"].size(),1u);
+    EXPECT_EQ(view["reactions"][0]["emoji"],"❤");
+    EXPECT_EQ(view["reactions"][0]["count"],1);
+    ASSIGN_OR_FAIL(auto duplicate,receive(reaction));
+    EXPECT_EQ(duplicate.disposition,InboxDisposition::DUPLICATE);
+    EXPECT_EQ(data->reactionsForPost(post->uri).value().size(),1u);
+    nlohmann::json undo = {{"id","https://remote.test/undo/heart"},
+        {"type","Undo"},{"actor",followed.uri},{"object",reaction}};
+    ASSIGN_OR_FAIL(auto undone,receive(undo));
+    EXPECT_EQ(undone.disposition,InboxDisposition::APPLIED);
+    EXPECT_TRUE(data->reactionsForPost(post->uri).value().empty());
+}
+
+TEST_F(FollowedInbox, OrdinaryLikesRemainLikesAndCustomReactionTagsWork)
+{
+    programTarget();
+    ASSERT_TRUE(receive(announce()));
+    nlohmann::json like = {{"id","https://remote.test/likes/ordinary"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},
+        {"to",config.url_root+"u/alice"}};
+    ASSERT_TRUE(receive(like));
+    EXPECT_EQ(data->likesForPost("https://other.test/o/original").value().size(),1u);
+    EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+    nlohmann::json reaction = {{"id","https://remote.test/likes/custom"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},
+        {"_misskey_reaction",":blob:"},
+        {"tag",{{"type","Emoji"},{"name",":blob:"},
+            {"icon",{{"type","Image"},{"url","https://remote.test/blob.png"}}}}}};
+    ASSERT_TRUE(receive(reaction));
+    auto reactions = data->reactionsForPost("https://other.test/o/original").value();
+    ASSERT_EQ(reactions.size(),1u);
+    EXPECT_EQ(reactions[0].emoji,":blob:");
+    EXPECT_EQ(reactions[0].remote_emoji_url,"https://remote.test/blob.png");
+    EXPECT_EQ(data->likesForPost("https://other.test/o/original").value().size(),1u);
+    nlohmann::json undo = {{"id","https://remote.test/undo/custom"},
+        {"type","Undo"},{"actor",followed.uri},{"object",reaction}};
+    ASSERT_TRUE(receive(undo));
+    EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+    EXPECT_EQ(data->likesForPost("https://other.test/o/original").value().size(),1u);
+}
+
+TEST_F(FollowedInbox, ReactionToUnfamiliarPrivateTargetDoesNotRetainIt)
+{
+    programTarget(false);
+    nlohmann::json reaction = {{"id","https://remote.test/likes/private"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},{"content","❤"}};
+    ASSIGN_OR_FAIL(auto result,receive(reaction));
+    EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
+    EXPECT_EQ(http.get_urls.size(),1u);
+    EXPECT_FALSE(data->getPostByUri("https://other.test/o/original").value());
+    EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+}
+
+TEST_F(FollowedInbox, FollowDoesNotGrantAccessToReactorsPrivateTarget)
+{
+    nlohmann::json object = {{"id","https://remote.test/private"},
+        {"type","Note"},{"attributedTo",followed.uri},
+        {"to","https://remote.test/someone-else"}};
+    ASSIGN_OR_FAIL(auto insert,data->connection().statementFromStr(
+        "INSERT INTO ap_objects(uri,owner_uri,local,document_json) VALUES(?,?,0,?)"));
+    ASSERT_TRUE((insert.bind<std::string,std::string,std::string>(
+        "https://remote.test/private",followed.uri,object.dump())));
+    ASSERT_TRUE(data->connection().execute(std::move(insert)));
+    nlohmann::json reaction = {{"id","https://remote.test/likes/private-owned"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://remote.test/private"},{"content","❤"}};
+    ASSIGN_OR_FAIL(auto result,receive(reaction));
+    EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
+    EXPECT_TRUE(data->reactionsForPost("https://remote.test/private").value().empty());
+    EXPECT_TRUE(http.get_urls.empty());
+}
+
+TEST_F(FollowedInbox, StartupRepairsRetainedReactionLikesAndHonorsUndo)
+{
+    programTarget();
+    ASSERT_TRUE(receive(announce()));
+    nlohmann::json reaction = {{"id","https://remote.test/likes/old"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},{"content","❤"}};
+    ASSERT_TRUE(receive(reaction));
+    ASSERT_TRUE(data->removeReaction(followed.uri,
+                                    "https://other.test/o/original","❤"));
+    // Simulate an older binary storing the signed activity as an ordinary Like.
+    ASSERT_TRUE(data->addLike({0,followed.uri,"https://other.test/o/original",
+                               "https://remote.test/likes/old",NOW}));
+    ASSERT_TRUE(data->connection().execute(
+        "UPDATE ap_inbox_activities SET applied=0 "
+        "WHERE activity_uri='https://remote.test/likes/old'"));
+    ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
+    EXPECT_EQ(data->reactionsForPost("https://other.test/o/original").value().size(),1u);
+    EXPECT_TRUE(data->likesForPost("https://other.test/o/original").value().empty());
+    ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
+    EXPECT_EQ(data->reactionsForPost("https://other.test/o/original").value().size(),1u);
+    nlohmann::json undo = {{"id","https://remote.test/undo/old"},
+        {"type","Undo"},{"actor",followed.uri},{"object",reaction}};
+    ASSERT_TRUE(receive(undo));
+    ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
+    EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+    EXPECT_EQ(http.get_urls.size(),2u);
+    EXPECT_EQ(data->getSchemaVersion().value(),6);
+}
+
+TEST_F(FollowedInbox, ExplicitPrivateReactionAudienceIsNotExpandedToFollowers)
+{
+    programTarget();
+    ASSERT_TRUE(receive(announce()));
+    nlohmann::json reaction = {{"id","https://remote.test/likes/private-audience"},
+        {"type","Like"},{"actor",followed.uri},
+        {"object","https://other.test/o/original"},{"content","❤"},
+        {"to","https://other.test/u/stranger"}};
+    ASSIGN_OR_FAIL(auto result,receive(reaction));
+    EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
+    EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+}
