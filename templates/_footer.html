@@ -8,5 +8,19 @@
   <span>unspoken {{ site.commit }}</span>
 </footer>
 <script src="{{ site.root }}static/emoji_picker.js"></script>
+<dialog id="attachment-lightbox" class="attachment-lightbox"
+        aria-label="Image attachment">
+  <button type="button" class="lightbox-close" aria-label="Close image"
+          autofocus><i class="nf nf-fa-times ui-icon" aria-hidden="true"></i></button>
+  <button type="button" class="lightbox-previous" aria-label="Previous image">
+    <i class="nf nf-fa-chevron_left ui-icon" aria-hidden="true"></i>
+  </button>
+  <img class="lightbox-image" alt="">
+  <button type="button" class="lightbox-next" aria-label="Next image">
+    <i class="nf nf-fa-chevron_right ui-icon" aria-hidden="true"></i>
+  </button>
+  <span class="lightbox-status" aria-live="polite"></span>
+</dialog>
+<script src="{{ site.root }}static/attachment_lightbox.js"></script>
 </body>
 </html>
