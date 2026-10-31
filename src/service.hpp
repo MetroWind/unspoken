@@ -55,6 +55,11 @@ public:
     recipientsFor(Visibility vis, std::string_view author_username,
                   const std::vector<std::string>& mentioned) const;
 
+    // Prefill replies with the author and mentioned accounts, retaining
+    // self-mentions and deduplicating full handles. Remote tags are wire tags.
+    mw::E<std::string> replyPrefill(const Post& post,
+        const nlohmann::json& tags = nlohmann::json::array()) const;
+
     // ── Posting ─────────────────────────────────────────────────────
     mw::E<Post> createPost(const User& author, const ComposeParams& p) const;
     // Authorization to view a (possibly private) post over HTML

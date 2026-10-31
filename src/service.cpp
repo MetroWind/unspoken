@@ -892,6 +892,78 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
     return j;
 }
 
+mw::E<std::string> Service::replyPrefill(
+    const Post& post, const nlohmann::json& remote_tags) const
+{
+    std::vector<std::string> handles;
+    if(post.local_author_id)
+    {
+        ASSIGN_OR_RETURN(auto author,data.getUserById(*post.local_author_id));
+        if(author) handles.push_back(handleFor(author->username));
+    }
+    else if(post.remote_author_id)
+    {
+        ASSIGN_OR_RETURN(auto author,
+            data.getRemoteActorById(*post.remote_author_id));
+        if(author) handles.push_back(std::format(
+            "@{}@{}",author->username,author->domain));
+    }
+    nlohmann::json tags = remote_tags;
+    if(post.local_author_id && post.content_source)
+    {
+        ASSIGN_OR_RETURN(auto recipients,data.getPostRecipients(post.id));
+        tags = postTagsForSource(config,recipients,*post.content_source,&emoji);
+    }
+    if(tags.is_object()) tags = nlohmann::json::array({tags});
+    if(tags.is_array())
+    {
+        for(const auto& tag : tags)
+        {
+            if(!tag.is_object() || !tag.contains("type") ||
+               tag["type"] != "Mention") continue;
+            std::string handle;
+            if(tag.contains("href") && tag["href"].is_string())
+            {
+                auto href = tag["href"].get<std::string>();
+                auto local_prefix = config.url_root + "u/";
+                if(href.starts_with(local_prefix))
+                {
+                    ASSIGN_OR_RETURN(auto user,data.getUserByUsername(
+                        href.substr(local_prefix.size())));
+                    if(user) handle = handleFor(user->username);
+                }
+                else
+                {
+                    ASSIGN_OR_RETURN(auto actor,data.getRemoteActorByUri(href));
+                    if(actor) handle = std::format(
+                        "@{}@{}",actor->username,actor->domain);
+                }
+            }
+            if(handle.empty() && tag.contains("name") &&
+               tag["name"].is_string())
+            {
+                auto name = tag["name"].get<std::string>();
+                auto parsed = parsePostContent(name,emoji);
+                if(parsed.mentions.size() != 1 ||
+                   parsed.mentions.front().name != name) continue;
+                const auto& mention = parsed.mentions.front();
+                if(mention.domain.empty())
+                {
+                    if(!post.local_author_id) continue;
+                    handle = handleFor(mention.username);
+                }
+                else handle = mention.name;
+            }
+            if(!handle.empty()) handles.push_back(std::move(handle));
+        }
+    }
+    std::set<std::string> seen;
+    std::string result;
+    for(const auto& handle : handles)
+        if(seen.insert(handle).second) result += handle + " ";
+    return result;
+}
+
 mw::E<nlohmann::json>
 Service::postView(const Post& p, const std::optional<User>& viewer) const
 {

@@ -302,24 +302,26 @@ private:
 };
 
 mw::E<std::string> replyPrefillForPost(
-    const unspoken::DataSourceInterface& data, const Service& svc,
+    const unspoken::DataSourceSQLite& data, const Service& svc,
     const unspoken::Post& post)
 {
-    if(post.local_author_id.has_value())
+    nlohmann::json tags = nlohmann::json::array();
+    if(post.remote_author_id)
     {
-        ASSIGN_OR_RETURN(auto user, data.getUserById(*post.local_author_id));
-        if(user.has_value()) return svc.handleFor(user->username) + " ";
-    }
-    if(post.remote_author_id.has_value())
-    {
-        ASSIGN_OR_RETURN(auto actor, data.getRemoteActorById(
-            *post.remote_author_id));
-        if(actor.has_value())
+        ASSIGN_OR_RETURN(auto query,data.connection().statementFromStr(
+            "SELECT document_json FROM ap_objects WHERE uri=?;"));
+        DO_OR_RETURN(query.bind<std::string>(post.uri));
+        ASSIGN_OR_RETURN(auto rows,
+            data.connection().eval<std::string>(std::move(query)));
+        if(!rows.empty())
         {
-            return std::format("@{}@{} ", actor->username, actor->domain);
+            auto object = nlohmann::json::parse(
+                std::get<0>(rows.front()),nullptr,false);
+            if(object.is_object() && object.contains("tag"))
+                tags = object["tag"];
         }
     }
-    return std::string();
+    return svc.replyPrefill(post,tags);
 }
 
 bool respondIfCannotView(const Service& svc, const unspoken::Post& post,

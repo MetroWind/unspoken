@@ -1457,3 +1457,32 @@ TEST(Render, ShortMentionLabelsPreserveAccountIdentityAndOrdinaryLinks)
     EXPECT_NE(displayed.find(">@bob@three.test</a>"),std::string::npos);
     EXPECT_EQ(shortenMentionLabels(displayed),displayed);
 }
+
+TEST(ServicePosting, ReplyPrefillIncludesAuthorAndMentionsOnce)
+{
+    ASSIGN_OR_FAIL(auto data,DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author,data->createUser(NewUser{
+        "mw","mw","","iss","mw","PRIV","PUB"}));
+    Config config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ComposeParams input;
+    input.source = "@clark@m.jinwei.me @mw@f.test @clark@m.jinwei.me hello";
+    input.mentioned_actor_uris = {"https://m.jinwei.me/users/clark"};
+    ASSIGN_OR_FAIL(auto post,service.createPost(author,input));
+    ASSIGN_OR_FAIL(auto prefill,service.replyPrefill(post));
+    EXPECT_EQ(prefill,"@mw@f.test @clark@m.jinwei.me ");
+
+    // Remote Mention tags may contain short labels or uncached full handles.
+    Post remote;
+    auto tags = nlohmann::json::array({
+        {{"type","Mention"},{"name","@mw"},
+         {"href","https://f.test/u/mw"}},
+        {{"type","Mention"},{"name","@clark@m.jinwei.me"},
+         {"href","https://m.jinwei.me/users/clark"}},
+        {{"type","Mention"},{"name","@mw@f.test"}},
+        {{"type","Hashtag"},{"name","@unrelated@elsewhere.test"}},
+        {{"type","Mention"},{"name","@bad@host trailing text"}}});
+    ASSIGN_OR_FAIL(auto remote_prefill,service.replyPrefill(remote,tags));
+    EXPECT_EQ(remote_prefill,"@mw@f.test @clark@m.jinwei.me ");
+}
