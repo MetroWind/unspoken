@@ -1486,3 +1486,20 @@ TEST(ServicePosting, ReplyPrefillIncludesAuthorAndMentionsOnce)
     ASSIGN_OR_FAIL(auto remote_prefill,service.replyPrefill(remote,tags));
     EXPECT_EQ(remote_prefill,"@mw@f.test @clark@m.jinwei.me ");
 }
+
+TEST(Render, FederationEmojiShortcodesPreserveOtherHtml)
+{
+    const std::string html =
+        "<p><a href=\"https://f.test/u/mw\">@mw</a> "
+        "<img class=\"emoji\" src=\"https://f.test/emoji/blob.png\" "
+        "alt=\":blob:\">"
+        "<img src=\"https://f.test/photo.png\" alt=\"photo\">"
+        "<img class=\"emoji\" alt=\"not a shortcode\"> &amp; text</p>";
+    auto content = emojiShortcodesForFederation(html);
+    EXPECT_NE(content.find(">@mw</a> :blob:"),std::string::npos);
+    EXPECT_EQ(content.find("/emoji/blob.png"),std::string::npos);
+    EXPECT_NE(content.find("src=\"https://f.test/photo.png\""),std::string::npos);
+    EXPECT_NE(content.find("alt=\"not a shortcode\""),std::string::npos);
+    EXPECT_NE(content.find("&amp; text"),std::string::npos);
+    EXPECT_EQ(emojiShortcodesForFederation(content),content);
+}

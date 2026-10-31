@@ -19,6 +19,7 @@
 #include "data.hpp"
 #include "federation.hpp"
 #include "structs.hpp"
+#include "render.hpp"
 
 using namespace unspoken;
 
@@ -524,8 +525,9 @@ TEST(ActivityStreams, NoteJsonCarriesCustomEmojiTags)
     p.id = 7;
     p.uri = "https://f.test/p/7";
     p.local_author_id = 1;
-    p.content_html = "<p>:blobcat:</p>";
-    p.content_source = "hello :blobcat: :unknown:";
+    p.content_source = "hello :blobcat: :blobcat: :unknown:";
+    p.content_html = renderPostContent(*p.content_source,emoji);
+    const auto stored_html = p.content_html;
     p.created_at = 100;
 
     std::vector<PostRecipient> recipients = {
@@ -533,6 +535,11 @@ TEST(ActivityStreams, NoteJsonCarriesCustomEmojiTags)
     };
     auto j = noteJson(testConfig(), p, testUser(), recipients, {}, &emoji);
 
+    EXPECT_EQ(j["content"],"<p>hello :blobcat: :blobcat: :unknown:</p>\n");
+    EXPECT_NE(stored_html.find("<img class=\"emoji\""),std::string::npos);
+    EXPECT_EQ(p.content_html,stored_html);
+    EXPECT_EQ(emojiShortcodesForFederation(j["content"].get<std::string>()),
+              j["content"].get<std::string>());
     ASSERT_TRUE(j.contains("tag"));
     ASSERT_EQ(j["tag"].size(), 1u);
     EXPECT_EQ(j["tag"][0]["type"], "Emoji");

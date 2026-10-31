@@ -391,3 +391,8 @@ linked when displayed, without rewriting saved posts or making network
 requests. Displayed mention links show only `@username`, with the full handle in a
 tooltip and screen-reader label. Stored text, profile URLs, self-mentions,
 and federation addressing are preserved.
+
+Outgoing posts represent custom emoji as `:shortcode:` text with ActivityPub
+Emoji tags so Mastodon and other receivers render their own inline images.
+Local display retains the stored emoji images. Already delivered posts are
+not automatically updated on remote servers.

@@ -1628,6 +1628,8 @@ nlohmann::json noteJson(const Config& config, const Post& post,
             j["tag"] = tags;
         }
     }
+    j["content"] = emojiShortcodesForFederation(
+        j["content"].get<std::string>());
     return j;
 }
 

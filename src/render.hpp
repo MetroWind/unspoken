@@ -65,6 +65,10 @@ std::string linkMentions(std::string_view html, const nlohmann::json& tags);
 // title and accessibility labels. Preserve profile URLs and other text.
 std::string shortenMentionLabels(std::string_view html);
 
+// Restore generated custom emoji images to :shortcode: text for remote
+// clients, which render emoji using the accompanying ActivityPub tags.
+std::string emojiShortcodesForFederation(std::string_view html);
+
 // Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
 // escaping decoded text and attributes once before storage or display.
 std::string sanitizeRemoteHtml(std::string_view html);
