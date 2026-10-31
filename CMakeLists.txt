@@ -129,6 +129,8 @@ configure_file(
   @ONLY)
 
 set(SOURCE_FILES
+  src/theme.cpp
+  src/theme.hpp
   src/follow_import.cpp
   src/follow_import.hpp
   src/link_preview.cpp
@@ -216,6 +218,7 @@ if(UNSPOKEN_BUILD_TESTS)
     src/link_preview_test.cpp
     src/follow_import_test.cpp
     src/config_test.cpp
+    src/theme_test.cpp
     src/data_test.cpp
     src/auth_test.cpp
     src/service_test.cpp
@@ -252,6 +255,6 @@ if(UNSPOKEN_BUILD_TESTS)
 endif()
 
 install(TARGETS unspoken RUNTIME DESTINATION bin)
-install(DIRECTORY templates static DESTINATION share/unspoken)
+install(DIRECTORY templates static themes DESTINATION share/unspoken)
 install(FILES "${UNSPOKEN_EMOJI_DATA_FILE}"
         DESTINATION share/unspoken/data)

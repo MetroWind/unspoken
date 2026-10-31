@@ -54,6 +54,7 @@ package()
 
     install -d "$pkgdir/usr/share/unspoken"
     cp -a unspoken/templates "$pkgdir/usr/share/unspoken/"
+    cp -a unspoken/themes "$pkgdir/usr/share/unspoken/"
     cp -a unspoken/static "$pkgdir/usr/share/unspoken/"
     install -Dm644 build/data/emoji_categories.json \
         "$pkgdir/usr/share/unspoken/data/emoji_categories.json"

@@ -239,6 +239,11 @@ mw::E<void> Config::validateAndFinalize()
         return std::unexpected(attachment_writable.error());
     auto templates = requireDirectory(template_dir, "template_dir");
     if(!templates.has_value()) return std::unexpected(templates.error());
+    auto theme_result = themes.loadDir(theme_dir);
+    if(!theme_result) return std::unexpected(theme_result.error());
+    if(!themes.all().contains(default_theme))
+        return std::unexpected(mw::runtimeError(
+            "Unknown default_theme: " + default_theme));
     auto statics = requireDirectory(static_dir, "static_dir");
     if(!statics.has_value()) return std::unexpected(statics.error());
 
@@ -269,6 +274,8 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
     readStr(child(root, "emoji_data_file"), config.emoji_data_file);
     readStr(child(root, "template_dir"), config.template_dir);
     readStr(child(root, "static_dir"), config.static_dir);
+    readStr(child(root, "theme_dir"), config.theme_dir);
+    readStr(child(root, "default_theme"), config.default_theme);
 
     readInt(child(root, "posts_per_page"), config.posts_per_page);
 

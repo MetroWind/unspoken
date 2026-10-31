@@ -12,6 +12,9 @@ emoji_data_file: "/usr/share/unspoken/data/emoji_categories.json"
 template_dir: "/usr/share/unspoken/templates"
 static_dir: "/usr/share/unspoken/static"
 
+theme_dir: "/usr/share/unspoken/themes"
+default_theme: "base"
+
 posts_per_page: 20
 
 link_previews:

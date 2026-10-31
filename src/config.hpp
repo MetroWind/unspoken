@@ -34,6 +34,8 @@ struct NodeInfoConfig
 
 using DevConfig = ap::DevConfig;
 
+#include "theme.hpp"
+
 struct Config
 {
     // ─── Network / identity ──────────────────────────────────────
@@ -57,6 +59,11 @@ struct Config
     // in the PRD schema, but needed to serve the UI).
     std::string template_dir = "templates";
     std::string static_dir = "static";
+    // CSS theme root and site-wide default theme identifier.
+    std::string theme_dir = "themes";
+    std::string default_theme = "base";
+    // Catalog populated during configuration validation.
+    unspoken::ThemeManager themes;
 
     // ─── Pagination ──────────────────────────────────────────────
     int posts_per_page = 20;

@@ -402,3 +402,20 @@ chronological siblings. Indentation stops after four levels (with smaller
 steps on mobile); deeper replies link back to their parent. The permalink's
 post remains highlighted. Missing or unreadable parents start separate roots,
 without exposing hidden post content or author information.
+
+## CSS themes
+
+Set `theme_dir` (default `themes`) and `default_theme` (default `base`).
+Each theme is a subdirectory containing `info.yaml`, with an optional display
+`name` and `parent` theme ID. Directory names are the stable IDs; use ASCII
+letters, digits, hyphens, or underscores. Display names need not be unique.
+
+All top-level `.css` files load in filename order, ancestors first. Use the
+same characters for stylesheet stems, e.g. `10-layout.css`. Other assets can
+live alongside CSS and use relative URLs. Themes share HTML and JavaScript.
+The bundled `light` theme inherits `base` and overrides CSS variables.
+
+The footer picker stores a browser preference for one year. Unknown saved
+preferences use the configured default. Missing parents, inheritance cycles,
+and unknown configured defaults prevent startup. Restart after changing a
+manifest or adding/removing stylesheets; CSS contents are served from disk.

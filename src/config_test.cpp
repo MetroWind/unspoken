@@ -261,3 +261,19 @@ TEST(Config, RejectsInvalidPreviewSwitch)
     EXPECT_NE(mw::errorMsg(config.error()).find("link_previews.enabled"),
               std::string::npos);
 }
+
+TEST(Config, RejectsUnknownDefaultTheme)
+{
+    Config c = validBase();
+    c.default_theme = "missing";
+    EXPECT_FALSE(c.validateAndFinalize());
+}
+
+TEST(Config, LoadsThemeCatalog)
+{
+    Config c = validBase();
+    c.default_theme = "light";
+    ASSERT_TRUE(c.validateAndFinalize());
+    EXPECT_EQ(c.themes.stylesheets("light"),
+              (std::vector<std::string>{"base/style.css", "light/style.css"}));
+}

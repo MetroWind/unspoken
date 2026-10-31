@@ -19,6 +19,7 @@ COPY build/data/emoji_categories.json /app/data/emoji_categories.json
 COPY tests/interop/akkoma/interop_blob.png.b64 /app/interop_blob.png.b64
 COPY templates /app/templates
 COPY static /app/static
+COPY themes /app/themes
 
 RUN mkdir -p /data/attachments /data/emoji \
     && chmod 0755 /usr/local/bin/unspoken

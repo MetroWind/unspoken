@@ -1,0 +1,13 @@
+:root
+{
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #e9edf2;
+    --border: #c9d0da;
+    --fg: #202630;
+    --fg-dim: #566171;
+    --accent: #245fa8;
+    --accent-2: #08795c;
+    --danger: #b52b35;
+    color-scheme: light;
+}

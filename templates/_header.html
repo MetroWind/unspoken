@@ -8,7 +8,13 @@
       type="image/x-icon" sizes="16x16 32x32 48x48">
 <link rel="icon" href="{{ site.root }}static/favicon.svg"
       type="image/svg+xml" sizes="any">
+{% if exists("stylesheets") %}
+{% for sheet in stylesheets %}
+<link rel="stylesheet" href="{{ site.root }}themes/{{ sheet }}">
+{% endfor %}
+{% else %}
 <link rel="stylesheet" href="{{ site.root }}static/style.css">
+{% endif %}
 </head>
 <body>
 <header class="topbar">

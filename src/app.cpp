@@ -569,6 +569,15 @@ App::baseContext(const Request& req,
     ctx["site"]["commit"] = unspoken::GIT_COMMIT_HASH;
     ctx["logged_in"] = viewer.has_value();
     ctx["error"] = "";
+    std::string theme = cookie(req, "unspoken-theme")
+        .value_or(config.default_theme);
+    if(!config.themes.all().contains(theme)) theme = config.default_theme;
+    ctx["current_theme"] = theme;
+    ctx["stylesheets"] = config.themes.stylesheets(theme);
+    ctx["themes"] = nlohmann::json::array();
+    for(const auto& [id, item] : config.themes.all())
+        ctx["themes"].push_back({{"id", id},
+            {"name", mw::escapeHTML(item.name)}});
     // Default so _post.html can compare against it on non-thread pages
     // (post ids start at 1, so 0 never highlights).
     ctx["focus_id"] = 0;
@@ -2524,6 +2533,20 @@ void App::handleFollowList(const Request& req, Response& res,
 
 void App::setup()
 {
+    if(!server.set_mount_point("/themes", config.theme_dir))
+        spdlog::error("Failed to mount themes from {}", config.theme_dir);
+    server.Post("/select-theme", [&](const Request& req, Response& res)
+    {
+        std::string theme = param(req, "theme");
+        if(!config.themes.all().contains(theme))
+        {
+            res.status = 400;
+            res.set_content("Unknown theme", "text/plain");
+            return;
+        }
+        setCookie(res, "unspoken-theme", theme, 31536000);
+        res.set_redirect(cookiePath(), 303);
+    });
     if(std::filesystem::is_directory(config.static_dir))
     {
         spdlog::info("Mounting static dir at /static from {}...",

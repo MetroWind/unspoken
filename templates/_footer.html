@@ -6,6 +6,17 @@
 {% endif %}
 <footer class="foot">
   <span>unspoken {{ site.commit }}</span>
+{% if exists("themes") %}
+  <form class="inline" method="post" action="{{ site.root }}select-theme">
+    <label for="theme-select">Theme</label>
+    <select id="theme-select" name="theme">
+{% for theme in themes %}
+      <option value="{{ theme.id }}"{% if theme.id == current_theme %} selected{% endif %}>{{ theme.name }}</option>
+{% endfor %}
+    </select>
+    <button type="submit">Apply</button>
+  </form>
+{% endif %}
 </footer>
 <script src="{{ site.root }}static/emoji_picker.js"></script>
 <dialog id="attachment-lightbox" class="attachment-lightbox"
