@@ -75,6 +75,8 @@ pre {
 .nav { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
 .nav a { color: var(--fg-dim); }
 .nav a:hover { color: var(--accent); }
+.nav .theme-picker { display: inline-flex; align-items: center; gap: 4px; }
+.theme-picker label { margin: 0; color: var(--fg-dim); }
 .nav-me { color: var(--accent-2); font-family: var(--mono); font-size: 0.9em; }
 
 main {

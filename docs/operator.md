@@ -415,7 +415,8 @@ same characters for stylesheet stems, e.g. `10-layout.css`. Other assets can
 live alongside CSS and use relative URLs. Themes share HTML and JavaScript.
 The bundled `light` theme inherits `base` and overrides CSS variables.
 
-The footer picker stores a browser preference for one year. Unknown saved
+The navigation theme picker applies selections immediately and stores a
+browser preference for one year. Unknown saved
 preferences use the configured default. Missing parents, inheritance cycles,
 and unknown configured defaults prevent startup. Restart after changing a
 manifest or adding/removing stylesheets; CSS contents are served from disk.

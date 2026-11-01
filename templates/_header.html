@@ -19,19 +19,47 @@
 <body>
 <header class="topbar">
   <a class="brand" href="{{ site.root }}">{{ site.title }}</a>
-  <nav class="nav">
-    <a href="{{ site.root }}">timeline</a>
-    <a href="{{ site.root }}search">search</a>
+  <nav class="nav" aria-label="Main navigation">
+    <a href="{{ site.root }}" aria-label="Timeline"
+       title="Timeline"><i class="nf nf-fa-home ui-icon"
+       aria-hidden="true"></i></a>
+    <a href="{{ site.root }}search" aria-label="Search"
+       title="Search"><i class="nf nf-fa-search ui-icon"
+       aria-hidden="true"></i></a>
 {% if logged_in %}
-    <a href="{{ site.root }}bookmarks">bookmarks</a>
-    <a href="{{ site.root }}u/{{ me.username }}">profile</a>
+    <a href="{{ site.root }}bookmarks" aria-label="Bookmarks"
+       title="Bookmarks"><i class="nf nf-fa-bookmark ui-icon"
+       aria-hidden="true"></i></a>
+    <a href="{{ site.root }}u/{{ me.username }}" aria-label="Profile"
+       title="Profile"><i class="nf nf-fa-user ui-icon"
+       aria-hidden="true"></i></a>
     <span class="nav-me">{{ me.handle }}</span>
     <form class="inline" method="post" action="{{ site.root }}logout">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <button type="submit" class="linkbtn">log out</button>
+      <button type="submit" class="linkbtn" aria-label="Log out"
+              title="Log out"><i class="nf nf-fa-sign_out ui-icon"
+              aria-hidden="true"></i></button>
     </form>
 {% else %}
-    <a href="{{ site.root }}login">log in</a>
+    <a href="{{ site.root }}login" aria-label="Log in"
+       title="Log in"><i class="nf nf-fa-sign_in ui-icon"
+       aria-hidden="true"></i></a>
+{% endif %}
+{% if exists("themes") %}
+    <form class="inline theme-picker" method="post"
+          action="{{ site.root }}select-theme">
+    <label for="theme-select" title="Theme">
+      <i class="nf nf-fa-paint_brush ui-icon" aria-hidden="true"></i>
+    </label>
+    <select id="theme-select" name="theme" aria-label="Theme"
+            onchange="this.form.requestSubmit()">
+{% for theme in themes %}
+      <option value="{{ theme.id }}"
+        {% if theme.id == current_theme %}selected{% endif %}
+      >{{ theme.name }}</option>
+{% endfor %}
+    </select>
+  </form>
 {% endif %}
   </nav>
 </header>
