@@ -18,7 +18,6 @@
 </head>
 <body>
 <header class="topbar">
-  <a class="brand" href="{{ site.root }}">{{ site.title }}</a>
   <nav class="nav" aria-label="Main navigation">
     <a href="{{ site.root }}" aria-label="Timeline"
        title="Timeline"><i class="nf nf-fa-home ui-icon"
@@ -26,6 +25,7 @@
     <a href="{{ site.root }}search" aria-label="Search"
        title="Search"><i class="nf nf-fa-search ui-icon"
        aria-hidden="true"></i></a>
+    <a class="brand" href="{{ site.root }}">{{ site.title }}</a>
 {% if logged_in %}
     <a href="{{ site.root }}bookmarks" aria-label="Bookmarks"
        title="Bookmarks"><i class="nf nf-fa-bookmark ui-icon"
