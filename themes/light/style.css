@@ -83,6 +83,16 @@ section.composer
     float: none;
 }
 
+.attachment-lightbox .lightbox-image
+{
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: calc(100dvh - 8rem);
+    object-fit: contain;
+}
+
 @media (min-width: 1100px)
 {
     main:has(> .composer:not(.reply))
