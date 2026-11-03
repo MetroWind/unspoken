@@ -1526,6 +1526,16 @@ TEST(ServiceView, ThreadBranchesStayWithParentsAndCapIndentation)
         if(i > 1) post.in_reply_to_uri = posts.back().uri;
         posts.push_back(post);
     }
+    // A single reply chain still needs one guide per visible level.
+    ASSIGN_OR_FAIL(auto chain,service.threadViews(posts,std::nullopt));
+    for(const auto& view : chain)
+    {
+        EXPECT_EQ(view["thread_guides"].size(),
+            view["thread_depth"].get<size_t>());
+        size_t level = 0;
+        for(const auto& guide : view["thread_guides"])
+            EXPECT_EQ(guide["level"],++level);
+    }
     // The second child predates the first child's own replies.
     posts[2].in_reply_to_uri = posts[0].uri;
     posts[3].in_reply_to_uri = posts[1].uri;
@@ -1551,6 +1561,18 @@ TEST(ServiceView, ThreadBranchesStayWithParentsAndCapIndentation)
     EXPECT_NE(html.find("thread-depth-4"),std::string::npos);
     EXPECT_NE(html.find("thread-guide thread-level-1 branch last"),
               std::string::npos);
+    EXPECT_EQ(html.find("class=\"thread-guides\""),std::string::npos);
+    EXPECT_EQ(html.find("<span class=\"thread-guide"),std::string::npos);
+    auto row_start = html.find("class=\"thread-row thread-depth-2\"");
+    ASSERT_NE(row_start,std::string::npos);
+    auto article_start = html.find("<article",row_start);
+    ASSERT_NE(article_start,std::string::npos);
+    auto guide_start = html.find("<div class=\"thread-guide ",row_start);
+    ASSERT_LT(guide_start,article_start);
+    guide_start = html.find("<div class=\"thread-guide ",guide_start+1);
+    ASSERT_LT(guide_start,article_start);
+    EXPECT_GT(html.find("<div class=\"thread-guide ",guide_start+1),
+        article_start);
     EXPECT_NE(html.find("href=\"#p7\">replying to @mw@f.test"),
               std::string::npos);
     EXPECT_NE(html.find("post focus\" id=\"p8\""),std::string::npos);

@@ -1286,10 +1286,9 @@ mw::E<nlohmann::json> Service::threadViews(const std::vector<Post>& posts,
                 ++level)
             {
                 bool branch = level + 1 == depth;
-                if(item.rails[level] || branch)
-                    view["thread_guides"].push_back({
-                        {"level",level+1}, {"branch",branch},
-                        {"last",branch && !item.rails[level]}});
+                view["thread_guides"].push_back({
+                    {"level",level+1}, {"branch",branch},
+                    {"last",branch && !item.rails[level]}});
             }
             view["show_parent"] = false;
             if(depth >= MAX_THREAD_DEPTH && post.in_reply_to_uri)

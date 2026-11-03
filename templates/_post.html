@@ -1,4 +1,9 @@
 <article class="post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
+{% if existsIn(post, "show_parent") %}
+{% if post.show_parent %}
+  <a class="thread-parent" href="#p{{ post.parent_id }}">replying to {{ post.parent_handle }}</a>
+{% endif %}
+{% endif %}
 {% if post.is_boost %}
   <div class="boost-attribution">
     <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i>
@@ -7,19 +12,17 @@
   </div>
 {% endif %}
   <div class="post-head">
-    <a class="author" href="{{ post.author.profile_url }}">
+    <a class="post-avatar-link" href="{{ post.author.profile_url }}">
       <img class="post-avatar"
            src="{{ post.author.avatar_url }}"
            alt=""
-           width="40"
-           height="40"
            loading="lazy"
            decoding="async">
-      <span class="author-copy">
-        <span class="dname">{{ post.author.display_name }}</span>
-        <span class="handle">{{ post.author.handle }}</span>
-      </span>
     </a>
+    <span class="author-copy">
+      <a class="author" href="{{ post.author.profile_url }}">{{ post.author.display_name }}</a>
+      <span class="handle">{{ post.author.handle }}</span>
+    </span>
     <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
     <span class="vis vis-{{ post.visibility }}" role="img"
 {% if post.visibility == "followers" %}

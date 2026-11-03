@@ -1,5 +1,10 @@
 @import url("https://www.nerdfonts.com/assets/css/webfont.css");
 
+:root
+{
+    --attachment-size: 240px;
+}
+
 *
 {
     line-height: 1.4;
@@ -39,7 +44,7 @@ h1
 ul, ol
 {
     list-style-position: outside;
-    margin-left: 1em;
+    margin-left: 1.5em;
 }
 
 ul
@@ -55,6 +60,16 @@ ol
 code, pre
 {
     font-family: monospace;
+}
+
+em
+{
+    font-style: italic;
+}
+
+strong
+{
+    font-weight: bold;
 }
 
 form.inline
@@ -80,9 +95,49 @@ main
 {
 }
 
+.thread-row
+{
+    --thread-indent: 16px;
+    display: flex;
+    min-width: 0;
+
+    > .thread-guide
+    {
+        flex: 0 0 var(--thread-indent);
+        border-left: 2px solid var(--color-border, currentColor);
+    }
+
+    > article.post
+    {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .thread-parent
+    {
+        display: block;
+        font-size: 0.8em;
+        overflow-wrap: anywhere;
+    }
+}
+
+@media (max-width: 480px)
+{
+    .thread-row
+    {
+        --thread-indent: 12px;
+    }
+}
+
 article.post
 {
-    margin: 1em;
+    margin: 1em 0;
+
+    .post-avatar
+    {
+        width: 40px;
+        height: 40px;
+    }
 
     .content
     {
@@ -91,17 +146,23 @@ article.post
 
     .attachments
     {
-        max-height: 240px;
         display: flex;
+
+        > *
+        {
+            width: var(--attachment-size);
+        }
 
         a
         {
             display: block;
+            max-height: var(--attachment-size);
+
             img
             {
-                display: block;
-                max-width:100%;
-                max-height:100%;
+                object-fit: contain;
+                max-width: var(--attachment-size);
+                max-height: var(--attachment-size);
             }
         }
     }
@@ -121,13 +182,6 @@ article.post
 }
 
 /* ── Emoji picker ──────────────────────────────────────────── */
-.emoji-picker-trigger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    list-style: none;
-    min-width: 28px;
-}
 .emoji-picker-trigger[hidden],
 .emoji-picker-panel[hidden] { display: none; }
 .emoji-picker-panel {
