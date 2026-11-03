@@ -128,6 +128,14 @@ main
     }
 }
 
+img.emoji
+{
+    max-height: 1.5em;
+    text-align: center;
+    position: relative;
+    top: 0.25em;
+}
+
 article.post
 {
     margin: 1em 0;
