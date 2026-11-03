@@ -9,6 +9,7 @@
     --color-accent-2: #2ed573;
     --color-danger: #ff4757;
     color-scheme: light;
+    --link-preview-size: 128px;
 }
 
 *
@@ -113,6 +114,11 @@ section.composer
     }
 }
 
+.thread-row > .thread-guide
+{
+    border-left: 2px solid var(--color-border, currentColor);
+}
+
 article.post
 {
     background: var(--color-panel);
@@ -150,6 +156,43 @@ article.post
     {
         padding: 0;
         margin: 1em;
+    }
+
+    a.link-preview
+    {
+        display: flex;
+        box-sizing: content-box;
+        max-height: var(--link-preview-size);
+
+        .link-preview-image
+        {
+            margin-right: 1ex;
+
+            img
+            {
+                max-width: var(--link-preview-size);
+                max-height: var(--link-preview-size);
+            }
+        }
+
+        .link-preview-copy
+        {
+            display: flex;
+            flex-direction: column;
+            padding: 0.5ex;
+
+            > strong, > small
+            {
+                text-wrap: nowrap;
+                overflow: hidden;
+            }
+
+            > span
+            {
+                flex-grow: 1;
+                color: var(--color-fg);
+            }
+        }
     }
 
     .attachments
