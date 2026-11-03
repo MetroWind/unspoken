@@ -288,13 +288,17 @@ class UnspokenControl:
         return result
 
     def reply(self, username: str, post_id: int,
-              fields: dict[str, Any]) -> int:
+              fields: dict[str, Any],
+              files: list[dict[str, Any]] | None = None) -> int:
         """Create a local Unspoken reply and return its numeric post id."""
         csrf = self.csrfFrom(username, f"/p/{post_id}")
-        result = self.browser(username).postForm(
-            f"{self.base_url}/post/{post_id}/reply",
-            {"csrf": csrf, "content": fields["content"],
-             "visibility": fields.get("visibility", "public")})
+        payload = {"csrf": csrf, "content": fields.get("content", ""),
+                   "visibility": fields.get("visibility", "public")}
+        url = f"{self.base_url}/post/{post_id}/reply"
+        if files is None:
+            result = self.browser(username).postForm(url, payload)
+        else:
+            result = self.browser(username).postMultipart(url, payload, files)
         requireStatus(result, 200, "create unspoken reply")
         return postIdFromUrl(result.url)
 
@@ -855,6 +859,31 @@ def runPhase3(unspoken_url: str, akkoma_url: str,
         alice, {"content": f"phase 3 post {stamp}"})
     reply_id = unspoken.reply(
         alice, post_id, {"content": f"phase 3 reply {stamp}"})
+    attachment_reply_ids = []
+    for content in (f"phase 3 attachment reply {stamp}", ""):
+        attachment_reply_id = unspoken.reply(
+            alice, post_id, {"content": content}, [{
+                "name": "attachments", "filename": "reply.png",
+                "content": fixturePng(), "content_type": "image/png",
+            }, {
+                "name": "attachments", "filename": "reply.txt",
+                "content": b"reply attachment", "content_type": "text/plain",
+            }])
+        attachment_reply_ids.append(attachment_reply_id)
+        stored_reply = db.postById(attachment_reply_id)
+        if (stored_reply is None or stored_reply["in_reply_to_uri"]
+                != f"{unspoken_url.rstrip('/')}/p/{post_id}"):
+            raise RuntimeError("Attachment reply lost its parent")
+        attachments = db.attachmentsForPost(attachment_reply_id)
+        if [a["original_name"] for a in attachments] != [
+                "reply.png", "reply.txt"]:
+            raise RuntimeError("Reply attachments were not stored in order")
+        note = unspoken.browser(alice).get(
+            f"{unspoken_url.rstrip('/')}/p/{attachment_reply_id}",
+            {"Accept": ACTIVITY_JSON})
+        requireStatus(note, 200, "fetch attachment reply Note")
+        if len(json.loads(note.body).get("attachment", [])) != 2:
+            raise RuntimeError("Reply Note is missing attachments")
     unspoken.like(alice, post_id)
     unspoken.like(alice, post_id, undo=True)
     unspoken.boost(alice, post_id)
@@ -885,6 +914,8 @@ def runPhase3(unspoken_url: str, akkoma_url: str,
         raise RuntimeError("Unspoken follow row was not stored")
 
     unspoken.delete(alice, reply_id)
+    for attachment_reply_id in attachment_reply_ids:
+        unspoken.delete(alice, attachment_reply_id)
 
     return {
         "name": "phase_3_control_helpers",

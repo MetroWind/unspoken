@@ -1046,6 +1046,41 @@ mw::E<std::vector<std::string>> remoteMentionActorUris(
     return out;
 }
 
+// Store uploads as draft attachments for both posts and replies.
+mw::E<void> storeComposeAttachments(
+    const mw::HTTPServer::Request& req, const Config& config,
+    const unspoken::DataSourceInterface& data, unspoken::ComposeParams& cp)
+{
+    if(req.is_multipart_form_data())
+    {
+        for(const auto& file : req.form.get_files("attachments"))
+        {
+            if(file.content.empty()) continue;
+            if(static_cast<int64_t>(file.content.size())
+               > config.max_upload_bytes)
+            {
+                return std::unexpected(mw::httpError(
+                    413, "Attachment too large"));
+            }
+            ASSIGN_OR_RETURN(
+                auto stored,
+                unspoken::storeAttachment(config.attachment_dir, file.content,
+                                          file.filename, file.content_type));
+            unspoken::Attachment a;
+            a.sha256 = stored.sha256;
+            a.extension = unspoken::extensionOf(stored.filename);
+            a.media_type = stored.media_type;
+            a.original_name = file.filename;
+            a.is_image = stored.is_image;
+            a.sensitive = cp.sensitive;
+            ASSIGN_OR_RETURN(int64_t aid, data.insertAttachment(a));
+            cp.attachment_ids.push_back(aid);
+        }
+    }
+
+    return {};
+}
+
 mw::E<void> enqueueCreateActivity(
     const Config& config, const unspoken::DataSourceInterface& data,
     const unspoken::EmojiRegistry& emoji, const unspoken::Post& post,
@@ -1094,35 +1129,8 @@ void App::handlePostCreate(const Request& req, Response& res) const
     std::string reply_to = param(req, "in_reply_to");
     if(!reply_to.empty()) cp.in_reply_to_uri = reply_to;
 
-    // Attachments (multipart): store each file, create draft attachment rows.
-    if(req.is_multipart_form_data())
-    {
-        for(const auto& file : req.form.get_files("attachments"))
-        {
-            if(file.content.empty()) continue;
-            if(static_cast<int64_t>(file.content.size())
-               > config.max_upload_bytes)
-            {
-                res.status = 413;
-                res.set_content("Attachment too large", "text/plain");
-                return;
-            }
-            ASSIGN_OR_RESPOND_ERROR(
-                auto stored,
-                unspoken::storeAttachment(config.attachment_dir, file.content,
-                                          file.filename, file.content_type),
-                res);
-            unspoken::Attachment a;
-            a.sha256 = stored.sha256;
-            a.extension = unspoken::extensionOf(stored.filename);
-            a.media_type = stored.media_type;
-            a.original_name = file.filename;
-            a.is_image = stored.is_image;
-            a.sensitive = cp.sensitive;
-            ASSIGN_OR_RESPOND_ERROR(int64_t aid, ds->insertAttachment(a), res);
-            cp.attachment_ids.push_back(aid);
-        }
-    }
+    if(respondIfError(storeComposeAttachments(req, config, *ds, cp), res))
+        return;
 
     if(cp.source.empty() && cp.attachment_ids.empty())
     {
@@ -1176,9 +1184,14 @@ void App::handleReply(const Request& req, Response& res) const
     cp.source = param(req, "content");
     cp.visibility = visibilityParam(param(req, "visibility"));
     cp.in_reply_to_uri = parent->uri;
-    if(cp.source.empty()) { res.status = 400;
-                            res.set_content("Empty reply", "text/plain");
-                            return; }
+    if(respondIfError(storeComposeAttachments(req, config, *ds, cp), res))
+        return;
+    if(cp.source.empty() && cp.attachment_ids.empty())
+    {
+        res.status = 400;
+        res.set_content("Empty reply", "text/plain");
+        return;
+    }
     ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
     ASSIGN_OR_RESPOND_ERROR(cp.mentioned_actor_uris,
                             remoteMentionActorUris(
