@@ -1294,6 +1294,24 @@ public:
         if(!event.global_effect)
             return {};
         const auto& activity = event.activity;
+        if(event.origin == ap::AppliedOrigin::INBOX)
+        {
+            std::optional<NotificationKind> kind;
+            if(activity.type == "Like") kind = NotificationKind::LIKE;
+            if(activity.type == "Announce") kind = NotificationKind::BOOST;
+            if(activity.type == "EmojiReact") kind = NotificationKind::REACTION;
+            if(activity.type == "Follow") kind = NotificationKind::FOLLOW;
+            if(kind)
+            {
+                auto target = normalizeRef(activity.object);
+                if(!target) return {};
+                EmojiRegistry empty_emoji;
+                Service service(config, data, empty_emoji);
+                return service.notifyInteraction(*kind, activity.actor,
+                    *target, mw::timeToSeconds(mw::Clock::now()),
+                    ap::reactionContent(activity.raw));
+            }
+        }
         auto uri = normalizeRef(activity.object);
         if(!uri)
             return {};
@@ -1338,6 +1356,14 @@ public:
                                 config.url_root + "p/"));
             DO_OR_RETURN(
                 storeRemoteAttachments(data, activity.object, inserted.id));
+            if(event.origin == ap::AppliedOrigin::INBOX
+               && activity.type == "Create")
+            {
+                EmojiRegistry empty_emoji;
+                Service service(config, data, empty_emoji);
+                DO_OR_RETURN(service.notifyReply(inserted, activity.actor,
+                    mw::timeToSeconds(mw::Clock::now())));
+            }
         }
         return {};
     }

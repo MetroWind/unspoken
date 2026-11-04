@@ -51,6 +51,10 @@ reapplying an old Update to a shared application content row; recipient
 notifications can still be inserted with an activity/recipient uniqueness
 constraint.
 
+`AppliedEvent::origin` distinguishes incoming activities (`INBOX`), fetched
+objects (`FETCH`), and historical maintenance (`REPAIR`). Applications can
+use it to avoid generating fresh notifications for imported history.
+
 There is no storage interface for the application to implement. `ap::Store`
 provides the concrete actor, follow, interaction, receipt, and job SQL. Host
 content tables remain host-owned. Explicit actor-reference pins through

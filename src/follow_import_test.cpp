@@ -117,7 +117,7 @@ TEST_F(FollowImport, QueuesPendingFollowAndSkipsDuplicatesAndReruns)
         ->follow_activity_uri,follow->follow_activity_uri);
     EXPECT_EQ(data->connection().evalToValue<int64_t>(
         "SELECT count(*) FROM ap_jobs").value(),1);
-    EXPECT_EQ(data->getSchemaVersion().value(),6);
+    EXPECT_EQ(data->getSchemaVersion().value(),7);
 }
 
 TEST_F(FollowImport, ContinuesAfterResolutionAndValidationFailures)
@@ -153,6 +153,8 @@ TEST_F(FollowImport, AddsLocalFollowsAndSkipsSelfAndAcceptedFollows)
                                   config.url_root+"u/neighbor").value();
     ASSERT_TRUE(follow);
     EXPECT_EQ(follow->state,FollowState::ACCEPTED);
+    EXPECT_EQ(data->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM notifications").value(),0);
     EXPECT_EQ(data->connection().evalToValue<int64_t>(
         "SELECT count(*) FROM ap_jobs").value(),0);
 }

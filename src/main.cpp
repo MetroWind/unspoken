@@ -163,6 +163,14 @@ int main(int argc, char** argv)
         spdlog::info("Startup inbox maintenance pruned {} activity IDs",
                      *pruned);
     }
+    auto expired_notifications = (*db_init)->pruneExpiredNotifications(
+        maintenance_now, config->maintenance_batch_size);
+    if(!expired_notifications)
+        spdlog::warn("Startup notification cleanup failed: {}",
+                     mw::errorMsg(expired_notifications.error()));
+    else if(*expired_notifications > 0)
+        spdlog::info("Startup notification cleanup removed {} entries",
+                     *expired_notifications);
     auto collected = unspoken::runRemoteActorCollectionOnce(
         *config, **db_init, maintenance_now);
     if(!collected.has_value())

@@ -424,13 +424,21 @@ mw::E<Post> Service::createPost(const User& author,
     np.in_reply_to_uri = p.in_reply_to_uri;
 
     std::string prefix = config.url_root + "p/";
-    ASSIGN_OR_RETURN(Post post, data.insertPost(np, recipients, prefix));
-
-    for(int64_t aid : p.attachment_ids)
+    Post result;
+    auto create = [&]() -> mw::E<void>
     {
-        DO_OR_RETURN(data.attachToPost(aid, post.id));
-    }
-    return post;
+        ASSIGN_OR_RETURN(auto post, data.insertPost(np, recipients, prefix));
+        for(int64_t aid : p.attachment_ids)
+        {
+            DO_OR_RETURN(data.attachToPost(aid, post.id));
+        }
+        DO_OR_RETURN(notifyReply(post, actorUri(author.username),
+                                nowSeconds()));
+        result = std::move(post);
+        return {};
+    };
+    DO_OR_RETURN(data.withWrite(create));
+    return result;
 }
 
 mw::E<bool> Service::canViewPost(const Post& post,
@@ -513,59 +521,77 @@ Service::homeTimeline(const User& viewer, const Cursor& c) const
 
 mw::E<void> Service::setLike(const User& viewer, const Post& p, bool on) const
 {
-    const std::string actor = actorUri(viewer.username);
-    if(on)
+    auto interact = [&]() -> mw::E<void>
     {
-        Like l;
-        l.actor_uri = actor;
-        l.post_uri = p.uri;
-        ASSIGN_OR_RETURN(l.activity_uri,
-                         interactionActivityUri(config, "like"));
-        l.created_at = nowSeconds();
-        return data.addLike(l);
-    }
-    return data.removeLike(actor, p.uri);
+        const std::string actor = actorUri(viewer.username);
+        if(on)
+        {
+            Like l;
+            l.actor_uri = actor;
+            l.post_uri = p.uri;
+            ASSIGN_OR_RETURN(l.activity_uri,
+                             interactionActivityUri(config, "like"));
+            l.created_at = nowSeconds();
+            DO_OR_RETURN(data.addLike(l));
+            return notifyInteraction(NotificationKind::LIKE, actor, p.uri,
+                                     nowSeconds());
+        }
+        return data.removeLike(actor, p.uri);
+    };
+    return data.withWrite(interact);
 }
 
 mw::E<void> Service::setBoost(const User& viewer, const Post& p, bool on) const
 {
-    // Only Public and Unlisted posts can be boosted (PRD line 25).
-    if(on && p.visibility != Visibility::PUBLIC
-       && p.visibility != Visibility::UNLISTED)
+    auto interact = [&]() -> mw::E<void>
     {
-        return std::unexpected(mw::httpError(
-            403, "Only public or unlisted posts can be boosted"));
-    }
-    const std::string actor = actorUri(viewer.username);
-    if(on)
-    {
-        Boost b;
-        b.actor_uri = actor;
-        b.post_uri = p.uri;
-        ASSIGN_OR_RETURN(b.activity_uri,
-                         interactionActivityUri(config, "boost"));
-        b.created_at = nowSeconds();
-        return data.addBoost(b);
-    }
-    return data.removeBoost(actor, p.uri);
+        // Only Public and Unlisted posts can be boosted (PRD line 25).
+        if(on && p.visibility != Visibility::PUBLIC
+           && p.visibility != Visibility::UNLISTED)
+        {
+            return std::unexpected(mw::httpError(
+                403, "Only public or unlisted posts can be boosted"));
+        }
+        const std::string actor = actorUri(viewer.username);
+        if(on)
+        {
+            Boost b;
+            b.actor_uri = actor;
+            b.post_uri = p.uri;
+            ASSIGN_OR_RETURN(b.activity_uri,
+                             interactionActivityUri(config, "boost"));
+            b.created_at = nowSeconds();
+            DO_OR_RETURN(data.addBoost(b));
+            return notifyInteraction(NotificationKind::BOOST, actor, p.uri,
+                                     nowSeconds());
+        }
+        return data.removeBoost(actor, p.uri);
+    };
+    return data.withWrite(interact);
 }
 
 mw::E<void> Service::setReaction(const User& viewer, const Post& p,
                                  std::string_view emoji_str, bool on) const
 {
-    const std::string actor = actorUri(viewer.username);
-    if(on)
+    auto interact = [&]() -> mw::E<void>
     {
-        Reaction r;
-        r.actor_uri = actor;
-        r.post_uri = p.uri;
-        r.emoji = std::string(emoji_str);
-        ASSIGN_OR_RETURN(r.activity_uri,
-                         interactionActivityUri(config, "react"));
-        r.created_at = nowSeconds();
-        return data.addReaction(r);
-    }
-    return data.removeReaction(actor, p.uri, emoji_str);
+        const std::string actor = actorUri(viewer.username);
+        if(on)
+        {
+            Reaction r;
+            r.actor_uri = actor;
+            r.post_uri = p.uri;
+            r.emoji = std::string(emoji_str);
+            ASSIGN_OR_RETURN(r.activity_uri,
+                             interactionActivityUri(config, "react"));
+            r.created_at = nowSeconds();
+            DO_OR_RETURN(data.addReaction(r));
+            return notifyInteraction(NotificationKind::REACTION, actor, p.uri,
+                                     nowSeconds(), emoji_str);
+        }
+        return data.removeReaction(actor, p.uri, emoji_str);
+    };
+    return data.withWrite(interact);
 }
 
 mw::E<void> Service::setBookmark(const User& viewer, const Post& p,
@@ -579,23 +605,29 @@ mw::E<void> Service::setFollowActor(
     const User& viewer, std::string_view target_actor_uri, bool on,
     FollowState state, std::optional<std::string> follow_activity_uri) const
 {
-    const std::string follower = actorUri(viewer.username);
-    const std::string followee(target_actor_uri);
-    if(follower == followee)
+    auto interact = [&]() -> mw::E<void>
     {
-        return std::unexpected(mw::httpError(400, "Cannot follow yourself"));
-    }
-    if(on)
-    {
-        Follow f;
-        f.follower_uri = follower;
-        f.followee_uri = followee;
-        f.state = state;
-        f.follow_activity_uri = std::move(follow_activity_uri);
-        f.created_at = nowSeconds();
-        return data.addFollow(f);
-    }
-    return data.removeFollow(follower, followee);
+        const std::string follower = actorUri(viewer.username);
+        const std::string followee(target_actor_uri);
+        if(follower == followee)
+        {
+            return std::unexpected(mw::httpError(400, "Cannot follow yourself"));
+        }
+        if(on)
+        {
+            Follow f;
+            f.follower_uri = follower;
+            f.followee_uri = followee;
+            f.state = state;
+            f.follow_activity_uri = follow_activity_uri;
+            f.created_at = nowSeconds();
+            DO_OR_RETURN(data.addFollow(f));
+            return notifyInteraction(NotificationKind::FOLLOW, follower,
+                                     followee, nowSeconds());
+        }
+        return data.removeFollow(follower, followee);
+    };
+    return data.withWrite(interact);
 }
 
 mw::E<void> Service::setFollow(const User& viewer,

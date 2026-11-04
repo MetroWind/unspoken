@@ -405,7 +405,7 @@ without exposing hidden post content or author information.
 
 ## CSS themes
 
-Set `theme_dir` (default `themes`) and `default_theme` (default `base`).
+Set `theme_dir` (default `themes`) and `default_theme` (default `plain`).
 Each theme is a subdirectory containing `info.yaml`, with an optional display
 `name` and `parent` theme ID. Directory names are the stable IDs; use ASCII
 letters, digits, hyphens, or underscores. Display names need not be unique.
@@ -420,3 +420,21 @@ browser preference for one year. Unknown saved
 preferences use the configured default. Missing parents, inheritance cycles,
 and unknown configured defaults prevent startup. Restart after changing a
 manifest or adding/removing stylesheets; CSS contents are served from disk.
+
+## Notifications
+
+Logged-in users see their recent replies, likes, boosts, emoji reactions,
+and new followers below the home page composer. Each list is private and
+has independent Older, Newer, and Latest links. Browsing notifications
+preserves the main timeline cursor. Refresh the page to see new entries.
+
+The application retains at most 100 notifications per user, with a maximum
+visible age of 30 days. New notifications prune that recipient's history;
+startup and hourly maintenance remove expired rows in bounded batches using
+`maintenance_batch_size`. These limits do not delete posts or interactions.
+Undo and post deletion remove their corresponding notifications. There is
+no unread count, grouping, or historical backfill in this version.
+
+This feature upgrades the application database from schema 6 to 7. Take a
+consistent backup before upgrading; an older binary needs a compatible
+backup. The ActivityPub library schema does not change.

@@ -29,7 +29,7 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 6;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 7;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -560,6 +560,7 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
         DO_OR_RETURN(data_source->migrate3To4());
         DO_OR_RETURN(data_source->setSchemaVersion(5));
         DO_OR_RETURN(data_source->migrate5To6());
+        DO_OR_RETURN(data_source->migrate6To7());
         DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
@@ -600,6 +601,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate5To6());
                 version = 6;
+                continue;
+            }
+            if(version == 6)
+            {
+                DO_OR_RETURN(data_source->migrate6To7());
+                version = 7;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -2917,6 +2924,187 @@ mw::E<int64_t> DataSourceSQLite::repairMentionLinkPreviews(
         }
     }
     return repaired;
+}
+
+mw::E<void> DataSourceSQLite::withWrite(
+    const std::function<mw::E<void>()>& operation) const
+{
+    return withDataWrite(*db, operation);
+}
+
+mw::E<void> DataSourceSQLite::migrate6To7() const
+{
+    auto migrate = [&]() -> mw::E<void>
+    {
+        for(const char* sql : {
+            R"SQL(CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient_user_id INTEGER NOT NULL
+        REFERENCES users(id) ON DELETE CASCADE,
+    kind INTEGER NOT NULL CHECK(kind IN (0, 1, 2, 3, 4)),
+    actor_uri TEXT NOT NULL,
+    post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+    reply_post_id INTEGER UNIQUE
+        REFERENCES posts(id) ON DELETE CASCADE,
+    like_id INTEGER UNIQUE REFERENCES ap_likes(id) ON DELETE CASCADE,
+    boost_id INTEGER UNIQUE REFERENCES ap_boosts(id) ON DELETE CASCADE,
+    reaction_id INTEGER UNIQUE REFERENCES ap_reactions(id) ON DELETE CASCADE,
+    follow_id INTEGER UNIQUE REFERENCES ap_follows(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    CHECK (
+        (kind = 0 AND post_id IS NOT NULL
+            AND reply_post_id IS NOT NULL AND like_id IS NULL
+            AND boost_id IS NULL AND reaction_id IS NULL
+            AND follow_id IS NULL)
+        OR
+        (kind = 1 AND post_id IS NOT NULL
+            AND reply_post_id IS NULL AND like_id IS NOT NULL
+            AND boost_id IS NULL AND reaction_id IS NULL
+            AND follow_id IS NULL)
+        OR
+        (kind = 2 AND post_id IS NOT NULL
+            AND reply_post_id IS NULL AND like_id IS NULL
+            AND boost_id IS NOT NULL AND reaction_id IS NULL
+            AND follow_id IS NULL)
+        OR
+        (kind = 3 AND post_id IS NOT NULL
+            AND reply_post_id IS NULL AND like_id IS NULL
+            AND boost_id IS NULL AND reaction_id IS NOT NULL
+            AND follow_id IS NULL)
+        OR
+        (kind = 4 AND post_id IS NULL
+            AND reply_post_id IS NULL AND like_id IS NULL
+            AND boost_id IS NULL AND reaction_id IS NULL
+            AND follow_id IS NOT NULL)
+    )
+);)SQL",
+            R"SQL(CREATE INDEX idx_notifications_recipient
+    ON notifications(recipient_user_id, id DESC);)SQL",
+            R"SQL(CREATE INDEX idx_notifications_expiry ON notifications(created_at, id);)SQL",
+            R"SQL(CREATE INDEX idx_notifications_post ON notifications(post_id);)SQL",
+            R"SQL(CREATE TRIGGER notification_follow_pending
+AFTER UPDATE OF state ON ap_follows
+WHEN NEW.state <> 'accepted'
+BEGIN
+    DELETE FROM notifications WHERE follow_id = NEW.id;
+END;)SQL",
+            R"SQL(CREATE TRIGGER notification_reply_parent
+AFTER UPDATE OF in_reply_to_uri ON posts
+WHEN OLD.in_reply_to_uri IS NOT NEW.in_reply_to_uri
+BEGIN
+    DELETE FROM notifications WHERE reply_post_id = NEW.id;
+END;)SQL"})
+        {
+            DO_OR_RETURN(db->execute(sql));
+        }
+        return setSchemaVersion(7);
+    };
+    return withDataWrite(*db, migrate);
+}
+
+mw::E<void> DataSourceSQLite::recordNotification(
+    const Notification& entry) const
+{
+    auto record = [&]() -> mw::E<void>
+    {
+        if(entry.post_id)
+        {
+            ASSIGN_OR_RETURN(auto post, getPostById(*entry.post_id));
+            if(!post || post->local_author_id != entry.recipient_user_id)
+            {
+                return std::unexpected(mw::runtimeError(
+                    "Notification recipient does not own its post"));
+            }
+        }
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "INSERT INTO notifications (recipient_user_id,kind,actor_uri,"
+            "post_id,reply_post_id,like_id,boost_id,reaction_id,follow_id,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(reply_post_id) DO NOTHING "
+            "ON CONFLICT(like_id) DO NOTHING "
+            "ON CONFLICT(boost_id) DO NOTHING "
+            "ON CONFLICT(reaction_id) DO NOTHING "
+            "ON CONFLICT(follow_id) DO NOTHING;"));
+        DO_OR_RETURN((st.bind<int64_t, int64_t, std::string,
+            std::optional<int64_t>, std::optional<int64_t>,
+            std::optional<int64_t>, std::optional<int64_t>,
+            std::optional<int64_t>, std::optional<int64_t>, int64_t>(
+                entry.recipient_user_id, static_cast<int64_t>(entry.kind),
+                entry.actor_uri, entry.post_id, entry.reply_post_id,
+                entry.like_id, entry.boost_id, entry.reaction_id,
+                entry.follow_id, entry.created_at)));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        ASSIGN_OR_RETURN(auto expiry, db->statementFromStr(
+            "DELETE FROM notifications WHERE recipient_user_id=? "
+            "AND created_at < ?;"));
+        DO_OR_RETURN((expiry.bind<int64_t, int64_t>(entry.recipient_user_id,
+            entry.created_at - NOTIFICATION_RETENTION_SECONDS)));
+        DO_OR_RETURN(db->execute(std::move(expiry)));
+        ASSIGN_OR_RETURN(auto excess, db->statementFromStr(
+            "DELETE FROM notifications WHERE id IN ("
+            "SELECT id FROM notifications WHERE recipient_user_id=? "
+            "ORDER BY id DESC LIMIT -1 OFFSET ?);"));
+        DO_OR_RETURN((excess.bind<int64_t, int64_t>(entry.recipient_user_id,
+            MAX_NOTIFICATIONS_PER_USER)));
+        return db->execute(std::move(excess));
+    };
+    return withDataWrite(*db, record);
+}
+
+mw::E<std::vector<Notification>> DataSourceSQLite::notificationsFor(
+    int64_t user_id, int64_t now_seconds) const
+{
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+        "SELECT id,recipient_user_id,kind,actor_uri,post_id,reply_post_id,"
+        "like_id,boost_id,reaction_id,follow_id,created_at "
+        "FROM notifications WHERE recipient_user_id=? AND created_at>=? "
+        "ORDER BY id DESC LIMIT ?;"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t>(user_id,
+        now_seconds - NOTIFICATION_RETENTION_SECONDS,
+        MAX_NOTIFICATIONS_PER_USER)));
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, int64_t, int64_t,
+        std::string, std::optional<int64_t>, std::optional<int64_t>,
+        std::optional<int64_t>, std::optional<int64_t>,
+        std::optional<int64_t>, std::optional<int64_t>, int64_t>(
+            std::move(st))));
+    std::vector<Notification> result;
+    for(const auto& row : rows)
+    {
+        int64_t kind = std::get<2>(row);
+        if(kind < 0 || kind > 4)
+            return std::unexpected(mw::runtimeError(
+                "Invalid notification kind in database"));
+        result.push_back(Notification{
+            std::get<0>(row), std::get<1>(row),
+            static_cast<NotificationKind>(kind), std::get<3>(row),
+            std::get<4>(row), std::get<5>(row), std::get<6>(row),
+            std::get<7>(row), std::get<8>(row), std::get<9>(row),
+            std::get<10>(row)});
+    }
+    return result;
+}
+
+mw::E<int64_t> DataSourceSQLite::pruneExpiredNotifications(
+    int64_t now_seconds, int batch_size) const
+{
+    if(batch_size <= 0)
+        return std::unexpected(mw::runtimeError(
+            "Invalid notification maintenance batch size"));
+    int64_t removed = 0;
+    auto prune = [&]() -> mw::E<void>
+    {
+        ASSIGN_OR_RETURN(auto st, db->statementFromStr(
+            "DELETE FROM notifications WHERE id IN ("
+            "SELECT id FROM notifications WHERE created_at < ? "
+            "ORDER BY created_at,id LIMIT ?);"));
+        DO_OR_RETURN((st.bind<int64_t, int64_t>(
+            now_seconds - NOTIFICATION_RETENTION_SECONDS, batch_size)));
+        DO_OR_RETURN(db->execute(std::move(st)));
+        removed = db->changedRowsCount();
+        return {};
+    };
+    DO_OR_RETURN(withDataWrite(*db, prune));
+    return removed;
 }
 
 } // namespace unspoken

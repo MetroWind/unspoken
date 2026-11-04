@@ -65,6 +65,14 @@ private:
     friend class Session;
 };
 
+// Where an application projection originated, independently of its wire type.
+enum class AppliedOrigin
+{
+    INBOX,
+    FETCH,
+    REPAIR,
+};
+
 // An accepted protocol effect for the application's transactional projection.
 struct AppliedEvent
 {
@@ -72,6 +80,7 @@ struct AppliedEvent
     std::string recipient_uri;
     RemoteActor actor;
     bool global_effect = true;
+    AppliedOrigin origin = AppliedOrigin::INBOX;
 };
 
 // Host policy/projection integration; all persistence uses the shared SQLite.

@@ -46,6 +46,18 @@ public:
     // Migrate schema version 2 databases to the inbox-claim schema.
     virtual mw::E<void> migrate2To3() const = 0;
 
+    // Commit an application operation atomically, joining an outer write.
+    virtual mw::E<void> withWrite(
+        const std::function<mw::E<void>()>& operation) const = 0;
+    // Record a source once and prune its recipient's retained history.
+    virtual mw::E<void> recordNotification(const Notification& entry) const = 0;
+    // Read one owner's bounded unexpired history, newest first.
+    virtual mw::E<std::vector<Notification>> notificationsFor(
+        int64_t user_id, int64_t now_seconds) const = 0;
+    // Remove at most batch_size expired entries across all owners.
+    virtual mw::E<int64_t> pruneExpiredNotifications(
+        int64_t now_seconds, int batch_size) const = 0;
+
     // ── Users ───────────────────────────────────────────────────
     virtual mw::E<User> createUser(const NewUser& nu) const = 0;
     virtual mw::E<std::optional<User>>
@@ -296,6 +308,20 @@ public:
     static mw::E<std::unique_ptr<DataSourceSQLite>>
     fromFile(const std::string& db_file, int busy_timeout_ms = 5000);
     static mw::E<std::unique_ptr<DataSourceSQLite>> newFromMemory();
+
+    // Add private notification history without backfilling old interactions.
+    mw::E<void> migrate6To7() const;
+    // Commit an application operation atomically, joining an outer write.
+    mw::E<void> withWrite(
+        const std::function<mw::E<void>()>& operation) const override;
+    // Record a source once and prune its recipient's retained history.
+    mw::E<void> recordNotification(const Notification& entry) const override;
+    // Read one owner's bounded unexpired history, newest first.
+    mw::E<std::vector<Notification>> notificationsFor(
+        int64_t user_id, int64_t now_seconds) const override;
+    // Remove at most batch_size expired entries across all owners.
+    mw::E<int64_t> pruneExpiredNotifications(
+        int64_t now_seconds, int batch_size) const override;
 
     // Correct saved previews that point to marked mention/tag/media links.
     // Reuses retained wire objects; never backfills posts without a preview.

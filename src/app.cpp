@@ -207,6 +207,53 @@ cursorFromRequest(const mw::HTTPServer::Request& req,
     return cursor;
 }
 
+std::optional<unspoken::Cursor> notificationCursorFromRequest(
+    const mw::HTTPServer::Request& req, mw::HTTPServer::Response& res)
+{
+    unspoken::Cursor cursor;
+    for(const char* name : {"notifications_max_id", "notifications_min_id"})
+    {
+        if(!req.has_param(name)) continue;
+        auto id = parseInt64(req.get_param_value(name));
+        if(!id || req.get_param_value_count(name) != 1)
+        {
+            res.status = 400;
+            res.set_content("Bad notification cursor", "text/plain");
+            return std::nullopt;
+        }
+        if(std::string_view(name) == "notifications_max_id")
+            cursor.max_id = *id;
+        else
+            cursor.min_id = *id;
+    }
+    if(cursor.max_id && cursor.min_id)
+    {
+        res.status = 400;
+        res.set_content("Conflicting notification cursors", "text/plain");
+        return std::nullopt;
+    }
+    return cursor;
+}
+
+// All query values here are validated integer IDs, never raw request strings.
+std::string timelinePageUrl(const std::string& root,
+    const unspoken::Cursor& timeline, const unspoken::Cursor& notifications,
+    std::string_view fragment)
+{
+    std::string url = root;
+    for(const auto& [name, value] : {
+        std::pair{"max_id", timeline.max_id},
+        std::pair{"min_id", timeline.min_id},
+        std::pair{"notifications_max_id", notifications.max_id},
+        std::pair{"notifications_min_id", notifications.min_id}})
+    {
+        if(!value) continue;
+        url += url == root ? '?' : '&';
+        url += std::string(name) + "=" + std::to_string(*value);
+    }
+    return mw::escapeHTML(url + "#" + std::string(fragment));
+}
+
 std::string headerValue(const mw::HTTPServer::Request& req,
                         const std::string& name)
 {
@@ -446,6 +493,14 @@ void App::jobWorkerLoop(int worker_id) const
                 spdlog::info("Inbox maintenance pruned {} activity IDs",
                              *pruned);
             }
+            auto expired = (*db)->pruneExpiredNotifications(
+                now, config.maintenance_batch_size);
+            if(!expired)
+                spdlog::warn("Notification cleanup failed: {}",
+                             mw::errorMsg(expired.error()));
+            else if(*expired > 0)
+                spdlog::info("Notification cleanup removed {} entries",
+                             *expired);
             auto collected = unspoken::runRemoteActorCollectionOnce(
                 config, **db, now);
             if(!collected.has_value())
@@ -795,6 +850,8 @@ void App::handleIndex(const Request& req, Response& res) const
     auto parsed_cursor = cursorFromRequest(req, res, true);
     if(!parsed_cursor.has_value()) return;
     unspoken::Cursor cursor = *parsed_cursor;
+    auto notification_cursor = notificationCursorFromRequest(req, res);
+    if(!notification_cursor) return;
 
     std::vector<unspoken::Post> posts;
     if(viewer.has_value())
@@ -809,12 +866,34 @@ void App::handleIndex(const Request& req, Response& res) const
 
     ASSIGN_OR_RESPOND_ERROR(auto post_views, svc.postViews(posts, viewer), res);
     auto ctx = baseContext(req, viewer);
+    if(viewer)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto page, svc.notificationPage(
+            *viewer, *notification_cursor,
+            mw::timeToSeconds(mw::Clock::now())), res);
+        unspoken::Cursor older;
+        older.max_id = page["older_id"].get<int64_t>();
+        unspoken::Cursor newer;
+        newer.min_id = page["newer_id"].get<int64_t>();
+        page["older_url"] = timelinePageUrl(config.url_root, cursor,
+                                            older, "notifications");
+        page["newer_url"] = timelinePageUrl(config.url_root, cursor,
+                                            newer, "notifications");
+        page["latest_url"] = timelinePageUrl(config.url_root, cursor,
+                                             {}, "notifications");
+        ctx["notifications"] = std::move(page);
+        res.set_header("Cache-Control", "private, no-store");
+    }
     ctx["posts"] = post_views;
     ctx["timeline"] = viewer.has_value() ? "home" : "public";
     if(!posts.empty())
     {
         ctx["next_max_id"] = viewer.has_value()
             ? posts.back().timeline_id : posts.back().id;
+        unspoken::Cursor older;
+        older.max_id = ctx["next_max_id"].get<int64_t>();
+        ctx["older_url"] = timelinePageUrl(config.url_root, older,
+            *notification_cursor, "timeline");
         ctx["has_more"] = (static_cast<int>(posts.size())
                            == config.posts_per_page);
     }

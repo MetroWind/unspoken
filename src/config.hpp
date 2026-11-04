@@ -61,7 +61,7 @@ struct Config
     std::string static_dir = "static";
     // CSS theme root and site-wide default theme identifier.
     std::string theme_dir = "themes";
-    std::string default_theme = "base";
+    std::string default_theme = "plain";
     // Catalog populated during configuration validation.
     unspoken::ThemeManager themes;
 

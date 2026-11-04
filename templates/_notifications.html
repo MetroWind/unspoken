@@ -1,0 +1,46 @@
+<section class="notifications" id="notifications"
+         aria-labelledby="notifications-title">
+  <h2 id="notifications-title">Notifications</h2>
+{% if length(notifications.entries) == 0 %}
+  <p class="empty">{% if notifications.paged %}No notifications on this page.{% else %}No recent notifications.{% endif %}</p>
+{% else %}
+  <ul class="notification-list">
+{% for notification in notifications.entries %}
+    <li>
+{% if length(notification.actor.profile_url) > 0 %}
+      <a href="{{ notification.actor.profile_url }}">{{ notification.actor.display_name }}</a>
+{% else %}
+      <span>{{ notification.actor.display_name }}</span>
+{% endif %}
+{% if notification.kind == 4 %}
+      followed you
+{% else %}
+{% if notification.kind == 0 %}
+      replied to your post
+{% else if notification.kind == 1 %}
+      liked your post
+{% else if notification.kind == 2 %}
+      boosted your post
+{% else %}
+      reacted with {{ notification.emoji }} to your post
+{% endif %}
+      <a href="{{ notification.post.url }}">{{ notification.post.excerpt }}</a>{% if notification.kind == 0 %}:
+      <a href="{{ notification.reply.url }}">{{ notification.reply.excerpt }}</a>{% endif %}
+{% endif %}
+      <time datetime="{{ notification.datetime }}">{{ notification.timestamp }}</time>
+    </li>
+{% endfor %}
+  </ul>
+{% endif %}
+  <nav class="notification-pager" aria-label="Notification pages">
+{% if notifications.has_newer %}
+    <a href="{{ notifications.newer_url }}">Newer</a>
+{% endif %}
+{% if notifications.has_older %}
+    <a href="{{ notifications.older_url }}">Older</a>
+{% endif %}
+{% if notifications.paged %}
+    <a href="{{ notifications.latest_url }}">Latest notifications</a>
+{% endif %}
+  </nav>
+</section>

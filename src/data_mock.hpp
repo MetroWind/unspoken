@@ -22,6 +22,19 @@ namespace unspoken
 class DataSourceMock : public DataSourceInterface
 {
 public:
+    // Execute write callbacks so service tests exercise their operations.
+    mw::E<void> withWrite(
+        const std::function<mw::E<void>()>& operation) const override
+    {
+        return operation();
+    }
+    MOCK_METHOD(mw::E<void>, recordNotification, (const Notification&),
+                (const, override));
+    MOCK_METHOD(mw::E<std::vector<Notification>>, notificationsFor,
+                (int64_t, int64_t), (const, override));
+    MOCK_METHOD(mw::E<int64_t>, pruneExpiredNotifications,
+                (int64_t, int), (const, override));
+
     // Cached application metadata, loaded in batches for authorized posts.
     MOCK_METHOD((mw::E<std::map<int64_t, LinkPreview>>), getLinkPreviews,
                 (const std::vector<int64_t>&), (const, override));

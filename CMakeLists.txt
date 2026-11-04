@@ -151,6 +151,7 @@ set(SOURCE_FILES
   src/federation.cpp
   src/federation.hpp
   src/service.cpp
+  src/notifications.cpp
   src/service.hpp
   src/app.cpp
   src/app.hpp
@@ -222,6 +223,7 @@ if(UNSPOKEN_BUILD_TESTS)
     src/data_test.cpp
     src/auth_test.cpp
     src/service_test.cpp
+    src/notification_test.cpp
     src/federation_test.cpp
     src/emoji_test.cpp
   )

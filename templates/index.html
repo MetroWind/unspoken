@@ -3,12 +3,18 @@
 {% if timeline == "home" %}home timeline{% else %}public timeline{% endif %}
 </h1>
 {% if logged_in %}
+<aside class="sidebar" aria-label="Posting and notifications">
 {% include "_composer.html" %}
+{% if exists("notifications") %}
+{% include "_notifications.html" %}
+{% endif %}
+</aside>
 {% else %}
 <p class="hint">Showing all public posts on this server. <a href="{{ site.root }}login">Log in</a> to post and see your home timeline.</p>
 {% endif %}
 
-<div class="timeline">
+<div class="timeline-column">
+<div class="timeline" id="timeline">
 {% if length(posts) == 0 %}
 <p class="empty">No posts yet.</p>
 {% endif %}
@@ -18,6 +24,7 @@
 </div>
 
 {% if has_more %}
-<p class="pager"><a href="{{ site.root }}?max_id={{ next_max_id }}">older <i class="nf nf-fa-arrow_right ui-icon" aria-hidden="true"></i></a></p>
+<p class="pager"><a href="{{ older_url }}">older <i class="nf nf-fa-arrow_right ui-icon" aria-hidden="true"></i></a></p>
 {% endif %}
+</div>
 {% include "_footer.html" %}

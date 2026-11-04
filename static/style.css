@@ -1,1 +1,2 @@
-@import url("../themes/base/style.css");
+@import url("../themes/plain/0-reset.css");
+@import url("../themes/plain/1-style.css");

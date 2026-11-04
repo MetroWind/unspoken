@@ -117,6 +117,37 @@ struct Post
     std::optional<std::string> published; // original timestamp (remote)
 };
 
+// Stable notification kinds persisted by the application.
+enum class NotificationKind
+{
+    REPLY = 0,
+    LIKE = 1,
+    BOOST = 2,
+    REACTION = 3,
+    FOLLOW = 4,
+};
+
+// Retained interaction and the local account entitled to see it.
+struct Notification
+{
+    int64_t id = 0;
+    int64_t recipient_user_id = 0;
+    NotificationKind kind = NotificationKind::REPLY;
+    std::string actor_uri;
+    std::optional<int64_t> post_id;
+    std::optional<int64_t> reply_post_id;
+    std::optional<int64_t> like_id;
+    std::optional<int64_t> boost_id;
+    std::optional<int64_t> reaction_id;
+    std::optional<int64_t> follow_id;
+    int64_t created_at = 0;
+};
+
+// Fixed bounds for the initial notification timeline.
+inline constexpr int NOTIFICATIONS_PER_PAGE = 10;
+inline constexpr int MAX_NOTIFICATIONS_PER_USER = 100;
+inline constexpr int64_t NOTIFICATION_RETENTION_SECONDS = 30 * 24 * 60 * 60;
+
 // Fields to create a new post. The uri for local posts is assigned
 // after insert (it embeds the new id), so insertPost backfills it.
 struct NewPost

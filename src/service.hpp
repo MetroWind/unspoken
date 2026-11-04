@@ -75,6 +75,17 @@ public:
     mw::E<std::vector<Post>>
     homeTimeline(const User& viewer, const Cursor& c) const;
 
+    // Record an accepted interaction directed at a local account.
+    mw::E<void> notifyInteraction(NotificationKind kind,
+        std::string_view actor_uri, std::string_view target_uri,
+        int64_t now_seconds, std::string_view reaction = {}) const;
+    // Record a newly delivered or locally composed reply for its parent owner.
+    mw::E<void> notifyReply(const Post& reply, std::string_view actor_uri,
+        int64_t now_seconds) const;
+    // Build one private, authorized page from the bounded retained history.
+    mw::E<nlohmann::json> notificationPage(const User& viewer,
+        const Cursor& cursor, int64_t now_seconds) const;
+
     // ── Interactions (local-only semantics) ─────────────────────────
     mw::E<void> setLike(const User& viewer, const Post& p, bool on) const;
     mw::E<void> setBoost(const User& viewer, const Post& p, bool on) const;

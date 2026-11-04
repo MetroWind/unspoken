@@ -275,5 +275,6 @@ TEST(Config, LoadsThemeCatalog)
     c.default_theme = "light";
     ASSERT_TRUE(c.validateAndFinalize());
     EXPECT_EQ(c.themes.stylesheets("light"),
-              (std::vector<std::string>{"base/style.css", "light/style.css"}));
+              (std::vector<std::string>{"plain/0-reset.css",
+                  "plain/1-style.css", "light/style.css"}));
 }

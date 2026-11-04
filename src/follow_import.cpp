@@ -78,7 +78,13 @@ mw::E<ImportOutcome> followTarget(
     Service service(config,data,emoji);
     if(!remote)
     {
-        DO_OR_RETURN(service.setFollowActor(user,target,true));
+        // Restoring an imported relationship does not notify its followee.
+        Follow follow;
+        follow.follower_uri = follower;
+        follow.followee_uri = target;
+        follow.state = FollowState::ACCEPTED;
+        follow.created_at = mw::timeToSeconds(mw::Clock::now());
+        DO_OR_RETURN(data.addFollow(follow));
         DO_OR_RETURN(transaction.commit());
         return ImportOutcome::LOCAL;
     }

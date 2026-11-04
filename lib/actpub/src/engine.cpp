@@ -1160,7 +1160,7 @@ mw::E<InboxResult> Session::acceptInbox(PreparedInbox&& prepared, int64_t now)
                         imported.raw = {{"id",imported.id},{"type","Create"},
                             {"actor",author.uri},{"object",imported.object}};
                         DO_OR_RETURN(application.apply(tx,
-                            {imported,target,author,true}));
+                            {imported,target,author,true,AppliedOrigin::FETCH}));
                     }
                 }
                 ASSIGN_OR_RETURN(applied, applyProtocol(tx, prepared, target,
@@ -1180,7 +1180,8 @@ mw::E<InboxResult> Session::acceptInbox(PreparedInbox&& prepared, int64_t now)
                     return std::unexpected(
                         mw::runtimeError("Applied actor missing"));
                 DO_OR_RETURN(
-                    application.apply(tx, {activity, target, *actor, changed}));
+                    application.apply(tx, {activity, target, *actor, changed,
+                                            AppliedOrigin::INBOX}));
                 result.applied = true;
             }
         }
@@ -1551,7 +1552,7 @@ mw::E<int64_t> Session::restoreEmojiReactions()
                 if(applied)
                 {
                     DO_OR_RETURN(application.apply(tx,
-                        {*parsed,recipient,*actor,true}));
+                        {*parsed,recipient,*actor,true,AppliedOrigin::REPAIR}));
                     break;
                 }
             }

@@ -3364,7 +3364,7 @@ TEST_F(FollowedInbox, StartupRepairsRetainedReactionLikesAndHonorsUndo)
     ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
     EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
     EXPECT_EQ(http.get_urls.size(),2u);
-    EXPECT_EQ(data->getSchemaVersion().value(),6);
+    EXPECT_EQ(data->getSchemaVersion().value(),7);
 }
 
 TEST_F(FollowedInbox, ExplicitPrivateReactionAudienceIsNotExpandedToFollowers)
@@ -3378,4 +3378,99 @@ TEST_F(FollowedInbox, ExplicitPrivateReactionAudienceIsNotExpandedToFollowers)
     ASSIGN_OR_FAIL(auto result,receive(reaction));
     EXPECT_EQ(result.disposition,InboxDisposition::IGNORED);
     EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
+}
+
+TEST_F(FollowedInbox, InteractionsNotifyLocalPostOwnerAndUndoRemovesThem)
+{
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "local notification target";
+    ASSIGN_OR_FAIL(auto post, service.createPost(viewer, params));
+    ASSERT_TRUE(initializeFederationLibrary(config, *data, crypto, http));
+    for(const std::string type : {"Like", "Announce", "EmojiReact", "Follow"})
+    {
+        nlohmann::json activity = {
+            {"id", "https://remote.test/a/notify/" + type},
+            {"type", type}, {"actor", followed.uri},
+            {"object", type == "Follow" ? service.actorUri("alice") : post.uri},
+            {"to", service.actorUri("alice")}};
+        if(type == "EmojiReact") activity["content"] = "❤️";
+        ASSIGN_OR_FAIL(auto result, receive(activity));
+        EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+        int64_t now = mw::timeToSeconds(mw::Clock::now());
+        ASSIGN_OR_FAIL(auto entries, data->notificationsFor(viewer.id, now));
+        ASSERT_EQ(entries.size(), 1u) << type;
+        EXPECT_EQ(entries[0].actor_uri, followed.uri);
+        EXPECT_EQ(entries[0].post_id,
+                  type == "Follow" ? std::nullopt
+                                   : std::optional<int64_t>(post.id));
+        nlohmann::json undo = {
+            {"id", "https://remote.test/a/notify/undo/" + type},
+            {"type", "Undo"}, {"actor", followed.uri},
+            {"object", activity}, {"to", service.actorUri("alice")}};
+        ASSIGN_OR_FAIL(auto removed, receive(undo));
+        EXPECT_EQ(removed.disposition, InboxDisposition::APPLIED);
+        EXPECT_TRUE(data->notificationsFor(viewer.id, now)->empty()) << type;
+    }
+}
+
+TEST_F(FollowedInbox, ReplyNotificationAndInboxReceiptRollBackTogether)
+{
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "parent";
+    ASSIGN_OR_FAIL(auto post, service.createPost(viewer, params));
+    ASSERT_TRUE(initializeFederationLibrary(config, *data, crypto, http));
+    nlohmann::json note = {{"id", "https://remote.test/o/notify-reply"},
+        {"type", "Note"}, {"attributedTo", followed.uri},
+        {"content", "<p>a remote reply</p>"}, {"inReplyTo", post.uri},
+        {"to", service.actorUri("alice")}};
+    nlohmann::json activity = {{"id", "https://remote.test/a/notify-reply"},
+        {"type", "Create"}, {"actor", followed.uri}, {"object", note},
+        {"to", service.actorUri("alice")}};
+    ASSERT_TRUE(data->connection().execute(
+        "CREATE TRIGGER fail_notification BEFORE INSERT ON notifications "
+        "BEGIN SELECT RAISE(ABORT,'injected failure'); END;"));
+    EXPECT_FALSE(receive(activity));
+    EXPECT_FALSE(data->getPostByUri(note["id"].get<std::string>()).value());
+    EXPECT_EQ(data->connection().evalToValue<int64_t>(
+        "SELECT count(*) FROM ap_inbox_activities").value(), 0);
+    ASSERT_TRUE(data->connection().execute("DROP TRIGGER fail_notification"));
+    ASSIGN_OR_FAIL(auto result, receive(activity));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+    int64_t now = mw::timeToSeconds(mw::Clock::now());
+    ASSIGN_OR_FAIL(auto page, service.notificationPage(viewer, {}, now));
+    ASSERT_EQ(page["entries"].size(), 1u);
+    EXPECT_EQ(page["entries"][0]["kind"], 0);
+    EXPECT_EQ(page["entries"][0]["post"]["url"], post.uri);
+    EXPECT_EQ(page["entries"][0]["reply"]["excerpt"], "a remote reply");
+    ASSIGN_OR_FAIL(auto reply, data->getPostByUri(note["id"].get<std::string>()));
+    ASSERT_TRUE(reply);
+    EXPECT_EQ(page["entries"][0]["reply"]["url"],
+              config.url_root + "p/" + std::to_string(reply->id));
+}
+
+TEST_F(FollowedInbox, FetchedRepliesDoNotNotifyTheirLocalParentOwner)
+{
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "local parent";
+    ASSIGN_OR_FAIL(auto parent, service.createPost(viewer, params));
+    ASSERT_TRUE(initializeFederationLibrary(config, *data, crypto, http));
+    auto author = testRemoteActor("https://other.test/u/stranger");
+    nlohmann::json note = {{"id", "https://other.test/o/original"},
+        {"type", "Note"}, {"attributedTo", author.uri},
+        {"content", "historical fetched reply"},
+        {"inReplyTo", parent.uri}, {"to", std::string(AS_PUBLIC)}};
+    http.responses.push_back(mw::HTTPResponse(200, note.dump()));
+    http.responses.push_back(mw::HTTPResponse(
+        200, remoteActorDocument(author).dump()));
+    ASSIGN_OR_FAIL(auto result, receive(announce()));
+    EXPECT_EQ(result.disposition, InboxDisposition::APPLIED);
+    EXPECT_TRUE(data->getPostByUri(note["id"].get<std::string>()).value());
+    EXPECT_TRUE(data->notificationsFor(viewer.id,
+        mw::timeToSeconds(mw::Clock::now()))->empty());
 }
