@@ -405,7 +405,7 @@ without exposing hidden post content or author information.
 
 ## CSS themes
 
-Set `theme_dir` (default `themes`) and `default_theme` (default `plain`).
+Set `theme_dir` (default `themes`) and `default_theme` (default `light`).
 Each theme is a subdirectory containing `info.yaml`, with an optional display
 `name` and `parent` theme ID. Directory names are the stable IDs; use ASCII
 letters, digits, hyphens, or underscores. Display names need not be unique.

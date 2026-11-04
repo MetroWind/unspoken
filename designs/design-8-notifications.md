@@ -601,7 +601,7 @@ The SQL cleanup behavior depends on enabled
 [SQLite foreign keys](https://www.sqlite.org/foreignkeys.html); all current
 application and worker connections must continue enabling them.
 
-Implementation also aligns the default theme and its compatibility
-stylesheet with the existing `plain` theme; `light` inherits both plain
-stylesheets. The desktop grid gives the main timeline its content height
+The default theme is `light`, which inherits both `plain` stylesheets.
+The compatibility stylesheet uses the `plain` theme. The desktop grid
+gives the main timeline its content height
 so a tall notification sidebar does not push its pager downward.

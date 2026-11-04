@@ -13,7 +13,7 @@ template_dir: "/usr/share/unspoken/templates"
 static_dir: "/usr/share/unspoken/static"
 
 theme_dir: "/usr/share/unspoken/themes"
-default_theme: "plain"
+default_theme: "light"
 
 posts_per_page: 20
 
