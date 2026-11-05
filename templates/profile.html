@@ -19,10 +19,15 @@
       <p class="handle">{{ profile.handle }}</p>
     </div>
     <div class="bio">{{ profile.bio_html }}</div>
+{% if profile.is_local %}
     <nav aria-label="Connections">
       <a href="{{ profile.profile_url }}/followers">Followers</a>
       · <a href="{{ profile.profile_url }}/following">Following</a>
     </nav>
+{% else %}
+    <p><a href="{{ profile.external_profile_url }}"
+          rel="noopener noreferrer">View external profile</a></p>
+{% endif %}
 {% if length(profile.fields) > 0 %}
     <dl class="profile-fields">
 {% for field in profile.fields %}
@@ -39,7 +44,11 @@
 {% else %}
     <form class="inline" method="post" action="{{ site.root }}follow">
       <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if profile.is_local %}
       <input type="hidden" name="username" value="{{ profile.username }}">
+{% else %}
+      <input type="hidden" name="actor_uri" value="{{ profile.actor_uri }}">
+{% endif %}
 {% if following %}
       <input type="hidden" name="undo" value="1">
       <button type="submit" class="linkbtn on">following — unfollow</button>
@@ -52,6 +61,7 @@
   </div>
 </section>
 
+{% if profile.is_local %}
 <div class="timeline">
 {% if length(posts) == 0 %}
 <p class="empty">No posts.</p>
@@ -60,4 +70,5 @@
 {% include "_post.html" %}
 {% endfor %}
 </div>
+{% endif %}
 {% include "_footer.html" %}

@@ -15,6 +15,7 @@
 #include <mw/crypto.hpp>
 #include <mw/http_client.hpp>
 #include <mw/test_utils.hpp>
+#include <mw/url.hpp>
 
 #include "data.hpp"
 #include "federation.hpp"
@@ -3135,7 +3136,8 @@ TEST_F(FollowedInbox, UnknownBoostTargetIsFetchedAndShownWithAttribution)
     EXPECT_EQ(timeline[0].boosted_by_uri,followed.uri);
     ASSIGN_OR_FAIL(auto view,service.postView(timeline[0],viewer));
     EXPECT_TRUE(view["is_boost"].get<bool>());
-    EXPECT_EQ(view["boosted_by"]["profile_url"],followed.uri);
+    EXPECT_EQ(view["boosted_by"]["profile_url"],
+              config.url_root + "remote?uri=" + mw::URL::encode(followed.uri));
     auto cursor = timeline[0].timeline_id;
     ASSIGN_OR_FAIL(auto duplicate,receive(activity));
     EXPECT_EQ(duplicate.disposition,InboxDisposition::DUPLICATE);

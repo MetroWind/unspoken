@@ -973,6 +973,41 @@ void App::handleUserProfile(const Request& req, Response& res) const
     render(res, 200, "profile.html", ctx);
 }
 
+void App::handleRemoteProfile(const Request& req, Response& res) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    Service svc(config, *ds, emoji);
+    const auto uri = param(req, "uri");
+    ASSIGN_OR_RESPOND_ERROR(auto actor, ds->getRemoteActorByUri(uri), res);
+    if(!actor)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto system_actor, systemActor(), res);
+        mw::HTTPSession http;
+        auto fetched = unspoken::findOrFetchRemoteActor(
+            config, *ds, crypto, http, system_actor, uri);
+        if(fetched) actor = fetched->actor;
+    }
+    auto ctx = baseContext(req, viewer);
+    if(!actor)
+    {
+        ctx["error"] = "No such remote user.";
+        render(res, 404, "error.html", ctx);
+        return;
+    }
+    ctx["profile"] = svc.remoteActorView(*actor);
+    ctx["is_self"] = false;
+    ctx["following"] = false;
+    ctx["posts"] = nlohmann::json::array();
+    if(viewer)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto follow,
+            ds->getFollow(svc.actorUri(viewer->username), actor->uri), res);
+        ctx["following"] = follow.has_value();
+    }
+    render(res, 200, "profile.html", ctx);
+}
+
 // ─── Post / thread (view) ──────────────────────────────────────────────
 
 void App::handlePostView(const Request& req, Response& res) const
@@ -2690,6 +2725,8 @@ void App::setup()
     { handleProfileGet(req, res); });
     server.Post("/profile", [&](const Request& req, Response& res)
     { handleProfilePost(req, res); });
+    server.Get("/remote", [&](const Request& req, Response& res)
+    { handleRemoteProfile(req, res); });
     server.Get("/search", [&](const Request& req, Response& res)
     { handleSearch(req, res); });
     server.Get("/bookmarks", [&](const Request& req, Response& res)

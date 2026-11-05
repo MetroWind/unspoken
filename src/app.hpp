@@ -80,6 +80,8 @@ private:
     void handleSetupPost(const Request& req, Response& res) const;
     void handleLogout(const Request& req, Response& res) const;
 
+    // Show a remote account within the local application.
+    void handleRemoteProfile(const Request& req, Response& res) const;
     void handleUserProfile(const Request& req, Response& res) const;
     void handlePostView(const Request& req, Response& res) const;
     void handlePostCreate(const Request& req, Response& res) const;

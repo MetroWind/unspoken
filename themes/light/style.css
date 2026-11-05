@@ -141,14 +141,22 @@ article.post
         gap: 4px;
         align-items: center;
 
+        a.post-avatar-link, .author-copy
+        {
+            overflow: hidden;
+            white-space: nowrap;
+        }
+
         a.post-avatar-link
         {
+            flex-shrink: 0;
             line-height: 0;
         }
 
         .author-copy
         {
-            flex-grow: 1;
+            flex: 1 1 0;
+            min-width: 0;
             display: flex;
             flex-direction: column;
             justify-content: space-evenly;
@@ -156,7 +164,14 @@ article.post
             > *
             {
                 height: 50%;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
+        }
+
+        .permalink, .vis
+        {
+            flex-shrink: 0;
         }
     }
 

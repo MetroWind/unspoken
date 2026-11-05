@@ -172,6 +172,12 @@ std::string validatedRemoteUrl(std::string value)
     return value;
 }
 
+std::string remoteProfileUrl(const Config& config, std::string_view uri)
+{
+    if(validatedRemoteUrl(std::string(uri)).empty()) return "";
+    return config.url_root + "remote?uri=" + mw::URL::encode(uri);
+}
+
 std::string remoteImageUrl(const nlohmann::json& value)
 {
     if(value.is_object())
@@ -244,7 +250,7 @@ nlohmann::json remoteAuthorView(const Config& config,
         {"display_name", esc(display_name)},
         {"handle", esc(std::format("@{}@{}", actor.username,
                                     actor.domain))},
-        {"profile_url", esc(actor.uri)},
+        {"profile_url", esc(remoteProfileUrl(config, actor.uri))},
         {"avatar_url", esc(defaultAvatarUrl(config))},
         {"avatar_is_placeholder", true},
         {"is_local", false},
@@ -771,7 +777,7 @@ mw::E<nlohmann::json> Service::followViews(
             {"display_name", mw::escapeHTML(item.actor_uri)},
             {"handle", ""},
             {"profile_url", mw::escapeHTML(
-                validatedRemoteUrl(item.actor_uri))},
+                remoteProfileUrl(config, item.actor_uri))},
             {"avatar_url", ""},
             {"avatar_alt", ""},
         });
@@ -853,7 +859,9 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
     j["username"] = esc(actor.username);
     j["display_name"] = esc(display_name);
     j["handle"] = esc(std::format("@{}@{}", actor.username, actor.domain));
-    j["profile_url"] = esc(actor.uri);
+    j["profile_url"] = esc(remoteProfileUrl(config, actor.uri));
+    j["actor_uri"] = esc(actor.uri);
+    j["external_profile_url"] = esc(validatedRemoteUrl(actor.uri));
     j["bio_html"] = "";
     j["avatar_url"] = "";
     j["avatar_alt"] = esc(std::format("{} avatar", display_name));
@@ -865,6 +873,12 @@ nlohmann::json Service::remoteActorView(const RemoteActor& actor) const
     nlohmann::json doc = nlohmann::json::parse(actor.actor_json, nullptr,
                                                false);
     if(!doc.is_object()) return j;
+
+    if(auto it = doc.find("url"); it != doc.end() && it->is_string())
+    {
+        auto url = validatedRemoteUrl(it->get<std::string>());
+        if(!url.empty()) j["external_profile_url"] = esc(url);
+    }
 
     if(auto it = doc.find("name"); it != doc.end() && it->is_string())
     {
@@ -1032,7 +1046,7 @@ Service::postViewWithAuthorCache(
         content_html = linkMentions(p.content_html,
             postTagsForSource(config,recipients,*p.content_source,&emoji));
     }
-    j["content_html"] = shortenMentionLabels(content_html);
+    j["content_html"] = shortenMentionLabels(content_html, config.url_root);
     j["summary"] = esc(p.summary.value_or(""));
     j["has_summary"] = p.summary.has_value() && !p.summary->empty();
     j["sensitive"] = p.sensitive;
@@ -1137,7 +1151,8 @@ Service::postViewWithAuthorCache(
         }
         if(booster.is_null())
             booster = {{"display_name",esc(*p.boosted_by_uri)},
-                       {"profile_url",esc(*p.boosted_by_uri)}};
+                       {"profile_url",esc(remoteProfileUrl(
+                           config,*p.boosted_by_uri))}};
         j["boosted_by"] = std::move(booster);
     }
 

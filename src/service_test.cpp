@@ -148,7 +148,8 @@ TEST(ServiceProfile, FollowListsRenderLocalRemoteAndMissingAccounts)
     EXPECT_EQ(views[1]["handle"], "@bob@remote.test");
     EXPECT_EQ(views[1]["display_name"], "Bob &lt;Remote&gt;");
     EXPECT_EQ(views[2]["profile_url"],
-              "https://missing.test/user?a=1&amp;b=2");
+              "https://f.test/social/remote?uri="
+              "https%3A%2F%2Fmissing.test%2Fuser%3Fa%3D1%26b%3D2");
     EXPECT_EQ(views[3]["profile_url"], "");
     EXPECT_EQ(views[0]["actor_uri"], svc.actorUri("alice"));
     EXPECT_EQ(views[1]["actor_uri"], stored.uri);
@@ -320,7 +321,10 @@ TEST(ServiceProfile, RemoteActorViewParsesRichProfileFields)
     EXPECT_EQ(view["username"], "bob");
     EXPECT_EQ(view["display_name"], "Bob JSON");
     EXPECT_EQ(view["handle"], "@bob@remote.test");
-    EXPECT_EQ(view["profile_url"], actor.uri);
+    EXPECT_EQ(view["profile_url"],
+              "https://f.test/remote?uri="
+              "https%3A%2F%2Fremote.test%2Fusers%2Fbob");
+    EXPECT_EQ(view["external_profile_url"], actor.uri);
     EXPECT_EQ(view["avatar_url"], "https://cdn.test/avatar.png");
     EXPECT_EQ(view["banner_url"], "https://cdn.test/banner.jpg");
     EXPECT_FALSE(view["is_local"]);
@@ -866,7 +870,9 @@ TEST(ServiceView, RemotePostShowsRemoteAuthor)
     EXPECT_EQ(view["author"]["username"], "bob");
     EXPECT_EQ(view["author"]["display_name"], "Bob Remote");
     EXPECT_EQ(view["author"]["handle"], "@bob@remote.test");
-    EXPECT_EQ(view["author"]["profile_url"], remote.uri);
+    EXPECT_EQ(view["author"]["profile_url"],
+              "https://f.test/remote?uri="
+              "https%3A%2F%2Fremote.test%2Fusers%2Fbob");
     EXPECT_FALSE(view["author"]["is_local"]);
 }
 
@@ -1427,7 +1433,8 @@ TEST(ServiceView, LinksLegacyLocalAndRemoteMentionsWithoutRewritingPosts)
     ASSIGN_OR_FAIL(auto view,service.postView(post,std::nullopt));
     auto html = view["content_html"].get<std::string>();
     EXPECT_NE(html.find("href=\"https://f.test/u/mw\""),std::string::npos);
-    EXPECT_NE(html.find("href=\"https://m.jinwei.me/users/clark\""),
+    EXPECT_NE(html.find("href=\"https://f.test/remote?uri="
+                             "https%3A%2F%2Fm.jinwei.me%2Fusers%2Fclark\""),
               std::string::npos);
     EXPECT_NE(html.find(">@clark</a>"),std::string::npos);
     EXPECT_NE(html.find("title=\"@clark@m.jinwei.me\""),std::string::npos);
@@ -1596,4 +1603,59 @@ TEST(ServiceView, ThreadBranchesStayWithParentsAndCapIndentation)
             EXPECT_EQ(view["thread_depth"],0);
         }
     }
+}
+
+TEST(ServiceProfile, RemoteProfileLinksExternallyAndFollowsActorUri)
+{
+    Config config = testConfig();
+    config.url_root += "social/";
+    DataSourceMock data;
+    EmojiRegistry emoji;
+    Service service(config, data, emoji);
+    RemoteActor actor;
+    actor.uri = "https://remote.test/users/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.actor_json = R"({"url":"https://remote.test/@bob?a=1&b=2"})";
+    auto profile = service.remoteActorView(actor);
+    EXPECT_EQ(profile["profile_url"],
+              "https://f.test/social/remote?uri="
+              "https%3A%2F%2Fremote.test%2Fusers%2Fbob");
+    nlohmann::json context = {
+        {"site", {{"title", "Test"}, {"root", config.url_root},
+                  {"commit", "test"}}},
+        {"logged_in", true}, {"error", ""}, {"profile", profile},
+        {"me", {{"username", "alice"}, {"handle", "@alice@f.test"}}},
+        {"csrf", "token"}, {"is_self", false}, {"following", false},
+        {"posts", nlohmann::json::array()}
+    };
+    inja::Environment templates("templates/");
+    auto html = templates.render_file("profile.html", context);
+    EXPECT_NE(html.find("href=\"https://remote.test/@bob?a=1&amp;b=2\""),
+              std::string::npos);
+    EXPECT_NE(html.find("name=\"actor_uri\" value=\"" + actor.uri + "\""),
+              std::string::npos);
+    EXPECT_EQ(html.find("/followers"), std::string::npos);
+    EXPECT_EQ(html.find("No posts."), std::string::npos);
+    actor.actor_json = R"json({"url":"javascript:alert(1)"})json";
+    EXPECT_EQ(service.remoteActorView(actor)["external_profile_url"],
+              actor.uri);
+}
+
+TEST(Render, InternalMentionLinksPreserveLocalAndOrdinaryLinks)
+{
+    const std::string html =
+        "<a class=\"mention\" href=\"https://remote.test/bob?a=1&amp;b=2\">"
+        "@bob</a> "
+        "<a class=\"mention\" href=\"https://f.test/social/u/alice\">"
+        "@alice@f.test</a> "
+        "<a href=\"https://article.test/\">article</a>";
+    auto displayed = shortenMentionLabels(html, "https://f.test/social/");
+    EXPECT_NE(displayed.find("href=\"https://f.test/social/remote?uri="
+        "https%3A%2F%2Fremote.test%2Fbob%3Fa%3D1%26b%3D2\""),
+        std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://f.test/social/u/alice\""),
+              std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://article.test/\""),
+              std::string::npos);
 }

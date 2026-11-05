@@ -287,7 +287,7 @@ bool linkMentionNodes(xmlNode* node,
     return changed;
 }
 
-bool shortenMentionNodes(xmlNode* node)
+bool shortenMentionNodes(xmlNode* node, std::string_view site_root)
 {
     bool changed = false;
     for(; node; node = node->next)
@@ -297,6 +297,21 @@ bool shortenMentionNodes(xmlNode* node)
         if(xmlStrEqual(node->name,BAD_CAST "a") && classes &&
            *classes == "mention")
         {
+            auto href = attrValue(node,"href");
+            if(href && !site_root.empty() &&
+               !href->starts_with(std::string(site_root) + "u/"))
+            {
+                auto url = mw::URL::fromStr(*href);
+                if(url && (url->scheme() == "https" ||
+                           url->scheme() == "http") && !url->host().empty()
+                   && url->user().empty() && url->password().empty())
+                {
+                    auto internal = std::string(site_root) + "remote?uri="
+                        + mw::URL::encode(*href);
+                    xmlSetProp(node,BAD_CAST "href",BAD_CAST internal.c_str());
+                    changed = true;
+                }
+            }
             std::unique_ptr<xmlChar,decltype(xmlFree)> text(
                 xmlNodeGetContent(node),xmlFree);
             std::string full = text ?
@@ -316,7 +331,7 @@ bool shortenMentionNodes(xmlNode* node)
                 changed = true;
             }
         }
-        changed = shortenMentionNodes(node->children) || changed;
+        changed = shortenMentionNodes(node->children,site_root) || changed;
     }
     return changed;
 }
@@ -351,7 +366,7 @@ bool restoreEmojiNodes(xmlNode* node)
 
 std::string transformPostHtml(std::string_view html,
     const std::map<std::string,std::string>& links, bool shorten_labels,
-    bool restore_emoji = false)
+    bool restore_emoji = false, std::string_view site_root = "")
 {
     if(html.empty() || (!shorten_labels && !restore_emoji && links.empty()) ||
        html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -364,7 +379,8 @@ std::string transformPostHtml(std::string_view html,
     auto* body = findBody(doc->children);
     if(!body) return std::string(html);
     bool changed = !links.empty() && linkMentionNodes(body->children,links,false);
-    if(shorten_labels) changed = shortenMentionNodes(body->children) || changed;
+    if(shorten_labels)
+        changed = shortenMentionNodes(body->children,site_root) || changed;
     if(restore_emoji) changed = restoreEmojiNodes(body->children) || changed;
     if(!changed) return std::string(html);
     std::unique_ptr<xmlBuffer,decltype(&xmlBufferFree)> buffer(
@@ -498,10 +514,11 @@ std::string linkMentions(std::string_view html, const nlohmann::json& tags)
     return transformPostHtml(html,links,false);
 }
 
-std::string shortenMentionLabels(std::string_view html)
+std::string shortenMentionLabels(std::string_view html,
+                                 std::string_view site_root)
 {
     if(html.find("mention") == std::string::npos) return std::string(html);
-    return transformPostHtml(html,{},true);
+    return transformPostHtml(html,{},true,false,site_root);
 }
 
 std::string emojiShortcodesForFederation(std::string_view html)

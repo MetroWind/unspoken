@@ -62,8 +62,10 @@ RenderedPostContent parsePostContent(const std::string& source,
 std::string linkMentions(std::string_view html, const nlohmann::json& tags);
 
 // Display marked mention links as @username, keeping the full handle in
-// title and accessibility labels. Preserve profile URLs and other text.
-std::string shortenMentionLabels(std::string_view html);
+// title and accessibility labels. When site_root is set, link remote
+// mentions to internal profiles. Preserve stored and federated content.
+std::string shortenMentionLabels(std::string_view html,
+                                 std::string_view site_root = "");
 
 // Restore generated custom emoji images to :shortcode: text for remote
 // clients, which render emoji using the accompanying ActivityPub tags.
