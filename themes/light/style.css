@@ -140,6 +140,7 @@ article.post
         height: 40px;
         gap: 4px;
         align-items: center;
+        padding-right: 0.5ex;
 
         a.post-avatar-link, .author-copy
         {
@@ -208,12 +209,16 @@ article.post
             {
                 text-wrap: nowrap;
                 overflow: hidden;
+                text-overflow: ellipsis;
+                flex-shrink: 0;
             }
 
             > span
             {
-                flex-grow: 1;
+                flex: 1 1 0;
                 color: var(--color-fg);
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
         }
     }
