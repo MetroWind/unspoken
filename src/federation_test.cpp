@@ -3024,6 +3024,16 @@ TEST(InboxDispatch, LinkPreviewsExcludeStructuredUrlsAndDeduplicate)
     ASSIGN_OR_FAIL(auto post,data->getPostByUri("https://remote.test/o/preview"));
     ASSERT_TRUE(post);
     ASSERT_TRUE(post->link_preview_id);
+    EXPECT_NE(post->content_html.find("class=\"mention\""),
+              std::string::npos);
+    EmojiRegistry emoji;
+    Service service(config,*data,emoji);
+    ASSIGN_OR_FAIL(auto view,service.postView(*post,std::nullopt));
+    auto html = view["content_html"].get<std::string>();
+    EXPECT_NE(html.find(config.url_root + "remote?uri="
+        + mw::URL::encode("https://other.test/@user")),std::string::npos);
+    EXPECT_NE(html.find("href=\"https://article.test/story\""),
+              std::string::npos);
     auto previews = data->getLinkPreviews({*post->link_preview_id}).value();
     EXPECT_EQ(previews.begin()->second.url,"https://article.test/story");
     ASSIGN_OR_FAIL(auto duplicate,dispatchIncomingActivity(

@@ -72,6 +72,29 @@ std::optional<std::string> attrValue(const xmlNode* node, const char* name)
     return std::string(reinterpret_cast<const char*>(value.get()));
 }
 
+bool hasToken(std::string_view tokens, std::string_view wanted)
+{
+    while(!tokens.empty())
+    {
+        while(!tokens.empty() && isSpace(tokens.front()))
+            tokens.remove_prefix(1);
+        auto end = tokens.find_first_of(" \t\r\n\f");
+        auto token = tokens.substr(0,end);
+        if(token == wanted) return true;
+        if(end == std::string_view::npos) break;
+        tokens.remove_prefix(end + 1);
+    }
+    return false;
+}
+
+bool isMention(const xmlNode* node)
+{
+    auto classes = attrValue(node,"class");
+    auto rel = attrValue(node,"rel");
+    return (classes && hasToken(*classes,"mention"))
+        || (rel && hasToken(*rel,"mention"));
+}
+
 bool safeHref(std::string_view href)
 {
     std::string h = lowerAscii(trimAscii(href));
@@ -104,6 +127,7 @@ std::optional<std::string> sanitizedStartTag(
         if(!href.has_value() || !safeHref(*href)) return std::nullopt;
         out += " href=\"" + mw::escapeHTML(*href) + "\"";
         out += " rel=\"nofollow noopener noreferrer\"";
+        if(isMention(node)) out += " class=\"mention\"";
     }
     else if(name == "span")
     {
@@ -293,13 +317,12 @@ bool shortenMentionNodes(xmlNode* node, std::string_view site_root)
     for(; node; node = node->next)
     {
         if(node->type != XML_ELEMENT_NODE) continue;
-        auto classes = attrValue(node,"class");
-        if(xmlStrEqual(node->name,BAD_CAST "a") && classes &&
-           *classes == "mention")
+        if(xmlStrEqual(node->name,BAD_CAST "a") && isMention(node))
         {
             auto href = attrValue(node,"href");
             if(href && !site_root.empty() &&
-               !href->starts_with(std::string(site_root) + "u/"))
+               !href->starts_with(std::string(site_root) + "u/") &&
+               !href->starts_with(std::string(site_root) + "remote?uri="))
             {
                 auto url = mw::URL::fromStr(*href);
                 if(url && (url->scheme() == "https" ||

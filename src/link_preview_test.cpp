@@ -585,6 +585,10 @@ TEST(LinkPreview, RepairSavedMentionAssociationsWithoutBackfillingOtherPosts)
         html += "href='https://social.test/@person'>@person</a>";
         if(article) html += "<a href='https://article.test/story'>article</a>";
         input.content_html = sanitizeRemoteHtml(html);
+        // Old saved posts lost mention markers during sanitization.
+        auto marker = input.content_html.find(" class=\"mention\"");
+        if(marker != std::string::npos)
+            input.content_html.erase(marker,std::string(" class=\"mention\"").size());
         auto stored = data->insertPost(input,{},"");
         EXPECT_TRUE(stored);
         nlohmann::json object = {{"id",*input.uri},{"type","Note"},

@@ -1659,3 +1659,23 @@ TEST(Render, InternalMentionLinksPreserveLocalAndOrdinaryLinks)
     EXPECT_NE(displayed.find("href=\"https://article.test/\""),
               std::string::npos);
 }
+
+TEST(Render, RemoteMentionMarkersSurviveSanitizing)
+{
+    const std::string html =
+        "<a class=\"u-url mention\" onclick=\"bad()\" "
+        "href=\"https://remote.test/@bob\">@<span>bob</span></a> "
+        "<a rel=\"nofollow mention\" href=\"https://remote.test/@carol\">"
+        "@carol</a> "
+        "<a class=\"not-mention\" href=\"https://article.test/\">article</a>";
+    auto sanitized = sanitizeRemoteHtml(html);
+    auto displayed = shortenMentionLabels(sanitized,"https://f.test/");
+    EXPECT_NE(displayed.find("href=\"https://f.test/remote?uri="
+        "https%3A%2F%2Fremote.test%2F%40bob\""),std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://f.test/remote?uri="
+        "https%3A%2F%2Fremote.test%2F%40carol\""),std::string::npos);
+    EXPECT_NE(displayed.find("href=\"https://article.test/\""),
+              std::string::npos);
+    EXPECT_EQ(displayed.find("onclick"),std::string::npos);
+    EXPECT_EQ(shortenMentionLabels(displayed,"https://f.test/"),displayed);
+}
