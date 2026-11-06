@@ -273,6 +273,12 @@ article.post
 
 .follow-list
 {
+
+    .result
+    {
+        margin: 1ex 0;
+    }
+
     a.author
     {
         display: flex;
@@ -280,14 +286,29 @@ article.post
 
     img.result-avatar
     {
-        width: 64px;
-        height: 64px;
+        width: 48px;
+        height: 48px;
         object-fit: contain;
+        margin-right: 5px;
     }
 
     .result-id
     {
         display: flex;
         flex-direction: column;
+        justify-content: space-evenly;
+        min-width: 0;
+
+        span
+        {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .handle
+        {
+            color: var(--color-fg);
+        }
     }
 }
