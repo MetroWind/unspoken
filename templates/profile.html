@@ -3,16 +3,18 @@
 {% if length(profile.banner_url) > 0 %}has-banner{% endif %}
 {% if length(profile.avatar_url) > 0 %}has-avatar{% endif %}">
 {% if length(profile.banner_url) > 0 %}
-  <div class="profile-banner">
-    <img src="{{ profile.banner_url }}" alt="{{ profile.banner_alt }}">
+  <div class="profile-banner" style="background: center / cover url({{ profile.banner_url }});">
+    <div class="profile-banner-effect"></div>
   </div>
 {% endif %}
   <div class="profile-main">
-{% if length(profile.avatar_url) > 0 %}
-    <a class="profile-avatar-link" href="{{ profile.avatar_url }}">
-      <img class="profile-avatar" src="{{ profile.avatar_url }}"
-           alt="{{ profile.avatar_alt }}">
-    </a>
+    {% if length(profile.avatar_url) > 0 %}
+    <div class="profile-avatar-container">
+      <a class="profile-avatar-link" href="{{ profile.avatar_url }}">
+        <img class="profile-avatar" src="{{ profile.avatar_url }}"
+             alt="{{ profile.avatar_alt }}">
+      </a>
+    </div>
 {% endif %}
     <div class="profile-title">
       <h1>{{ profile.display_name }}</h1>

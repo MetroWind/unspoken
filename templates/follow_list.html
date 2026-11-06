@@ -7,7 +7,7 @@
     · <a href="{{ profile.profile_url }}/following">Following</a>
   </nav>
 </section>
-<div class="results">
+<div class="follow-list">
 {% if length(results) == 0 %}
   <p class="empty">No accounts to show.</p>
 {% endif %}
@@ -18,9 +18,11 @@
 {% if length(u.avatar_url) > 0 %}
         <img class="result-avatar" src="{{ u.avatar_url }}"
              alt="{{ u.avatar_alt }}">
-{% endif %}
-        <span class="dname">{{ u.display_name }}</span>
-        <span class="handle">{{ u.handle }}</span>
+        {% endif %}
+        <div class="result-id">
+          <span class="dname">{{ u.display_name }}</span>
+          <span class="handle">{{ u.handle }}</span>
+        </div>
       </a>
 {% if can_unfollow %}
       <form class="inline" method="post" action="{{ site.root }}follow">

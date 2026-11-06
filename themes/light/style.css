@@ -244,3 +244,50 @@ article.post
         }
     }
 }
+
+.profile-banner
+{
+    height: 240px;
+    width: 100%;
+    .profile-banner-effect
+    {
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(to bottom, alpha(from var(--color-bg) / 0) 0%, var(--color-bg) 100%);
+    }
+}
+
+.profile-avatar-container
+{
+    text-align: center;
+    margin-top: -64px;
+    img.profile-avatar
+    {
+        width: 128px;
+        height: 128px;
+        object-fit: contain;
+        border: 1px solid var(--color-border);
+        position: relative;
+    }
+}
+
+.follow-list
+{
+    a.author
+    {
+        display: flex;
+    }
+
+    img.result-avatar
+    {
+        width: 64px;
+        height: 64px;
+        object-fit: contain;
+    }
+
+    .result-id
+    {
+        display: flex;
+        flex-direction: column;
+    }
+}
