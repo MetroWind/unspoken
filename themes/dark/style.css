@@ -1,0 +1,18 @@
+:root
+{
+    --color-bg: black;
+    --color-panel: color-mix(in lab, #2f3542 30%, black 70%);
+    --color-border: #2f3542;
+    --color-fg: #ced6e0;
+    --color-fg-dim: #a4b0be;
+    --color-accent: #1e90ff;
+    --color-accent-2: #2ed573;
+    --color-danger: #ff4757;
+    color-scheme: dark;
+    --link-preview-size: 128px;
+}
+
+main
+{
+    padding: unset;
+}

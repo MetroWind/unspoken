@@ -68,6 +68,7 @@ main
     max-width: 800px;
     margin-left: auto;
     margin-right: auto;
+    padding: 0 10px;
 }
 
 .page-title
@@ -204,6 +205,7 @@ article.post
             display: flex;
             flex-direction: column;
             padding: 0.5ex;
+            min-width: 0;
 
             > strong, > small
             {
@@ -282,6 +284,7 @@ article.post
     a.author
     {
         display: flex;
+        align-items: center;
     }
 
     img.result-avatar
@@ -298,6 +301,7 @@ article.post
         flex-direction: column;
         justify-content: space-evenly;
         min-width: 0;
+        flex: 1 1 0;
 
         span
         {
