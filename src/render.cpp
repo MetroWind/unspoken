@@ -276,6 +276,35 @@ xmlNode* findBody(xmlNode* node)
     return nullptr;
 }
 
+void appendPlainText(const xmlNode* node, std::string& out)
+{
+    for(; node; node = node->next)
+    {
+        if(node->type == XML_TEXT_NODE && node->content)
+        {
+            out += reinterpret_cast<const char*>(node->content);
+            continue;
+        }
+        if(node->type != XML_ELEMENT_NODE) continue;
+        const std::string name = lowerAscii(
+            reinterpret_cast<const char*>(node->name));
+        if(name == "script" || name == "style" || name == "head" ||
+           name == "template") continue;
+        const bool block = name == "p" || name == "div" || name == "br" ||
+            name == "li" || name == "blockquote" || name == "pre" ||
+            name == "tr" || name == "td" || name == "hr" ||
+            (name.size() == 2 && name[0] == 'h' &&
+             name[1] >= '1' && name[1] <= '6');
+        if(block) out += ' ';
+        if(name == "img")
+        {
+            if(auto alt = attrValue(node, "alt")) out += *alt;
+        }
+        else appendPlainText(node->children, out);
+        if(block) out += ' ';
+    }
+}
+
 bool linkMentionNodes(xmlNode* node,
     const std::map<std::string,std::string>& links, bool inside_anchor)
 {
@@ -548,6 +577,51 @@ std::string emojiShortcodesForFederation(std::string_view html)
 {
     if(html.find("emoji") == std::string_view::npos) return std::string(html);
     return transformPostHtml(html,{},false,true);
+}
+
+std::string plainTextExcerpt(std::string_view html, size_t max_chars)
+{
+    if(html.empty() || max_chars == 0 ||
+       html.size() > static_cast<size_t>(std::numeric_limits<int>::max()) - 64)
+        return "";
+    const auto input = "<html><body><div>" + std::string(html) +
+        "</div></body></html>";
+    std::unique_ptr<xmlDoc, decltype(&xmlFreeDoc)> doc(
+        htmlReadMemory(input.data(), static_cast<int>(input.size()), nullptr,
+            "UTF-8", HTML_PARSE_NONET | HTML_PARSE_NODEFDTD |
+            HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING), &xmlFreeDoc);
+    if(!doc) return "";
+    auto* body = findBody(doc->children);
+    if(!body) return "";
+    std::string text;
+    appendPlainText(body->children, text);
+    std::string result;
+    bool space = false;
+    size_t count = 0;
+    for(size_t i = 0; i < text.size();)
+    {
+        auto c = static_cast<unsigned char>(text[i]);
+        if(std::isspace(c) || text.compare(i, 2, "\xc2\xa0") == 0)
+        {
+            space = !result.empty();
+            i += c == 0xc2 ? 2 : 1;
+            continue;
+        }
+        if(count + (space ? 1 : 0) >= max_chars) return result + "…";
+        if(space)
+        {
+            result += ' ';
+            ++count;
+            space = false;
+        }
+        size_t end = i + 1;
+        while(end < text.size() &&
+              (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80) ++end;
+        result.append(text, i, end - i);
+        i = end;
+        ++count;
+    }
+    return result;
 }
 
 std::string sanitizeRemoteHtml(std::string_view html)

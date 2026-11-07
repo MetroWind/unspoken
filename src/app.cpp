@@ -1096,6 +1096,10 @@ void App::handlePostView(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto reply_prefill,
                             replyPrefillForPost(*ds, svc, *post), res);
     ctx["reply_prefill"] = mw::escapeHTML(reply_prefill);
+    ASSIGN_OR_RESPOND_ERROR(auto metadata, svc.postMetadata(*post), res);
+    if(!metadata.is_null()) ctx["open_graph"] = std::move(metadata);
+    res.set_header("Vary", "Accept");
+    res.set_header("Cache-Control", "private, no-store");
     render(res, 200, "thread.html", ctx);
 }
 

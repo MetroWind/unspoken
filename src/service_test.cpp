@@ -1793,3 +1793,147 @@ TEST(ServiceEdit, RejectsOtherAuthorsRemotePostsAndEmptyContent)
     ASSIGN_OR_FAIL(auto remote_post, data->insertPost(remote, {}, ""));
     EXPECT_FALSE(service.editPost(author, remote_post.id, params));
 }
+
+TEST(Render, PlainTextExcerptsDecodeSeparateAndTruncateUnicode)
+{
+    EXPECT_EQ(plainTextExcerpt(
+        "<p>Hello <strong>world</strong> &amp; friends.</p>"
+        "<p>Next<br>line<img class='emoji' alt=':wave:' src='/emoji.png'></p>"
+        "<script>secret()</script><style>hidden</style>"),
+        "Hello world & friends. Next line:wave:");
+    EXPECT_EQ(plainTextExcerpt("<p>  A&nbsp; B\n C </p>"), "A B C");
+    EXPECT_EQ(plainTextExcerpt("你好世界😀", 3), "你好世…");
+    EXPECT_EQ(plainTextExcerpt("你好世", 3), "你好世");
+    EXPECT_EQ(plainTextExcerpt("abc def", 3), "abc…");
+    EXPECT_EQ(plainTextExcerpt("abc", 0), "");
+    EXPECT_EQ(plainTextExcerpt(""), "");
+}
+
+TEST(ServiceMetadata, EscapesRenderedHeadAndReflectsEdits)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author, data->createUser(NewUser{
+        "alice", "Alice <&\"", "", "iss", "alice", "PRIV", "PUB"}));
+    auto config = testConfig();
+    config.url_root += "social/";
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "Hello **world** & friends";
+    ASSIGN_OR_FAIL(auto post, service.createPost(author, params));
+    ASSIGN_OR_FAIL(auto metadata, service.postMetadata(post));
+    EXPECT_EQ(metadata["title"], "Alice &lt;&amp;&quot; (@alice@f.test)");
+    EXPECT_EQ(metadata["description"], "Hello world &amp; friends");
+    EXPECT_EQ(metadata["url"], post.uri);
+    EXPECT_EQ(metadata["image"],
+              config.url_root + "static/social_icon.png");
+    EXPECT_EQ(metadata["modified"], "");
+    inja::Environment environment("templates/");
+    nlohmann::json context = {
+        {"site", {{"title", "unspoken"}, {"root", "/social/"}}},
+        {"logged_in", false}, {"error", ""}, {"open_graph", metadata}};
+    auto header = environment.render_file("_header.html", context);
+    EXPECT_NE(header.find("property=\"og:type\" content=\"article\""),
+              std::string::npos);
+    EXPECT_NE(header.find("property=\"article:published_time\""),
+              std::string::npos);
+    EXPECT_NE(header.find("rel=\"canonical\""), std::string::npos);
+    EXPECT_NE(header.find("Hello world &amp; friends"), std::string::npos);
+    EXPECT_EQ(header.find("Alice <&\""), std::string::npos);
+    EXPECT_EQ(header.find("&amp;amp;"), std::string::npos);
+    params.source = "Revised content";
+    ASSIGN_OR_FAIL(auto edited, service.editPost(author, post.id, params));
+    ASSIGN_OR_FAIL(metadata, service.postMetadata(edited));
+    EXPECT_EQ(metadata["description"], "Revised content");
+    EXPECT_EQ(metadata["url"], post.uri);
+    EXPECT_EQ(metadata["published"], context["open_graph"]["published"]);
+    EXPECT_NE(metadata["modified"], "");
+    context["open_graph"] = metadata;
+    header = environment.render_file("_header.html", context);
+    EXPECT_NE(header.find("property=\"article:modified_time\""),
+              std::string::npos);
+    context.erase("open_graph");
+    header = environment.render_file("_header.html", context);
+    EXPECT_EQ(header.find("property=\"og:"), std::string::npos);
+    EXPECT_NE(header.find("<title>unspoken</title>"), std::string::npos);
+}
+
+TEST(ServiceMetadata, VisibilityAndWarningsControlDisclosures)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author, data->createUser(NewUser{
+        "alice", "Alice", "", "iss", "alice", "PRIV", "PUB"}));
+    auto config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "Private details";
+    ASSIGN_OR_FAIL(auto post, service.createPost(author, params));
+    Attachment attachment;
+    attachment.remote_url = "https://images.test/photo.png?a=1&b=2";
+    attachment.original_name = "Photo <&\"";
+    attachment.media_type = "image/png";
+    attachment.is_image = true;
+    ASSIGN_OR_FAIL(auto image_id, data->insertAttachment(attachment));
+    ASSERT_TRUE(data->attachToPost(image_id, post.id));
+    ASSIGN_OR_FAIL(auto metadata, service.postMetadata(post));
+    EXPECT_EQ(metadata["image"],
+              "https://images.test/photo.png?a=1&amp;b=2");
+    EXPECT_EQ(metadata["image_alt"], "Photo &lt;&amp;&quot;");
+    ASSERT_TRUE(data->connection().execute(
+        "UPDATE post_attachments SET sensitive=1"));
+    ASSIGN_OR_FAIL(metadata, service.postMetadata(post));
+    EXPECT_EQ(metadata["image"], config.url_root + "static/social_icon.png");
+    ASSERT_TRUE(data->connection().execute(
+        "UPDATE post_attachments SET sensitive=0"));
+    post.sensitive = true;
+    ASSIGN_OR_FAIL(metadata, service.postMetadata(post));
+    EXPECT_EQ(metadata["image"], config.url_root + "static/social_icon.png");
+    post.sensitive = false;
+    post.summary = "Warning <spoiler> & details";
+    ASSIGN_OR_FAIL(metadata, service.postMetadata(post));
+    EXPECT_EQ(metadata["description"], "Warning &lt;spoiler&gt; &amp; details");
+    EXPECT_EQ(metadata["image"], config.url_root + "static/social_icon.png");
+    post.visibility = Visibility::UNLISTED;
+    EXPECT_FALSE(service.postMetadata(post)->is_null());
+    post.visibility = Visibility::FOLLOWERS;
+    EXPECT_TRUE(service.postMetadata(post)->is_null());
+    post.visibility = Visibility::DIRECT;
+    EXPECT_TRUE(service.postMetadata(post)->is_null());
+    // Private metadata must not load even author or attachment information.
+    DataSourceMock mock;
+    EXPECT_CALL(mock, getUserById(testing::_)).Times(0);
+    EXPECT_CALL(mock, attachmentsForPost(testing::_)).Times(0);
+    Service isolated(config, mock, emoji);
+    EXPECT_TRUE(isolated.postMetadata(post)->is_null());
+}
+
+TEST(ServiceMetadata, RemoteReplyUsesItsOwnPermalinkAndAvatar)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    auto config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    RemoteActor actor;
+    actor.uri = "https://remote.test/u/bob";
+    actor.username = "bob";
+    actor.domain = "remote.test";
+    actor.display_name = "Bob";
+    actor.actor_json = R"({"icon":{"type":"Image",
+        "url":"https://remote.test/avatar.png"}})";
+    ASSIGN_OR_FAIL(auto stored, data->upsertRemoteActor(actor));
+    NewPost params;
+    params.uri = "https://remote.test/posts/reply";
+    params.remote_author_id = stored.id;
+    params.content_html = "<p>A specific reply</p>";
+    params.in_reply_to_uri = "https://remote.test/posts/root";
+    params.published = "2026-11-07T10:11:12Z";
+    ASSIGN_OR_FAIL(auto reply, data->insertPost(params, {}, ""));
+    ASSIGN_OR_FAIL(auto metadata, service.postMetadata(reply));
+    EXPECT_EQ(metadata["title"], "Bob (@bob@remote.test)");
+    EXPECT_EQ(metadata["description"], "A specific reply");
+    EXPECT_EQ(metadata["url"], config.url_root + "p/" +
+              std::to_string(reply.id));
+    EXPECT_EQ(metadata["image"], "https://remote.test/avatar.png");
+    EXPECT_EQ(metadata["published"], *params.published);
+}

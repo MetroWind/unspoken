@@ -1,9 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"
+      prefix="og: https://ogp.me/ns# article: https://ogp.me/ns/article#">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{% if exists("open_graph") %}
+<title>{{ open_graph.title }} — {{ site.title }}</title>
+<meta property="og:title" content="{{ open_graph.title }}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{{ open_graph.url }}">
+<meta property="og:site_name" content="{{ site.title }}">
+<meta property="og:description" content="{{ open_graph.description }}">
+<meta name="description" content="{{ open_graph.description }}">
+<meta property="og:image" content="{{ open_graph.image }}">
+<meta property="og:image:alt" content="{{ open_graph.image_alt }}">
+<meta property="article:published_time" content="{{ open_graph.published }}">
+{% if open_graph.modified != "" %}
+<meta property="article:modified_time" content="{{ open_graph.modified }}">
+{% endif %}
+<link rel="canonical" href="{{ open_graph.url }}">
+{% else %}
 <title>{{ site.title }}</title>
+{% endif %}
 <link rel="icon" href="{{ site.root }}static/favicon.ico"
       type="image/x-icon" sizes="16x16 32x32 48x48">
 <link rel="icon" href="{{ site.root }}static/favicon.svg"

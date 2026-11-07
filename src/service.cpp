@@ -30,6 +30,20 @@ namespace unspoken
 
 namespace
 {
+std::string metadataTimestamp(int64_t seconds)
+{
+    const auto time = static_cast<std::time_t>(seconds);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &time);
+#else
+    gmtime_r(&time, &utc);
+#endif
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return buffer;
+}
+
 int64_t nowSeconds()
 {
     return static_cast<int64_t>(std::time(nullptr));
@@ -1286,6 +1300,61 @@ Service::postViewWithAuthorCache(
     j["bookmarked"] = bookmarked;
     j["logged_in"] = viewer.has_value();
     return j;
+}
+
+mw::E<nlohmann::json> Service::postMetadata(const Post& post) const
+{
+    if(post.visibility != Visibility::PUBLIC &&
+       post.visibility != Visibility::UNLISTED) return nlohmann::json();
+    auto author = unknownAuthorView(config);
+    if(post.local_author_id)
+    {
+        ASSIGN_OR_RETURN(auto user, data.getUserById(*post.local_author_id));
+        if(user)
+        {
+            ASSIGN_OR_RETURN(author, localAuthorView(config, data, *user));
+        }
+    }
+    else if(post.remote_author_id)
+    {
+        ASSIGN_OR_RETURN(auto actor,
+                         data.getRemoteActorById(*post.remote_author_id));
+        if(actor) author = remoteAuthorView(config, *actor);
+    }
+    const bool warning = post.summary && !post.summary->empty();
+    const auto description = warning ? plainTextExcerpt(
+        mw::escapeHTML(*post.summary)) : plainTextExcerpt(post.content_html);
+    nlohmann::json metadata = {
+        {"title", author["display_name"].get<std::string>() + " (" +
+            author["handle"].get<std::string>() + ")"},
+        {"description", mw::escapeHTML(description)},
+        {"url", mw::escapeHTML(config.url_root + "p/" +
+                               std::to_string(post.id))},
+        {"image", author["avatar_is_placeholder"].get<bool>()
+            ? mw::escapeHTML(config.url_root + "static/social_icon.png")
+            : author["avatar_url"].get<std::string>()},
+        {"image_alt", author["avatar_is_placeholder"].get<bool>()
+            ? "unspoken" : author["display_name"].get<std::string>()},
+        {"published", mw::escapeHTML(post.published.value_or(
+            metadataTimestamp(post.created_at)))},
+        {"modified", post.updated_at ? metadataTimestamp(*post.updated_at) : ""}
+    };
+    if(!warning && !post.sensitive)
+    {
+        ASSIGN_OR_RETURN(auto attachments, data.attachmentsForPost(post.id));
+        for(const auto& attachment : attachments)
+        {
+            if(!attachment.is_image || attachment.sensitive) continue;
+            auto url = attachment.remote_url.value_or(
+                localAttachmentUrl(config, attachment));
+            auto valid = validatePreviewImageUrl(url, config.url_root);
+            if(!valid) continue;
+            metadata["image"] = mw::escapeHTML(*valid);
+            metadata["image_alt"] = mw::escapeHTML(attachment.original_name);
+            break;
+        }
+    }
+    return metadata;
 }
 
 mw::E<nlohmann::json>

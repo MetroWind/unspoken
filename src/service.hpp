@@ -113,6 +113,10 @@ public:
     mw::E<nlohmann::json>
     postViews(const std::vector<Post>& posts,
               const std::optional<User>& viewer) const;
+    // Build escaped sharing metadata only for anonymously readable posts.
+    // Private posts return null regardless of the current viewer.
+    mw::E<nlohmann::json> postMetadata(const Post& post) const;
+
     // Order visible replies beneath their parents with capped indentation
     // and connector metadata. Missing or hidden parents start new roots.
     mw::E<nlohmann::json> threadViews(const std::vector<Post>& posts,

@@ -6,6 +6,7 @@
 // and rendered to HTML once, at compose time; both the source and the
 // rendered HTML are stored.
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -70,6 +71,10 @@ std::string shortenMentionLabels(std::string_view html,
 // Restore generated custom emoji images to :shortcode: text for remote
 // clients, which render emoji using the accompanying ActivityPub tags.
 std::string emojiShortcodesForFederation(std::string_view html);
+
+// Extract a bounded UTF-8 excerpt, decoding entities and separating blocks.
+// Omit scripts/styles and use image alt text for inline emoji.
+std::string plainTextExcerpt(std::string_view html, size_t max_chars = 300);
 
 // Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
 // escaping decoded text and attributes once before storage or display.
