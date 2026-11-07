@@ -236,6 +236,8 @@ TEST_F(Notifications, MigrationFromSixIsEmptyAndFailureRollsBack)
         ASSERT_TRUE(db->connection().execute(
             "DROP TRIGGER notification_reply_parent"));
         ASSERT_TRUE(db->connection().execute("DROP TABLE notifications"));
+        ASSERT_TRUE(db->connection().execute(
+            "ALTER TABLE posts DROP COLUMN updated_at"));
         ASSERT_TRUE(db->connection().execute("PRAGMA user_version=6"));
         ASSERT_TRUE(db->connection().execute(
             "CREATE INDEX idx_notifications_expiry ON posts(id)"));
@@ -251,7 +253,7 @@ TEST_F(Notifications, MigrationFromSixIsEmptyAndFailureRollsBack)
     }
     {
         ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(db->getSchemaVersion().value(), 7);
+        EXPECT_EQ(db->getSchemaVersion().value(), 8);
         EXPECT_EQ(db->countLocalPosts().value(), 1);
         EXPECT_EQ(db->getPostById(1)->value().content_html, "preserved");
         EXPECT_TRUE(db->notificationsFor(1, currentTime())->empty());

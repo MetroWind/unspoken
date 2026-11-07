@@ -250,6 +250,12 @@ if(UNSPOKEN_BUILD_TESTS)
   )
 
   enable_testing()
+  find_program(NODE_EXECUTABLE node)
+  if(NODE_EXECUTABLE)
+    add_test(NAME PostEditor
+      COMMAND "${NODE_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/post_editor_test.js")
+  endif()
   include(GoogleTest)
   gtest_discover_tests(unspoken_test
     # Need this so that the unit tests can find templates/fixtures.

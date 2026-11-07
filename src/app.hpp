@@ -86,6 +86,8 @@ private:
     void handlePostView(const Request& req, Response& res) const;
     void handlePostCreate(const Request& req, Response& res) const;
     void handlePostDelete(const Request& req, Response& res) const;
+    // Save an owned post and deliver its updated object atomically.
+    void handlePostEdit(const Request& req, Response& res) const;
     void handleReply(const Request& req, Response& res) const;
     void handleLike(const Request& req, Response& res) const;
     void handleBoost(const Request& req, Response& res) const;

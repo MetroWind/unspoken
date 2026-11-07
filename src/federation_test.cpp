@@ -3376,7 +3376,7 @@ TEST_F(FollowedInbox, StartupRepairsRetainedReactionLikesAndHonorsUndo)
     ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
     EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
     EXPECT_EQ(http.get_urls.size(),2u);
-    EXPECT_EQ(data->getSchemaVersion().value(),7);
+    EXPECT_EQ(data->getSchemaVersion().value(),8);
 }
 
 TEST_F(FollowedInbox, ExplicitPrivateReactionAudienceIsNotExpandedToFollowers)

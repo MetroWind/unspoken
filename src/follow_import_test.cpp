@@ -117,7 +117,7 @@ TEST_F(FollowImport, QueuesPendingFollowAndSkipsDuplicatesAndReruns)
         ->follow_activity_uri,follow->follow_activity_uri);
     EXPECT_EQ(data->connection().evalToValue<int64_t>(
         "SELECT count(*) FROM ap_jobs").value(),1);
-    EXPECT_EQ(data->getSchemaVersion().value(),7);
+    EXPECT_EQ(data->getSchemaVersion().value(),8);
 }
 
 TEST_F(FollowImport, ContinuesAfterResolutionAndValidationFailures)

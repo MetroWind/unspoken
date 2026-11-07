@@ -395,11 +395,13 @@ TEST(LinkPreview, MigrationPreservesPostsWithoutBackfill)
         ASSERT_TRUE(data->connection().execute(
             "DROP TRIGGER notification_reply_parent;"));
         ASSERT_TRUE(data->connection().execute("DROP TABLE notifications;"));
+        ASSERT_TRUE(data->connection().execute(
+            "ALTER TABLE posts DROP COLUMN updated_at"));
         ASSERT_TRUE(data->connection().execute("PRAGMA user_version=4;"));
     }
     {
         ASSIGN_OR_FAIL(auto data,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(data->getSchemaVersion().value(),7);
+        EXPECT_EQ(data->getSchemaVersion().value(),8);
         auto posts = data->timelinePublic({},20).value();
         ASSERT_EQ(posts.size(),1u);
         EXPECT_FALSE(posts.front().link_preview_id);
@@ -410,7 +412,7 @@ TEST(LinkPreview, MigrationPreservesPostsWithoutBackfill)
     }
     {
         ASSIGN_OR_FAIL(auto reopened,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(reopened->getSchemaVersion().value(),7);
+        EXPECT_EQ(reopened->getSchemaVersion().value(),8);
     }
     std::filesystem::remove(path);
 }
@@ -635,6 +637,6 @@ TEST(LinkPreview, RepairSavedMentionAssociationsWithoutBackfillingOtherPosts)
     auto disabled = make_post("disabled",true);
     EXPECT_EQ(data->repairMentionLinkPreviews("https://local.test/",false).value(),1);
     EXPECT_FALSE(data->getPostById(disabled.id).value()->link_preview_id);
-    EXPECT_EQ(data->getSchemaVersion().value(),7);
+    EXPECT_EQ(data->getSchemaVersion().value(),8);
 }
 } // namespace unspoken

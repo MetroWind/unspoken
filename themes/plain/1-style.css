@@ -302,3 +302,15 @@ nav.notification-pager
     outline: 2px solid currentColor;
     outline-offset: 2px;
 }
+
+/* Local post editing. */
+.post-edit-form
+{
+    margin: 1em;
+}
+
+.post-edited
+{
+    font-size: 0.85em;
+    white-space: nowrap;
+}

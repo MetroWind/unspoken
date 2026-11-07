@@ -74,7 +74,7 @@ TEST(Data, SchemaVersionIsSeven)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 7);
+    EXPECT_EQ(v, 8);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -99,7 +99,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 7);
+    EXPECT_EQ(version, 8);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -173,7 +173,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 7);
+    EXPECT_EQ(version, 8);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -1345,7 +1345,7 @@ TEST(Data, OpensOlderVersionThreeSchema)
     }
     {
         ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(source->getSchemaVersion().value(), 7);
+        EXPECT_EQ(source->getSchemaVersion().value(), 8);
         ASSIGN_OR_FAIL(auto system, source->getSystemActor());
         EXPECT_FALSE(system.has_value());
         ASSIGN_OR_FAIL(auto migrated_keys,
@@ -1487,11 +1487,13 @@ TEST(Data, MigrationFiveToSixBackfillsOrderedEvents)
         ASSERT_TRUE(db->connection().execute(
             "DROP TRIGGER notification_reply_parent"));
         ASSERT_TRUE(db->connection().execute("DROP TABLE notifications"));
+        ASSERT_TRUE(db->connection().execute(
+            "ALTER TABLE posts DROP COLUMN updated_at"));
         ASSERT_TRUE(db->connection().execute("PRAGMA user_version=5"));
     }
     {
         ASSIGN_OR_FAIL(auto db,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(db->getSchemaVersion().value(),7);
+        EXPECT_EQ(db->getSchemaVersion().value(),8);
         auto timeline = db->homeTimelinePosts({1},{},1,{},20,
                                               "https://f.test/u/viewer").value();
         ASSERT_EQ(timeline.size(),2u);
@@ -1513,4 +1515,41 @@ TEST(Data, BookmarksRetainPreviewAssociation)
     ASSIGN_OR_FAIL(auto bookmarks,db->bookmarksFor(viewer.id,{},20));
     ASSERT_EQ(bookmarks.size(),1u);
     EXPECT_EQ(bookmarks[0].link_preview_id,post.link_preview_id);
+}
+
+TEST(DataMigration, PostEditTimestampSurvivesReopening)
+{
+    const auto path = std::filesystem::temp_directory_path() /
+        "unspoken_edit_migration.sqlite";
+    std::filesystem::remove(path);
+    {
+        ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
+        NewPost post;
+        post.uri = "https://local.test/p/1";
+        post.content_html = "Original";
+        ASSERT_TRUE(data->insertPost(post, {}, ""));
+        ASSERT_TRUE(data->connection().execute(
+            "ALTER TABLE posts DROP COLUMN updated_at"));
+        ASSERT_TRUE(data->connection().execute("PRAGMA user_version=7"));
+    }
+    {
+        ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
+        EXPECT_EQ(data->getSchemaVersion().value(), 8);
+        ASSIGN_OR_FAIL(auto post, data->getPostById(1));
+        ASSERT_TRUE(post);
+        EXPECT_FALSE(post->updated_at);
+        NewPost edit;
+        edit.uri = post->uri;
+        edit.content_html = "Edited";
+        edit.updated_at = 123456;
+        ASSERT_TRUE(data->updatePost(1, edit, {}));
+    }
+    {
+        ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
+        ASSIGN_OR_FAIL(auto posts, data->timelinePublic({}, 20));
+        ASSERT_EQ(posts.size(), 1u);
+        EXPECT_EQ(posts[0].content_html, "Edited");
+        EXPECT_EQ(posts[0].updated_at, 123456);
+    }
+    std::filesystem::remove(path);
 }

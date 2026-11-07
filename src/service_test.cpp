@@ -1679,3 +1679,117 @@ TEST(Render, RemoteMentionMarkersSurviveSanitizing)
     EXPECT_EQ(displayed.find("onclick"),std::string::npos);
     EXPECT_EQ(shortenMentionLabels(displayed,"https://f.test/"),displayed);
 }
+
+TEST(ServiceEdit, PreservesIdentityAudienceAttachmentsAndInteractions)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author, data->createUser(NewUser{
+        "alice", "Alice", "", "iss", "alice", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(auto reader, data->createUser(NewUser{
+        "bob", "Bob", "", "iss", "bob", "PRIV", "PUB"}));
+    auto config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams original;
+    original.source = "Original @bob@f.test";
+    original.visibility = Visibility::DIRECT;
+    original.in_reply_to_uri = "https://remote.test/parent";
+    ASSIGN_OR_FAIL(auto post, service.createPost(author, original));
+    Attachment attachment;
+    attachment.sha256 = "edit_test";
+    attachment.extension = "png";
+    attachment.media_type = "image/png";
+    attachment.original_name = "image.png";
+    attachment.is_image = true;
+    ASSIGN_OR_FAIL(auto attachment_id, data->insertAttachment(attachment));
+    ASSERT_TRUE(data->attachToPost(attachment_id, post.id));
+    ASSERT_TRUE(service.setLike(reader, post, true));
+    ASSERT_TRUE(service.setBookmark(author, post, true));
+    ASSIGN_OR_FAIL(auto recipients, data->getPostRecipients(post.id));
+    ComposeParams params;
+    params.source = "Edited **text** </textarea><script>alert(1)</script>";
+    params.summary = "A warning";
+    params.sensitive = true;
+    // Compose-only fields must never broaden or redirect an existing post.
+    params.visibility = Visibility::PUBLIC;
+    params.mentioned_actor_uris = {"https://stranger.test/user"};
+    params.in_reply_to_uri = "https://stranger.test/post";
+    ASSIGN_OR_FAIL(auto updated, service.editPost(author, post.id, params));
+    EXPECT_EQ(updated.uri, post.uri);
+    EXPECT_EQ(updated.id, post.id);
+    EXPECT_EQ(updated.created_at, post.created_at);
+    EXPECT_EQ(updated.visibility, Visibility::DIRECT);
+    EXPECT_EQ(updated.in_reply_to_uri, post.in_reply_to_uri);
+    EXPECT_EQ(updated.content_source, params.source);
+    EXPECT_EQ(updated.summary, params.summary);
+    EXPECT_TRUE(updated.sensitive);
+    ASSERT_TRUE(updated.updated_at);
+    EXPECT_NE(updated.content_html.find("<strong>text</strong>"),
+              std::string::npos);
+    ASSIGN_OR_FAIL(auto after, data->getPostRecipients(post.id));
+    ASSERT_EQ(after.size(), recipients.size());
+    for(size_t i = 0; i < after.size(); ++i)
+    {
+        EXPECT_EQ(after[i].recipient_uri, recipients[i].recipient_uri);
+        EXPECT_EQ(after[i].field, recipients[i].field);
+    }
+    ASSIGN_OR_FAIL(auto attachments, data->attachmentsForPost(post.id));
+    ASSERT_EQ(attachments.size(), 1u);
+    EXPECT_EQ(attachments[0].id, attachment_id);
+    EXPECT_TRUE(attachments[0].sensitive);
+    EXPECT_EQ(data->likesForPost(post.uri)->size(), 1u);
+    EXPECT_TRUE(*data->isBookmarked(author.id, post.id));
+    auto note = noteJson(config, updated, author, after, attachments, &emoji);
+    EXPECT_TRUE(note.contains("updated"));
+    EXPECT_EQ(note["id"], post.uri);
+    EXPECT_EQ(note["inReplyTo"], *post.in_reply_to_uri);
+    ASSIGN_OR_FAIL(auto view, service.postView(updated, author));
+    EXPECT_TRUE(view["can_edit"]);
+    EXPECT_TRUE(view["edited"]);
+    EXPECT_EQ(view["edit_source"].get<std::string>().find("</textarea>"),
+              std::string::npos);
+    inja::Environment environment("templates/");
+    auto html = environment.render_file("_post.html", {
+        {"post", view}, {"logged_in", true}, {"csrf", "token"},
+        {"focus_id", 0}, {"site", {{"root", config.url_root}}}});
+    const auto editor_start = html.find("class=\"composer post-edit-form\"");
+    ASSERT_NE(editor_start, std::string::npos);
+    const auto editor_html = html.substr(editor_start);
+    EXPECT_EQ(editor_html.find("<script>alert(1)</script>"), std::string::npos);
+    EXPECT_NE(editor_html.find("&lt;/textarea&gt;"), std::string::npos);
+    // Attachment-only posts can have their text removed.
+    params.source = "";
+    EXPECT_TRUE(service.editPost(author, post.id, params));
+}
+
+TEST(ServiceEdit, RejectsOtherAuthorsRemotePostsAndEmptyContent)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto author, data->createUser(NewUser{
+        "alice", "Alice", "", "iss", "alice", "PRIV", "PUB"}));
+    ASSIGN_OR_FAIL(auto other, data->createUser(NewUser{
+        "bob", "Bob", "", "iss", "bob", "PRIV", "PUB"}));
+    auto config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    ComposeParams params;
+    params.source = "Original";
+    ASSIGN_OR_FAIL(auto post, service.createPost(author, params));
+    params.source = "Changed";
+    EXPECT_FALSE(service.editPost(other, post.id, params));
+    EXPECT_FALSE(service.editPost(author, -1, params));
+    params.source = "  \n ";
+    EXPECT_FALSE(service.editPost(author, post.id, params));
+    ASSIGN_OR_FAIL(auto unchanged, data->getPostById(post.id));
+    ASSERT_TRUE(unchanged);
+    EXPECT_EQ(unchanged->content_source, "Original");
+    EXPECT_FALSE(unchanged->updated_at);
+    ASSIGN_OR_FAIL(auto view, service.postView(*unchanged, other));
+    EXPECT_FALSE(view["can_edit"]);
+    EXPECT_EQ(view["edit_source"], "");
+    NewPost remote;
+    remote.uri = "https://remote.test/post";
+    remote.content_html = "<p>remote</p>";
+    ASSIGN_OR_FAIL(auto remote_post, data->insertPost(remote, {}, ""));
+    EXPECT_FALSE(service.editPost(author, remote_post.id, params));
+}

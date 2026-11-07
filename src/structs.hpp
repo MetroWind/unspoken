@@ -115,6 +115,8 @@ struct Post
     int64_t timeline_id = 0;
     std::optional<std::string> boosted_by_uri;
     std::optional<std::string> published; // original timestamp (remote)
+    // Last local edit time; creation and timeline ordering stay unchanged.
+    std::optional<int64_t> updated_at;
 };
 
 // Stable notification kinds persisted by the application.
@@ -162,6 +164,10 @@ struct NewPost
     Visibility visibility = Visibility::PUBLIC;
     std::optional<std::string> in_reply_to_uri;
     std::optional<std::string> published;
+    // Timestamp assigned when editing a local post.
+    std::optional<int64_t> updated_at;
+    // Keep attachment relations when editing local content.
+    bool keep_attachments = false;
     // Transient selection context; never serialized into ActivityPub.
     std::string preview_origin;
     bool previews_enabled = true;

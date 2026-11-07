@@ -29,13 +29,13 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 7;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 8;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
     "id, uri, local_author_id, remote_author_id, content_html, "
     "content_source, summary, sensitive, visibility, in_reply_to_uri, "
-    "created_at, published, link_preview_id";
+    "created_at, published, link_preview_id, updated_at";
 
 template<typename Row>
 mw::E<Post> rowToPost(const Row& row)
@@ -60,6 +60,7 @@ mw::E<Post> rowToPost(const Row& row)
     p.created_at = std::get<10>(row);
     p.published = std::get<11>(row);
     p.link_preview_id = std::get<12>(row);
+    p.updated_at = std::get<13>(row);
     return p;
 }
 
@@ -561,6 +562,7 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
         DO_OR_RETURN(data_source->setSchemaVersion(5));
         DO_OR_RETURN(data_source->migrate5To6());
         DO_OR_RETURN(data_source->migrate6To7());
+        DO_OR_RETURN(data_source->migrate7To8());
         DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
@@ -607,6 +609,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate6To7());
                 version = 7;
+                continue;
+            }
+            if(version == 7)
+            {
+                DO_OR_RETURN(data_source->migrate7To8());
+                version = 8;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -1402,7 +1410,8 @@ mw::E<std::optional<Post>> DataSourceSQLite::getPostById(int64_t id) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1418,7 +1427,8 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1574,7 +1584,8 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
                 "UPDATE posts SET uri = ?, local_author_id = ?, "
                 "remote_author_id = ?, content_html = ?, "
                 "content_source = ?, summary = ?, sensitive = ?, "
-                "visibility = ?, in_reply_to_uri = ?, published = ? "
+                "visibility = ?, in_reply_to_uri = ?, published = ?, "
+                "updated_at = ? "
                 "WHERE id = ?;");
             if(!st_e.has_value())
                 return rollback(st_e.error());
@@ -1583,12 +1594,12 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
                 std::optional<int64_t>, std::string,
                 std::optional<std::string>, std::optional<std::string>,
                 int64_t, std::string, std::optional<std::string>,
-                std::optional<std::string>, int64_t>(
+                std::optional<std::string>, std::optional<int64_t>, int64_t>(
                 np.uri.value_or(""), np.local_author_id,
                 np.remote_author_id, np.content_html, np.content_source,
                 np.summary, np.sensitive ? 1 : 0,
                 std::string(visibilityToStr(np.visibility)),
-                np.in_reply_to_uri, np.published, id);
+                np.in_reply_to_uri, np.published, np.updated_at, id);
             if(!b.has_value())
                 return rollback(b.error());
             auto ex = db->execute(std::move(st));
@@ -1607,6 +1618,17 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
             if(!ex.has_value())
                 return rollback(ex.error());
         }
+        if(np.keep_attachments)
+        {
+            auto st_e = db->statementFromStr(
+                "UPDATE post_attachments SET sensitive = ? WHERE post_id = ?;");
+            if(!st_e) return rollback(st_e.error());
+            auto bound = st_e->bind<int64_t, int64_t>(np.sensitive ? 1 : 0, id);
+            if(!bound) return rollback(bound.error());
+            auto executed = db->execute(std::move(*st_e));
+            if(!executed) return rollback(executed.error());
+        }
+        else
         {
             auto st_e = db->statementFromStr(
                 "DELETE FROM post_attachments WHERE post_id = ?;");
@@ -1732,7 +1754,8 @@ DataSourceSQLite::timelinePublic(const Cursor& c, int limit) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1770,7 +1793,8 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1809,7 +1833,8 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1923,15 +1948,16 @@ DataSourceSQLite::homeTimelinePosts(
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>, int64_t,
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>, int64_t,
         std::optional<std::string>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
     {
         ASSIGN_OR_RETURN(Post p, rowToPost(r));
-        p.timeline_id = std::get<13>(r);
-        p.boosted_by_uri = std::get<14>(r);
+        p.timeline_id = std::get<14>(r);
+        p.boosted_by_uri = std::get<15>(r);
         out.push_back(std::move(p));
     }
     if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
@@ -1958,7 +1984,8 @@ DataSourceSQLite::threadFor(std::string_view root_uri) const
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -2123,7 +2150,7 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         // qualify columns with p.
         "p.id, p.uri, p.local_author_id, p.remote_author_id, p.content_html, "
         "p.content_source, p.summary, p.sensitive, p.visibility, "
-        "p.in_reply_to_uri, p.created_at, p.published, p.link_preview_id",
+        "p.in_reply_to_uri, p.created_at, p.published, p.link_preview_id, p.updated_at",
         where, order);
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
@@ -2138,7 +2165,8 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         std::optional<int64_t>, std::optional<int64_t>, std::string,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
-        std::optional<std::string>, std::optional<int64_t>>(std::move(st))));
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -3105,6 +3133,17 @@ mw::E<int64_t> DataSourceSQLite::pruneExpiredNotifications(
     };
     DO_OR_RETURN(withDataWrite(*db, prune));
     return removed;
+}
+
+mw::E<void> DataSourceSQLite::migrate7To8() const
+{
+    auto migrate = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute(
+            "ALTER TABLE posts ADD COLUMN updated_at INTEGER;"));
+        return setSchemaVersion(8);
+    };
+    return withDataWrite(*db, migrate);
 }
 
 } // namespace unspoken

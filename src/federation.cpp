@@ -1641,6 +1641,7 @@ nlohmann::json noteJson(const Config& config, const Post& post,
     j["cc"] = cc;
     j["sensitive"] = post.sensitive;
     j["published"] = post.published.value_or(isoTimestamp(post.created_at));
+    if(post.updated_at) j["updated"] = isoTimestamp(*post.updated_at);
     if(post.summary.has_value()) j["summary"] = *post.summary;
     if(post.in_reply_to_uri.has_value()) j["inReplyTo"] = *post.in_reply_to_uri;
     if(!attachment_arr.empty()) j["attachment"] = attachment_arr;

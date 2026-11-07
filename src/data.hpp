@@ -311,6 +311,8 @@ public:
 
     // Add private notification history without backfilling old interactions.
     mw::E<void> migrate6To7() const;
+    // Retain the timestamp of local post edits.
+    mw::E<void> migrate7To8() const;
     // Commit an application operation atomically, joining an outer write.
     mw::E<void> withWrite(
         const std::function<mw::E<void>()>& operation) const override;

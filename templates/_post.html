@@ -24,6 +24,13 @@
       <span class="handle">{{ post.author.handle }}</span>
     </span>
     <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
+    <span class="post-edited" title="Edited {{ post.updated_at }}">
+{% if post.edited %}
+      <span role="img" aria-label="Edited {{ post.updated_at }}">
+        <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i>
+      </span>
+{% endif %}
+    </span>
     <span class="vis vis-{{ post.visibility }}" role="img"
 {% if post.visibility == "followers" %}
           title="followers-only" aria-label="followers-only">
@@ -41,6 +48,7 @@
     </span>
   </div>
 
+<div class="post-body">
 {% if post.has_summary %}
   <details class="cw">
     <summary>{{ post.summary }}</summary>
@@ -75,6 +83,8 @@
 {% endfor %}
   </div>
 {% endif %}
+
+</div>
 
 {% if length(post.reactions) > 0 %}
   <div class="reactions">
@@ -153,6 +163,12 @@
     <a class="linkbtn" href="{{ site.root }}p/{{ post.id }}">
       <i class="nf nf-fa-reply ui-icon" aria-hidden="true"></i> reply
     </a>
+{% if logged_in and post.can_edit %}
+    <button type="button" class="linkbtn post-edit-trigger" hidden
+            aria-expanded="false" title="Edit post" aria-label="Edit post">
+      <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i> edit
+    </button>
+{% endif %}
 {% if post.can_delete %}
     <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/delete"
           onsubmit="return confirm('Delete this post?');">
@@ -163,5 +179,25 @@
     </form>
 {% endif %}
   </div>
+{% endif %}
+{% if logged_in and post.can_edit %}
+  <form class="composer post-edit-form" method="post" hidden
+        action="{{ site.root }}post/{{ post.id }}/edit">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Post text
+      <textarea name="content" rows="6">{{ post.edit_source }}</textarea>
+    </label>
+    <div class="composer-row">
+      <label>CW <input type="text" name="summary" value="{{ post.summary }}"></label>
+      <label class="cb"><input type="checkbox" name="sensitive" value="1"
+{% if post.sensitive %}
+             checked
+{% endif %}
+      > sensitive</label>
+      <button type="submit">Save</button>
+      <button type="button" class="post-edit-cancel">Cancel</button>
+    </div>
+    <p class="post-edit-status" role="status" aria-live="polite"></p>
+  </form>
 {% endif %}
 </article>

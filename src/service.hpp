@@ -62,6 +62,9 @@ public:
 
     // ── Posting ─────────────────────────────────────────────────────
     mw::E<Post> createPost(const User& author, const ComposeParams& p) const;
+    // Edit owned content while retaining identity, audience and attachments.
+    mw::E<Post> editPost(const User& author, int64_t id,
+        const ComposeParams& params) const;
     // Authorization to view a (possibly private) post over HTML
     // (design §16.6). The viewer is the logged-in user, or nullopt.
     mw::E<bool> canViewPost(const Post& post,

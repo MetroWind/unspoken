@@ -1326,6 +1326,58 @@ void App::handleReply(const Request& req, Response& res) const
     res.set_redirect(urlFor("p/" + std::to_string(post.id)));
 }
 
+void App::handlePostEdit(const Request& req, Response& res) const
+{
+    if(!csrfOk(req))
+    {
+        res.status = 400;
+        res.set_content("Bad CSRF", "text/plain");
+        return;
+    }
+    ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
+    if(!viewer)
+    {
+        res.status = 401;
+        res.set_content("Login required", "text/plain");
+        return;
+    }
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    ASSIGN_OR_RESPOND_ERROR(auto write_tx,
+                            ap::Transaction::begin(ds->connection()), res);
+    int64_t id = 0;
+    try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
+    unspoken::ComposeParams params;
+    params.source = param(req, "content");
+    auto summary = param(req, "summary");
+    if(!summary.empty()) params.summary = summary;
+    params.sensitive = hasParam(req, "sensitive");
+    Service svc(config, *ds, emoji);
+    ASSIGN_OR_RESPOND_ERROR(auto post, svc.editPost(*viewer, id, params), res);
+    ASSIGN_OR_RESPOND_ERROR(auto recipients, ds->getPostRecipients(id), res);
+    ASSIGN_OR_RESPOND_ERROR(auto attachments, ds->attachmentsForPost(id), res);
+    auto note = unspoken::noteJson(config, post, *viewer, recipients,
+                                   attachments, &emoji);
+    const auto actor_uri = svc.actorUri(viewer->username);
+    const auto now = *post.updated_at;
+    // Each save needs a distinct activity ID, even within the same second.
+    nlohmann::json activity = {
+        {"@context", "https://www.w3.org/ns/activitystreams"},
+        {"id", post.uri + "/updates/" + unspoken::randomToken()},
+        {"type", "Update"}, {"actor", actor_uri}, {"object", note},
+        {"to", note["to"]}, {"cc", note["cc"]},
+    };
+    ASSIGN_OR_RESPOND_ERROR([[maybe_unused]] auto jobs,
+        unspoken::enqueueOutboundDelivery(config, *ds, actor_uri, activity,
+                                           recipients, now), res);
+    if(respondIfError(write_tx.commit(), res)) return;
+    if(preview_worker) preview_worker->wake();
+    auto ctx = baseContext(req, viewer);
+    ASSIGN_OR_RESPOND_ERROR(ctx["post"], svc.postView(post, viewer), res);
+    ctx["focus_id"] = 0;
+    res.set_header("Cache-Control", "private, no-store");
+    render(res, 200, "_post.html", ctx);
+}
+
 void App::handlePostDelete(const Request& req, Response& res) const
 {
     if(!csrfOk(req)) { res.status = 400; res.set_content("Bad CSRF",
@@ -2737,6 +2789,8 @@ void App::setup()
     { handlePostCreate(req, res); });
     server.Post("/post/:id/reply", [&](const Request& req, Response& res)
     { handleReply(req, res); });
+    server.Post("/post/:id/edit", [&](const Request& req, Response& res)
+    { handlePostEdit(req, res); });
     server.Post("/post/:id/delete", [&](const Request& req, Response& res)
     { handlePostDelete(req, res); });
     server.Post("/post/:id/like", [&](const Request& req, Response& res)

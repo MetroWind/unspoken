@@ -447,6 +447,42 @@ mw::E<Post> Service::createPost(const User& author,
     return result;
 }
 
+mw::E<Post> Service::editPost(const User& author, int64_t id,
+                              const ComposeParams& params) const
+{
+    ASSIGN_OR_RETURN(auto post, data.getPostById(id));
+    if(!post || post->local_author_id != author.id || !post->content_source)
+        return std::unexpected(mw::HTTPError(404, "Not found"));
+    ASSIGN_OR_RETURN(auto attachments, data.attachmentsForPost(id));
+    if(mw::strip(params.source).empty() && attachments.empty())
+        return std::unexpected(mw::HTTPError(400, "Empty post"));
+    ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(id));
+    NewPost np;
+    np.uri = post->uri;
+    np.local_author_id = post->local_author_id;
+    np.content_source = params.source;
+    np.content_html = linkMentions(parsePostContent(params.source, emoji).html,
+        postTagsForSource(config, recipients, params.source, &emoji));
+    np.summary = params.summary;
+    np.sensitive = params.sensitive;
+    np.visibility = post->visibility;
+    np.in_reply_to_uri = post->in_reply_to_uri;
+    np.published = post->published;
+    np.updated_at = nowSeconds();
+    np.keep_attachments = true;
+    np.preview_origin = config.url_root;
+    np.previews_enabled = config.link_previews_enabled;
+    for(const auto& recipient : recipients)
+        np.preview_excluded_urls.push_back(recipient.recipient_uri);
+    for(const auto& attachment : attachments)
+        np.preview_excluded_urls.push_back(attachment.remote_url.value_or(
+            localAttachmentUrl(config, attachment)));
+    DO_OR_RETURN(data.updatePost(id, np, recipients));
+    ASSIGN_OR_RETURN(auto updated, data.getPostById(id));
+    if(!updated) return std::unexpected(mw::HTTPError(404, "Not found"));
+    return *updated;
+}
+
 mw::E<bool> Service::canViewPost(const Post& post,
                                  const std::optional<User>& viewer) const
 {
@@ -1236,6 +1272,10 @@ Service::postViewWithAuthorCache(
         && *p.local_author_id == viewer->id;
     j["is_author"] = is_author;
     j["can_delete"] = is_author;
+    j["can_edit"] = is_author && p.content_source.has_value();
+    j["edit_source"] = is_author ? esc(p.content_source.value_or("")) : "";
+    j["edited"] = p.updated_at.has_value();
+    j["updated_at"] = p.updated_at ? formatTimestamp(*p.updated_at) : "";
     j["can_boost"] = (p.visibility == Visibility::PUBLIC
                       || p.visibility == Visibility::UNLISTED);
     bool bookmarked = false;
