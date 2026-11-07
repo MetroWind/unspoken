@@ -139,6 +139,8 @@ img.emoji
 article.post
 {
     margin: 1em 0;
+    text-spacing-trim: normal;
+    text-autospace: normal;     /* TODO: use `replace` when widely supported. */
 
     .post-avatar
     {
