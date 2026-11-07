@@ -181,6 +181,7 @@ article.post
     {
         padding: 0;
         margin: 1em;
+        overflow-wrap: break-word;
     }
 
     a.link-preview
@@ -247,6 +248,11 @@ article.post
     }
 }
 
+article.focus
+{
+    border: 2px solid var(--color-accent-2);
+}
+
 .profile-banner
 {
     height: 240px;
@@ -270,6 +276,22 @@ article.post
         object-fit: contain;
         border: 1px solid var(--color-border);
         position: relative;
+    }
+}
+
+.profile-title
+{
+    text-align: center;
+    margin-bottom: 2em;
+
+    h1
+    {
+        margin-top: 1em;
+        margin-bottom: 0;
+    }
+    .handle
+    {
+        margin-top: 0;
     }
 }
 
