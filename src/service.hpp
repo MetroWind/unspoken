@@ -151,7 +151,10 @@ private:
     const EmojiRegistry& emoji;
 };
 
-// Format a unix timestamp (seconds) as "YYYY-MM-DD HH:MM" UTC.
+// Format a unix timestamp (seconds) as "YYYY-MM-DD HH:MM:SS" UTC.
 std::string formatTimestamp(int64_t unix_seconds);
+
+// Format a unix timestamp as an ISO 8601 datetime with a UTC marker.
+std::string formatDatetime(int64_t unix_seconds);
 
 } // namespace unspoken

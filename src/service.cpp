@@ -28,9 +28,7 @@
 namespace unspoken
 {
 
-namespace
-{
-std::string metadataTimestamp(int64_t seconds)
+std::string formatDatetime(int64_t seconds)
 {
     const auto time = static_cast<std::time_t>(seconds);
     std::tm utc{};
@@ -44,6 +42,8 @@ std::string metadataTimestamp(int64_t seconds)
     return buffer;
 }
 
+namespace
+{
 int64_t nowSeconds()
 {
     return static_cast<int64_t>(std::time(nullptr));
@@ -343,7 +343,7 @@ std::string formatTimestamp(int64_t unix_seconds)
     gmtime_r(&t, &tm);
 #endif
     char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
     return std::string(buf);
 }
 
@@ -1102,6 +1102,7 @@ Service::postViewWithAuthorCache(
     j["sensitive"] = p.sensitive;
     j["visibility"] = std::string(visibilityToStr(p.visibility));
     j["created_at"] = formatTimestamp(p.created_at);
+    j["created_datetime"] = formatDatetime(p.created_at);
     j["in_reply_to_uri"] = esc(p.in_reply_to_uri.value_or(""));
     j["is_reply"] = p.in_reply_to_uri.has_value();
     j["has_link_preview"] = false;
@@ -1290,6 +1291,8 @@ Service::postViewWithAuthorCache(
     j["edit_source"] = is_author ? esc(p.content_source.value_or("")) : "";
     j["edited"] = p.updated_at.has_value();
     j["updated_at"] = p.updated_at ? formatTimestamp(*p.updated_at) : "";
+    j["updated_datetime"] = p.updated_at
+        ? formatDatetime(*p.updated_at) : "";
     j["can_boost"] = (p.visibility == Visibility::PUBLIC
                       || p.visibility == Visibility::UNLISTED);
     bool bookmarked = false;
@@ -1336,8 +1339,8 @@ mw::E<nlohmann::json> Service::postMetadata(const Post& post) const
         {"image_alt", author["avatar_is_placeholder"].get<bool>()
             ? "unspoken" : author["display_name"].get<std::string>()},
         {"published", mw::escapeHTML(post.published.value_or(
-            metadataTimestamp(post.created_at)))},
-        {"modified", post.updated_at ? metadataTimestamp(*post.updated_at) : ""}
+            formatDatetime(post.created_at)))},
+        {"modified", post.updated_at ? formatDatetime(*post.updated_at) : ""}
     };
     if(!warning && !post.sensitive)
     {

@@ -23,10 +23,14 @@
       <a class="author" href="{{ post.author.profile_url }}">{{ post.author.display_name }}</a>
       <span class="handle">{{ post.author.handle }}</span>
     </span>
-    <a class="permalink" href="{{ site.root }}p/{{ post.id }}">{{ post.created_at }}</a>
-    <span class="post-edited" title="Edited {{ post.updated_at }}">
+    <a class="permalink" href="{{ site.root }}p/{{ post.id }}">
+      <time data-local-time datetime="{{ post.created_datetime }}">{{ post.created_at }} UTC</time>
+    </a>
+    <span class="post-edited"
+          data-edited-at="{{ post.updated_datetime }}"
+          title="Edited {{ post.updated_at }} UTC">
 {% if post.edited %}
-      <span role="img" aria-label="Edited {{ post.updated_at }}">
+      <span role="img" aria-label="Edited {{ post.updated_at }} UTC">
         <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i>
       </span>
 {% endif %}

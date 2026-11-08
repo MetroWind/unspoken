@@ -271,10 +271,7 @@ mw::E<nlohmann::json> Service::notificationPage(const User& viewer,
             {"kind", static_cast<int>(entry.kind)}, {"actor", actor_view},
             {"created_at", entry.created_at},
             {"timestamp", formatTimestamp(entry.created_at)},
-            {"datetime", formatTimestamp(entry.created_at)}};
-        std::string datetime = view["datetime"];
-        datetime[10] = 'T';
-        view["datetime"] = datetime + ":00Z";
+            {"datetime", formatDatetime(entry.created_at)}};
         if(posts[i]) view["post"] = postLink(config, *posts[i], "your post");
         if(replies[i]) view["reply"] = postLink(config, *replies[i], "reply");
         if(entry.reaction_id && posts[i])

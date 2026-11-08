@@ -27,7 +27,7 @@
       <a href="{{ notification.post.url }}">{{ notification.post.excerpt }}</a>{% if notification.kind == 0 %}:
       <a href="{{ notification.reply.url }}">{{ notification.reply.excerpt }}</a>{% endif %}
 {% endif %}
-      <time datetime="{{ notification.datetime }}">{{ notification.timestamp }}</time>
+      <time datetime="{{ notification.datetime }}" data-local-time>{{ notification.timestamp }} UTC</time>
     </li>
 {% endfor %}
   </ul>
