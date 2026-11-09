@@ -35,18 +35,18 @@
       </span>
 {% endif %}
     </span>
-    <a class="vis vis-{{ post.visibility }}" href="{{ post.url }}" title="Remote URL"
+    <a class="vis vis-{{ post.visibility }}" href="{{ post.url }}"
 {% if post.visibility == "followers" %}
-          title="followers-only" aria-label="followers-only">
+          title="Remote URL (followers-only)" aria-label="followers-only">
       <i class="nf nf-fa-users ui-icon" aria-hidden="true"></i>
 {% else if post.visibility == "direct" %}
-          title="direct message" aria-label="direct message">
+          title="Remote URL (direct message)" aria-label="direct message">
       <i class="nf nf-fa-envelope ui-icon" aria-hidden="true"></i>
 {% else if post.visibility == "unlisted" %}
-          title="unlisted" aria-label="unlisted">
+          title="Remote URL (unlisted)" aria-label="unlisted">
       <i class="nf nf-fa-unlock ui-icon" aria-hidden="true"></i>
 {% else %}
-          title="public" aria-label="public">
+          title="Remote URL (public)" aria-label="public">
       <i class="nf nf-fa-globe ui-icon" aria-hidden="true"></i>
 {% endif %}
     </a>
