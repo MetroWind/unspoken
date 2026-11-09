@@ -20,8 +20,8 @@ bool isValidShortcode(std::string_view stem)
     if(stem.empty()) return false;
     for(char c : stem)
     {
-        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-            || c == '_';
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '_' || c == '-';
         if(!ok) return false;
     }
     return true;
@@ -67,7 +67,7 @@ EmojiRegistry EmojiRegistry::scan(const std::string& emoji_dir,
         if(!isValidShortcode(stem))
         {
             spdlog::warn("Skipping emoji file {}: invalid shortcode '{}' "
-                         "(allowed charset [a-z0-9_]).",
+                         "(allowed charset [a-zA-Z0-9_-]).",
                          p.filename().string(), stem);
             continue;
         }

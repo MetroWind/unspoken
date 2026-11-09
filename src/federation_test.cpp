@@ -3486,3 +3486,45 @@ TEST_F(FollowedInbox, FetchedRepliesDoNotNotifyTheirLocalParentOwner)
     EXPECT_TRUE(data->notificationsFor(viewer.id,
         mw::timeToSeconds(mw::Clock::now()))->empty());
 }
+
+TEST(InboxDispatch, RemoteEmojiNamesAcceptUppercaseAndHyphens)
+{
+    Config config = testConfig();
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, data->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/bob")));
+    nlohmann::json raw = {
+        {"id", "https://remote.test/a/broad-emoji"},
+        {"type", "Create"}, {"actor", remote.uri},
+        {"object", {{"id", "https://remote.test/o/broad-emoji"},
+            {"type", "Note"}, {"attributedTo", remote.uri},
+            {"content", "<p>:Blob-Cat: :Cat_2:</p>"},
+            {"to", std::string(AS_PUBLIC)},
+            {"tag", nlohmann::json::array({
+                {{"type", "Emoji"}, {"name", ":Blob-Cat:"},
+                    {"icon", {{"url", "https://remote.test/cat.png"}}}},
+                {{"type", "Emoji"}, {"name", "Cat_2"},
+                    {"icon", {{"url", "https://remote.test/neko.png"}}}},
+            })}}},
+    };
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 100));
+    ASSIGN_OR_FAIL(auto post, data->getPostByUri(
+        "https://remote.test/o/broad-emoji"));
+    ASSERT_TRUE(post);
+    EXPECT_NE(post->content_html.find("src=\"https://remote.test/cat.png\""),
+              std::string::npos);
+    EXPECT_NE(post->content_html.find("src=\"https://remote.test/neko.png\""),
+              std::string::npos);
+    raw["id"] = "https://remote.test/a/update-broad-emoji";
+    raw["type"] = "Update";
+    raw["object"]["content"] = "<p>updated :Blob-Cat:</p>";
+    ASSIGN_OR_FAIL(auto update, parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), update, 101));
+    ASSIGN_OR_FAIL(auto updated, data->getPostById(post->id));
+    ASSERT_TRUE(updated);
+    EXPECT_NE(updated->content_html.find("src=\"https://remote.test/cat.png\""),
+              std::string::npos);
+}

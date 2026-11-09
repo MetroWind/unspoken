@@ -29,7 +29,7 @@ public:
     EmojiRegistry() = default;
 
     // Scan `emoji_dir` for image files and build the registry. The
-    // shortcode is the filename stem; invalid stems (charset [a-z0-9_]+)
+    // shortcode is the filename stem; invalid stems (charset [a-zA-Z0-9_-]+)
     // are skipped with a logged warning, and shortcode collisions keep
     // the first file encountered (first wins) with a logged warning.
     // `url_root` is the configured root (already ending in '/').
@@ -86,7 +86,7 @@ struct UnicodeEmojiCategory
 mw::E<std::vector<UnicodeEmojiCategory>>
 loadUnicodeEmojiCategories(const std::string& path);
 
-// True if `stem` is a valid emoji shortcode ([a-z0-9_]+, non-empty).
+// True if `stem` is a valid emoji shortcode ([a-zA-Z0-9_-]+, non-empty).
 bool isValidShortcode(std::string_view stem);
 
 // MIME type for a lowercased file extension (without the dot), or "" if

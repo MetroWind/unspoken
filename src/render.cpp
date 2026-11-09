@@ -388,6 +388,63 @@ bool shortenMentionNodes(xmlNode* node, std::string_view site_root)
     return changed;
 }
 
+bool replaceRemoteEmojiNodes(xmlNode* node,
+    const std::map<std::string, EmojiInfo>& emoji)
+{
+    bool changed = false;
+    while(node)
+    {
+        auto* next = node->next;
+        if(node->type != XML_TEXT_NODE)
+        {
+            changed = replaceRemoteEmojiNodes(node->children, emoji) || changed;
+            node = next;
+            continue;
+        }
+        const std::string text(reinterpret_cast<const char*>(node->content));
+        size_t pos = 0;
+        size_t copied = 0;
+        while(pos < text.size())
+        {
+            auto start = text.find(':', pos);
+            if(start == std::string::npos) break;
+            auto end = text.find(':', start + 1);
+            if(end == std::string::npos) break;
+            auto shortcode = text.substr(start + 1, end - start - 1);
+            auto it = isValidShortcode(shortcode)
+                ? emoji.find(shortcode) : emoji.end();
+            if(it == emoji.end()
+               || (!it->second.image_url.starts_with("https://")
+                   && !it->second.image_url.starts_with("http://")))
+            {
+                // An unrelated colon must not consume a following shortcode.
+                pos = start + 1;
+                continue;
+            }
+            auto* image = xmlNewNode(nullptr, BAD_CAST "img");
+            if(!image) break;
+            auto label = text.substr(start, end - start + 1);
+            xmlNewProp(image, BAD_CAST "class", BAD_CAST "emoji");
+            xmlNewProp(image, BAD_CAST "src",
+                       BAD_CAST it->second.image_url.c_str());
+            xmlNewProp(image, BAD_CAST "alt", BAD_CAST label.c_str());
+            xmlNewProp(image, BAD_CAST "title", BAD_CAST label.c_str());
+            xmlAddPrevSibling(node, image);
+            if(start > copied)
+                xmlAddPrevSibling(image, xmlNewTextLen(
+                    BAD_CAST(text.data() + copied),
+                    static_cast<int>(start - copied)));
+            copied = end + 1;
+            pos = copied;
+            changed = true;
+        }
+        if(copied)
+            xmlNodeSetContent(node, BAD_CAST(text.c_str() + copied));
+        node = next;
+    }
+    return changed;
+}
+
 bool restoreEmojiNodes(xmlNode* node)
 {
     bool changed = false;
@@ -400,7 +457,7 @@ bool restoreEmojiNodes(xmlNode* node)
            xmlStrEqual(node->name,BAD_CAST "img") && classes &&
            *classes == "emoji" && alt && alt->size() > 2 &&
            alt->front() == ':' && alt->back() == ':' &&
-           isValidShortcode(std::string_view(*alt).substr(1,alt->size()-2)))
+           isValidShortcode(std::string_view(*alt).substr(1, alt->size()-2)))
         {
             auto* text = xmlNewText(BAD_CAST alt->c_str());
             if(text)
@@ -418,9 +475,11 @@ bool restoreEmojiNodes(xmlNode* node)
 
 std::string transformPostHtml(std::string_view html,
     const std::map<std::string,std::string>& links, bool shorten_labels,
-    bool restore_emoji = false, std::string_view site_root = "")
+    bool restore_emoji = false, std::string_view site_root = "",
+    const std::map<std::string, EmojiInfo>& remote_emoji = {})
 {
-    if(html.empty() || (!shorten_labels && !restore_emoji && links.empty()) ||
+    if(html.empty() || (!shorten_labels && !restore_emoji && links.empty()
+                        && remote_emoji.empty()) ||
        html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         return std::string(html);
     std::unique_ptr<xmlDoc,decltype(&xmlFreeDoc)> doc(
@@ -434,6 +493,8 @@ std::string transformPostHtml(std::string_view html,
     if(shorten_labels)
         changed = shortenMentionNodes(body->children,site_root) || changed;
     if(restore_emoji) changed = restoreEmojiNodes(body->children) || changed;
+    if(!remote_emoji.empty())
+        changed = replaceRemoteEmojiNodes(body->children, remote_emoji) || changed;
     if(!changed) return std::string(html);
     std::unique_ptr<xmlBuffer,decltype(&xmlBufferFree)> buffer(
         xmlBufferCreate(),&xmlBufferFree);
@@ -470,14 +531,7 @@ std::string substituteEmoji(std::string_view html, const EmojiRegistry& emoji)
         }
         // Find the closing colon, allowing only shortcode chars between.
         size_t j = i + 1;
-        while(j < html.size())
-        {
-            char c = html[j];
-            bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-                || c == '_';
-            if(!ok) break;
-            ++j;
-        }
+        while(j < html.size() && isValidShortcode(html.substr(j, 1))) ++j;
         if(j < html.size() && html[j] == ':' && j > i + 1)
         {
             std::string_view code = html.substr(i + 1, j - i - 1);
@@ -496,6 +550,12 @@ std::string substituteEmoji(std::string_view html, const EmojiRegistry& emoji)
         ++i;
     }
     return out;
+}
+
+std::string substituteRemoteEmoji(std::string_view html,
+    const std::map<std::string, EmojiInfo>& emoji)
+{
+    return transformPostHtml(html, {}, false, false, "", emoji);
 }
 
 std::string renderPostContent(const std::string& source,

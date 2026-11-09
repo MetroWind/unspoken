@@ -7,6 +7,7 @@
 // rendered HTML are stored.
 
 #include <cstddef>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -47,6 +48,11 @@ std::string renderMarkdown(const std::string& source);
 // "emoji"> tag from the registry. Unknown shortcodes are left verbatim.
 std::string substituteEmoji(std::string_view html,
                             const EmojiRegistry& emoji);
+
+// Render explicitly advertised remote emoji in text nodes, preserving exact
+// valid shortcode names without rewriting attributes.
+std::string substituteRemoteEmoji(std::string_view html,
+    const std::map<std::string, EmojiInfo>& emoji);
 
 // The full local compose pipeline: render Markdown, then substitute
 // emoji into the rendered HTML (the stored content_html).

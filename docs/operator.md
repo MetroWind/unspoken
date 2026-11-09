@@ -519,3 +519,9 @@ in `attachment_dir`. Add new artwork under a new filename, restart, and
 confirm the old post still points to the retained original. In a disposable
 test pack, delete an old image and verify the URL returns 404: there is no
 automatic restoration or historical archive.
+
+## Custom emoji names
+
+Custom emoji shortcodes accept only `[a-zA-Z0-9_-]+`, preserving case.
+Remote Emoji tags use the same rules. Remote substitution affects text only
+and does not rewrite links or attributes.

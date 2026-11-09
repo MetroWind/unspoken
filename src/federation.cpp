@@ -694,45 +694,6 @@ std::map<std::string, EmojiInfo> emojiTagsForObject(
     return out;
 }
 
-std::string substituteRemoteEmoji(std::string_view html,
-                                  const std::map<std::string, EmojiInfo>& emoji)
-{
-    std::string out;
-    out.reserve(html.size());
-    size_t pos = 0;
-    while(pos < html.size())
-    {
-        size_t start = html.find(':', pos);
-        if(start == std::string_view::npos)
-        {
-            out += html.substr(pos);
-            break;
-        }
-        out += html.substr(pos, start - pos);
-        size_t end = html.find(':', start + 1);
-        if(end == std::string_view::npos)
-        {
-            out += html.substr(start);
-            break;
-        }
-        std::string shortcode(html.substr(start + 1, end - start - 1));
-        auto it = emoji.find(shortcode);
-        if(isValidShortcode(shortcode) && it != emoji.end())
-        {
-            out += std::format(
-                "<img class=\"emoji\" src=\"{}\" alt=\":{}:\" "
-                "title=\":{}:\">",
-                mw::escapeHTML(it->second.image_url), shortcode, shortcode);
-        }
-        else
-        {
-            out += html.substr(start, end - start + 1);
-        }
-        pos = end + 1;
-    }
-    return out;
-}
-
 std::string tagPageUrl(const Config& config, std::string_view tag)
 {
     std::string out;

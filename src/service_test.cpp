@@ -622,8 +622,14 @@ TEST(Emoji, ShortcodeValidation)
 {
     EXPECT_TRUE(isValidShortcode("blob_cat3"));
     EXPECT_FALSE(isValidShortcode(""));
-    EXPECT_FALSE(isValidShortcode("Blob"));      // uppercase
-    EXPECT_FALSE(isValidShortcode("a-b"));        // dash
+    EXPECT_TRUE(isValidShortcode("Blob"));
+    EXPECT_TRUE(isValidShortcode("a-b"));
+    EXPECT_TRUE(isValidShortcode("aZ09_-"));
+    for(const auto* name : {"a.b", "a+b", "猫", "a b", "a:b", "a/b",
+                            "a\\b", "a\nb", "a\"b", "a<b"})
+    {
+        EXPECT_FALSE(isValidShortcode(name)) << name;
+    }
 }
 
 TEST(Emoji, MediaTypeForExt)
@@ -640,11 +646,13 @@ TEST(Emoji, ScanAndSubstitute)
         / ("unspoken_emoji_" + std::to_string(::getpid()));
     fs::create_directories(dir);
     { std::ofstream(dir / "blobcat.png") << "x"; }
-    { std::ofstream(dir / "BadName.png") << "x"; }   // invalid → skipped
+    { std::ofstream(dir / "Blob-Cat_2.png") << "x"; }
+    { std::ofstream(dir / "bad.name.png") << "x"; }
 
     EmojiRegistry reg = EmojiRegistry::scan(dir.string(), "https://f.test/");
     EXPECT_TRUE(reg.lookup("blobcat").has_value());
-    EXPECT_FALSE(reg.lookup("BadName").has_value());
+    EXPECT_TRUE(reg.lookup("Blob-Cat_2").has_value());
+    EXPECT_FALSE(reg.lookup("bad.name").has_value());
     EXPECT_EQ(reg.lookup("blobcat")->image_url,
               "https://f.test/emoji/blobcat.png");
 
@@ -652,6 +660,10 @@ TEST(Emoji, ScanAndSubstitute)
     EXPECT_NE(out.find("<img class=\"emoji\""), std::string::npos);
     EXPECT_NE(out.find(":unknown:"), std::string::npos); // left verbatim
 
+    const auto mixed = substituteEmoji(":Blob-Cat_2:", reg);
+    EXPECT_NE(mixed.find("src=\"https://f.test/emoji/Blob-Cat_2.png\""),
+              std::string::npos);
+    EXPECT_NE(mixed.find("alt=\":Blob-Cat_2:\""), std::string::npos);
     fs::remove_all(dir);
 }
 
@@ -1938,4 +1950,55 @@ TEST(ServiceMetadata, RemoteReplyUsesItsOwnPermalinkAndAvatar)
               std::to_string(reply.id));
     EXPECT_EQ(metadata["image"], "https://remote.test/avatar.png");
     EXPECT_EQ(metadata["published"], *params.published);
+}
+
+TEST(Render, RemoteEmojiNamesAreExactAndAttributesStayIntact)
+{
+    const std::map<std::string, EmojiInfo> emoji = {
+        {"Blob-Cat", {"Blob-Cat", "https://remote.test/cat.png", "image/png"}},
+        {"Cat_2", {"Cat_2", "https://remote.test/neko.png", "image/png"}},
+        {"PlainHttp", {"PlainHttp", "http://remote.test/http.png", "image/png"}},
+    };
+    auto html = substituteRemoteEmoji(
+        "<p><a href=\"https://remote.test/:Blob-Cat:\" "
+        "title=\":Blob-Cat:\">link</a> https://example.test "
+        ":Unknown: :Blob-Cat::Cat_2: :blob-cat: :PlainHttp:</p>", emoji);
+    EXPECT_NE(html.find("href=\"https://remote.test/:Blob-Cat:\""),
+              std::string::npos);
+    EXPECT_NE(html.find("title=\":Blob-Cat:\">link</a>"), std::string::npos);
+    EXPECT_NE(html.find("src=\"https://remote.test/cat.png\""), std::string::npos);
+    EXPECT_NE(html.find("src=\"https://remote.test/neko.png\""), std::string::npos);
+    EXPECT_NE(html.find("src=\"http://remote.test/http.png\""),
+              std::string::npos);
+    EXPECT_NE(html.find(":Unknown:"), std::string::npos);
+    EXPECT_NE(html.find(":blob-cat:"), std::string::npos);
+    EXPECT_EQ(substituteRemoteEmoji(html, emoji), html);
+    EXPECT_NE(emojiShortcodesForFederation(html).find(":Blob-Cat::Cat_2:"),
+              std::string::npos);
+}
+
+TEST(Render, RemoteEmojiRejectsInvalidNamesAndUnsafeUrls)
+{
+    const std::map<std::string, EmojiInfo> emoji = {
+        {"A\"<>&B", {"", "https://remote.test/bad.png", "image/png"}},
+        {"a.b", {"", "https://remote.test/dot.png", "image/png"}},
+        {"猫", {"", "https://remote.test/neko.png", "image/png"}},
+        {"Unsafe", {"Unsafe", "javascript:alert(1)", "image/png"}},
+        {"Cat", {"Cat", "https://remote.test/cat.png?a=1&b=2", "image/png"}},
+    };
+    const auto html = substituteRemoteEmoji(
+        "<p>:A&quot;&lt;&gt;&amp;B: :a.b: :猫: :Unsafe: :Cat:</p>", emoji);
+    EXPECT_NE(html.find("src=\"https://remote.test/cat.png?a=1&amp;b=2\""),
+              std::string::npos);
+    EXPECT_NE(html.find(":A\"&lt;&gt;&amp;B:"), std::string::npos);
+    EXPECT_NE(html.find(":a.b:"), std::string::npos);
+    EXPECT_NE(html.find(":猫:"), std::string::npos);
+    EXPECT_NE(html.find(":Unsafe:"), std::string::npos);
+    EXPECT_EQ(html.find("javascript:"), std::string::npos);
+    EXPECT_EQ(html.find("/bad.png"), std::string::npos);
+    EXPECT_EQ(html.find("/dot.png"), std::string::npos);
+    EXPECT_EQ(html.find("/neko.png"), std::string::npos);
+    EXPECT_NE(sanitizeRemoteHtml(html).find(":A&quot;&lt;&gt;&amp;B:"),
+              std::string::npos);
+    EXPECT_EQ(substituteRemoteEmoji(html, emoji), html);
 }
