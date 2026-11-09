@@ -867,6 +867,7 @@ mw::E<void> storeRemoteAttachments(const DataSourceInterface& data,
         a.sha256 = "";
         a.media_type = jsonString(item, "mediaType");
         a.original_name = jsonString(item, "name", *url);
+        a.description = a.original_name;
         a.sensitive = boolField(object, "sensitive")
             || boolField(item, "sensitive");
         a.remote_url = *url;
@@ -1626,7 +1627,7 @@ nlohmann::json noteJson(const Config& config, const Post& post,
             {"type", a.is_image ? "Image" : "Document"},
             {"mediaType", a.media_type},
             {"url", url},
-            {"name", a.original_name},
+            {"name", a.description.value_or(a.original_name)},
         });
     }
 

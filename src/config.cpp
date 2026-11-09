@@ -270,6 +270,7 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
 
     readStr(child(root, "database_path"), config.database_path);
     readStr(child(root, "attachment_dir"), config.attachment_dir);
+    readStr(child(root, "sticker_dir"), config.sticker_dir);
     readStr(child(root, "emoji_dir"), config.emoji_dir);
     readStr(child(root, "emoji_data_file"), config.emoji_data_file);
     readStr(child(root, "template_dir"), config.template_dir);

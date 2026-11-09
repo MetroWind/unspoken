@@ -62,6 +62,7 @@ listen_address: "127.0.0.1"
 listen_port: 8080
 database_path: ":memory:"
 attachment_dir: "/tmp"
+sticker_dir: "/srv/stickers"
 seen_activity_retention_seconds: 11
 inbox_processing_lease_seconds: 12
 maintenance_batch_size: 13
@@ -79,6 +80,7 @@ oidc:
     std::filesystem::remove(path);
 
     ASSERT_TRUE(config.has_value()) << mw::errorMsg(config.error());
+    EXPECT_EQ(config->sticker_dir, "/srv/stickers");
     EXPECT_EQ(config->public_domain, "f.mws.rocks");
     EXPECT_EQ(config->seen_activity_retention_seconds, 11);
     EXPECT_EQ(config->inbox_processing_lease_seconds, 12);
@@ -277,4 +279,9 @@ TEST(Config, LoadsThemeCatalog)
     EXPECT_EQ(c.themes.stylesheets("light"),
               (std::vector<std::string>{"plain/0-reset.css",
                   "plain/1-style.css", "light/style.css"}));
+}
+
+TEST(Config, StickerDirectoryDefaultsToStickers)
+{
+    EXPECT_EQ(Config{}.sticker_dir, "stickers");
 }

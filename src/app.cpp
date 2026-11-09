@@ -2,6 +2,9 @@
 #include <charconv>
 #include <chrono>
 #include <filesystem>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -133,6 +136,32 @@ std::string param(const mw::HTTPServer::Request& req, const char* name)
 {
     if(req.has_param(name)) return req.get_param_value(name);
     return req.form.get_field(name);
+}
+
+mw::E<void> parseStickerIntent(const mw::HTTPServer::Request& req,
+                              unspoken::ComposeParams& params)
+{
+    for(const char* field : {"sticker_action", "sticker"})
+    {
+        if(req.get_param_value_count(field) + req.form.get_field_count(field) > 1)
+            return std::unexpected(mw::HTTPError(400,
+                "Duplicate sticker field"));
+    }
+    auto action = param(req, "sticker_action");
+    bool supplied = req.get_param_value_count("sticker_action")
+        + req.form.get_field_count("sticker_action") != 0;
+    if(!supplied || action == "keep")
+        params.sticker_action = unspoken::StickerAction::KEEP;
+    else if(action == "clear")
+        params.sticker_action = unspoken::StickerAction::CLEAR;
+    else if(action == "set")
+        params.sticker_action = unspoken::StickerAction::SET;
+    else return std::unexpected(mw::HTTPError(400, "Invalid sticker action"));
+    params.sticker = param(req, "sticker");
+    if((params.sticker_action == unspoken::StickerAction::SET)
+       != !params.sticker.empty())
+        return std::unexpected(mw::HTTPError(400, "Invalid sticker selection"));
+    return {};
 }
 
 bool hasParam(const mw::HTTPServer::Request& req, const char* name)
@@ -395,12 +424,14 @@ using ap::collectionRootJson;
 
 } // namespace
 
-App::App(const Config& conf)
+App::App(const Config& conf, unspoken::StickerRegistry registry)
         : mw::HTTPServer(listenAddrFromConfig(conf)),
           config(conf),
           base_url(baseUrlFromConfig(conf)),
           server_key(generateServerKey()),
           emoji(unspoken::EmojiRegistry::scan(conf.emoji_dir, conf.url_root)),
+          stickers(std::move(registry)),
+          sticker_catalog(stickers.catalog().dump()),
           templates(makeEnv(conf))
 {
     std::vector<unspoken::UnicodeEmojiCategory> unicode_emoji;
@@ -624,6 +655,7 @@ App::baseContext(const Request& req,
     ctx["site"]["commit"] = unspoken::GIT_COMMIT_HASH;
     ctx["logged_in"] = viewer.has_value();
     ctx["error"] = "";
+    ctx["has_stickers"] = !stickers.empty();
     std::string theme = cookie(req, "unspoken-theme")
         .value_or(config.default_theme);
     if(!config.themes.all().contains(theme)) theme = config.default_theme;
@@ -845,7 +877,7 @@ void App::handleIndex(const Request& req, Response& res) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
 
     auto parsed_cursor = cursorFromRequest(req, res, true);
     if(!parsed_cursor.has_value()) return;
@@ -911,7 +943,7 @@ void App::handleUserProfile(const Request& req, Response& res) const
     std::string username = req.path_params.at("username");
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
 
     ASSIGN_OR_RESPOND_ERROR(auto user, ds->getUserByUsername(username), res);
     if(!user.has_value())
@@ -977,7 +1009,7 @@ void App::handleRemoteProfile(const Request& req, Response& res) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     const auto uri = param(req, "uri");
     ASSIGN_OR_RESPOND_ERROR(auto actor, ds->getRemoteActorByUri(uri), res);
     if(!actor)
@@ -1014,7 +1046,7 @@ void App::handlePostView(const Request& req, Response& res) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
 
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); }
@@ -1193,6 +1225,7 @@ mw::E<void> storeComposeAttachments(
             a.sensitive = cp.sensitive;
             ASSIGN_OR_RETURN(int64_t aid, data.insertAttachment(a));
             cp.attachment_ids.push_back(aid);
+            cp.attachment_descriptions[aid] = file.filename;
         }
     }
 
@@ -1236,7 +1269,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
 
     unspoken::ComposeParams cp;
     cp.source = param(req, "content");
@@ -1245,12 +1278,22 @@ void App::handlePostCreate(const Request& req, Response& res) const
     if(!summary.empty()) cp.summary = summary;
     cp.sensitive = hasParam(req, "sensitive");
     std::string reply_to = param(req, "in_reply_to");
-    if(!reply_to.empty()) cp.in_reply_to_uri = reply_to;
+    if(!reply_to.empty())
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto parent, ds->getPostByUri(reply_to), res);
+        if(!parent) { res.status = 404; return; }
+        if(respondIfCannotView(svc, *parent, viewer, res)) return;
+        cp.in_reply_to_uri = parent->uri;
+    }
 
+    if(respondIfError(parseStickerIntent(req, cp), res)) return;
+    ASSIGN_OR_RESPOND_ERROR([[maybe_unused]] auto selected,
+                           svc.resolveSticker(cp), res);
     if(respondIfError(storeComposeAttachments(req, config, *ds, cp), res))
         return;
 
-    if(cp.source.empty() && cp.attachment_ids.empty())
+    if(mw::strip(cp.source).empty() && cp.attachment_ids.empty()
+       && cp.sticker_action != unspoken::StickerAction::SET)
     {
         res.status = 400;
         res.set_content("Empty post", "text/plain");
@@ -1288,7 +1331,7 @@ void App::handleReply(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
 
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
@@ -1302,9 +1345,16 @@ void App::handleReply(const Request& req, Response& res) const
     cp.source = param(req, "content");
     cp.visibility = visibilityParam(param(req, "visibility"));
     cp.in_reply_to_uri = parent->uri;
+    auto summary = param(req, "summary");
+    if(!summary.empty()) cp.summary = summary;
+    cp.sensitive = hasParam(req, "sensitive");
+    if(respondIfError(parseStickerIntent(req, cp), res)) return;
+    ASSIGN_OR_RESPOND_ERROR([[maybe_unused]] auto selected,
+                           svc.resolveSticker(cp), res);
     if(respondIfError(storeComposeAttachments(req, config, *ds, cp), res))
         return;
-    if(cp.source.empty() && cp.attachment_ids.empty())
+    if(mw::strip(cp.source).empty() && cp.attachment_ids.empty()
+       && cp.sticker_action != unspoken::StickerAction::SET)
     {
         res.status = 400;
         res.set_content("Empty reply", "text/plain");
@@ -1355,7 +1405,14 @@ void App::handlePostEdit(const Request& req, Response& res) const
     auto summary = param(req, "summary");
     if(!summary.empty()) params.summary = summary;
     params.sensitive = hasParam(req, "sensitive");
-    Service svc(config, *ds, emoji);
+    ASSIGN_OR_RESPOND_ERROR(auto owned, ds->getPostById(id), res);
+    if(!owned || owned->local_author_id != viewer->id)
+    {
+        res.status = 404;
+        return;
+    }
+    if(respondIfError(parseStickerIntent(req, params), res)) return;
+    Service svc(config, *ds, emoji, stickers);
     ASSIGN_OR_RESPOND_ERROR(auto post, svc.editPost(*viewer, id, params), res);
     ASSIGN_OR_RESPOND_ERROR(auto recipients, ds->getPostRecipients(id), res);
     ASSIGN_OR_RESPOND_ERROR(auto attachments, ds->attachmentsForPost(id), res);
@@ -1375,6 +1432,11 @@ void App::handlePostEdit(const Request& req, Response& res) const
                                            recipients, now), res);
     if(respondIfError(write_tx.commit(), res)) return;
     if(preview_worker) preview_worker->wake();
+    if(param(req, "standalone") == "1")
+    {
+        res.set_redirect(urlFor("p/" + std::to_string(post.id)));
+        return;
+    }
     auto ctx = baseContext(req, viewer);
     ASSIGN_OR_RESPOND_ERROR(ctx["post"], svc.postView(post, viewer), res);
     ctx["focus_id"] = 0;
@@ -1406,7 +1468,7 @@ void App::handlePostDelete(const Request& req, Response& res) const
         res.set_content("Not found", "text/plain");
         return;
     }
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     ASSIGN_OR_RESPOND_ERROR(auto recipients, ds->getPostRecipients(id), res);
     int64_t now = mw::timeToSeconds(mw::Clock::now());
     const std::string actor_uri = svc.actorUri(viewer->username);
@@ -1572,7 +1634,7 @@ void App::handleLike(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     ASSIGN_OR_RESPOND_ERROR(auto write_tx,
                             ap::Transaction::begin(ds->connection()), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
@@ -1653,7 +1715,7 @@ void App::handleBoost(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     ASSIGN_OR_RESPOND_ERROR(auto write_tx,
                             ap::Transaction::begin(ds->connection()), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
@@ -1735,7 +1797,7 @@ void App::handleReact(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     ASSIGN_OR_RESPOND_ERROR(auto write_tx,
                             ap::Transaction::begin(ds->connection()), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
@@ -1828,7 +1890,7 @@ void App::handleBookmark(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
     ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id), res);
@@ -1845,7 +1907,7 @@ void App::handleBookmarks(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     if(!viewer.has_value()) { res.set_redirect(urlFor("login")); return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     auto parsed_cursor = cursorFromRequest(req, res, false);
     if(!parsed_cursor.has_value()) return;
     unspoken::Cursor cursor = *parsed_cursor;
@@ -1869,7 +1931,7 @@ void App::handleFollow(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     std::string target = param(req, "username");
     std::string target_actor = param(req, "actor_uri");
     bool undo = isUndo(req);
@@ -1948,7 +2010,7 @@ void App::handleProfileGet(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     if(!viewer.has_value()) { res.set_redirect(urlFor("login")); return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     auto ctx = baseContext(req, viewer);
     ASSIGN_OR_RESPOND_ERROR(auto profile_view, svc.userView(*viewer), res);
     ASSIGN_OR_RESPOND_ERROR(auto profile_fields,
@@ -1987,7 +2049,7 @@ void App::handleProfilePost(const Request& req, Response& res) const
                               res.set_content("Login required", "text/plain");
                               return; }
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     std::string display_name = param(req, "display_name");
     std::string bio = param(req, "bio");
 
@@ -2286,7 +2348,7 @@ void App::handleSearch(const Request& req, Response& res) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     std::string query{mw::strip(param(req, "q"))};
     auto ctx = baseContext(req, viewer);
     ctx["query"] = mw::escapeHTML(query);
@@ -2385,6 +2447,92 @@ void App::handleMedia(const Request& req, Response& res) const
     }
     res.status = 200;
     res.set_content(bytes, mime);
+}
+
+void App::handleSticker(const Request& req, Response& res) const
+{
+    // cpp-httplib decodes req.path once before matching path parameters.
+    ASSIGN_OR_RESPOND_ERROR(auto path, unspoken::stickerPath(
+        config.sticker_dir, req.path_params.at("pack"),
+        req.path_params.at("filename")), res);
+    int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if(fd < 0)
+    {
+        res.status = 500;
+        return;
+    }
+    struct stat info;
+    if(::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode))
+    {
+        ::close(fd);
+        res.status = 500;
+        return;
+    }
+    res.set_header("Cache-Control", "public, no-cache");
+    res.set_header("X-Content-Type-Options", "nosniff");
+    // libmw exposes httplib's provider API. Open here so read/open errors
+    // do not become the file-path helper's automatic 404 responses.
+    res.set_content_provider(static_cast<size_t>(info.st_size),
+        unspoken::mediaTypeForExtension(unspoken::extensionOf(path.string())),
+        [fd](size_t offset, size_t length, httplib::DataSink& sink)
+        {
+            char buffer[65536];
+            auto size = ::pread(fd, buffer, std::min(length, sizeof(buffer)),
+                                static_cast<off_t>(offset));
+            return size > 0 && sink.write(buffer, static_cast<size_t>(size));
+        },
+        [fd](bool) { ::close(fd); });
+}
+
+void App::handleCompose(const Request& req, Response& res, bool edit) const
+{
+    ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
+    if(!viewer)
+    {
+        res.status = 401;
+        return;
+    }
+    ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
+    Service svc(config, *ds, emoji, stickers);
+    auto ctx = baseContext(req, viewer);
+    ctx["sticker_packs"] = stickers.catalog();
+    // The native template engine consumes pre-escaped strings.
+    for(auto& pack : ctx["sticker_packs"])
+    {
+        pack["name"] = mw::escapeHTML(pack["name"].get<std::string>());
+        for(auto& sticker : pack["stickers"])
+            for(const char* key : {"key", "name", "url"})
+                sticker[key] = mw::escapeHTML(sticker[key].get<std::string>());
+    }
+    ctx["editing"] = edit;
+    ctx["draft"] = {{"edit_source", ""}, {"summary", ""},
+        {"sensitive", false}, {"sticker", nullptr}};
+    ctx["submit_url"] = urlFor("post");
+    if(edit)
+    {
+        auto id = parseInt64(req.path_params.at("id"));
+        ASSIGN_OR_RESPOND_ERROR(auto post, ds->getPostById(id.value_or(0)), res);
+        if(!post || post->local_author_id != viewer->id || !post->content_source)
+        {
+            res.status = 404;
+            return;
+        }
+        ASSIGN_OR_RESPOND_ERROR(ctx["draft"], svc.postView(*post, viewer), res);
+        ctx["submit_url"] = urlFor("post/" + std::to_string(post->id) + "/edit");
+    }
+    else if(req.has_param("reply_to"))
+    {
+        auto id = parseInt64(param(req, "reply_to"));
+        ASSIGN_OR_RESPOND_ERROR(auto parent,
+                               ds->getPostById(id.value_or(0)), res);
+        if(!parent) { res.status = 404; return; }
+        if(respondIfCannotView(svc, *parent, viewer, res)) return;
+        ASSIGN_OR_RESPOND_ERROR(auto prefill, svc.replyPrefill(*parent), res);
+        ctx["draft"]["edit_source"] = mw::escapeHTML(prefill);
+        ctx["submit_url"] = urlFor("post/" + std::to_string(parent->id) + "/reply");
+    }
+    res.set_header("Cache-Control", "private, no-store");
+    render(res, 200, "compose.html", ctx);
 }
 
 void App::handleEmoji(const Request& req, Response& res) const
@@ -2673,7 +2821,7 @@ void App::handleFollowList(const Request& req, Response& res,
     auto cursor = cursorFromRequest(req, res, true);
     if(!cursor.has_value()) return;
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
-    Service svc(config, *ds, emoji);
+    Service svc(config, *ds, emoji, stickers);
     const std::string actor_uri = svc.actorUri(user->username);
     ASSIGN_OR_RESPOND_ERROR(auto items,
         followers ? ds->followerPage(actor_uri, *cursor,
@@ -2823,6 +2971,20 @@ void App::setup()
     { handlePostView(req, res); });
 
     // The public catalog is precomputed and cached independently of pages.
+    server.Get("/compose", [&](const Request& req, Response& res)
+    { handleCompose(req, res, false); });
+    server.Get("/post/:id/edit", [&](const Request& req, Response& res)
+    { handleCompose(req, res, true); });
+    server.Get("/stickers/catalog", [&](const Request& req, Response& res)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
+        if(!viewer) { res.status = 401; return; }
+        res.set_header("Cache-Control", "private, no-cache");
+        res.set_content(sticker_catalog, "application/json; charset=utf-8");
+    });
+    server.Get("/stickers/:pack/:filename",
+        [&](const Request& req, Response& res) { handleSticker(req, res); });
+
     server.Get("/emoji_catalog.json", [&](const Request& req, Response& res)
     {
         res.set_header("Cache-Control", "public, max-age=3600");

@@ -10,6 +10,8 @@
                 title="insert emoji" aria-label="insert emoji" hidden>
           <i class="nf nf-md-emoticon_outline ui-icon" aria-hidden="true"></i>
         </button>
+        {% set sticker_preview = null %}
+        {% include "_sticker_controls.html" %}
       </div>
     </div>
     <div class="composer-row">
@@ -28,5 +30,6 @@
       <label>attach <input type="file" name="attachments" multiple></label>
       <button type="submit">Post</button>
     </div>
+    <a href="{{ site.root }}compose">Standalone composer</a>
   </form>
 </section>

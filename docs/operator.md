@@ -40,6 +40,7 @@ Common optional keys and defaults:
 - `database_path`: `unspoken.db`.
 - `attachment_dir`: `attachments`.
 - `emoji_dir`: `emoji`.
+- `sticker_dir`: `stickers` (operator-managed, read-only).
 - `emoji_data_file`: generated Unicode emoji picker data file.
 - `template_dir`: `templates`.
 - `static_dir`: `static`.
@@ -76,6 +77,7 @@ verbose: false
 database_path: /var/lib/unspoken/unspoken.db
 attachment_dir: /var/lib/unspoken/attachments
 emoji_dir: /var/lib/unspoken/emoji
+sticker_dir: /var/lib/unspoken/stickers
 emoji_data_file: /usr/share/unspoken/data/emoji_categories.json
 template_dir: /usr/share/unspoken/templates
 static_dir: /usr/share/unspoken/static
@@ -438,3 +440,82 @@ no unread count, grouping, or historical backfill in this version.
 This feature upgrades the application database from schema 6 to 7. Take a
 consistent backup before upgrading; an older binary needs a compatible
 backup. The ActivityPub library schema does not change.
+
+## Sticker packs
+
+`sticker_dir` defaults to `stickers`, relative to the working directory,
+like `emoji_dir`. Production configuration should use an absolute path:
+
+```yaml
+sticker_dir: /var/lib/unspoken/stickers
+```
+
+Each immediate directory is a pack; its immediate PNG, JPEG, GIF, WebP,
+or AVIF files become selectable stickers. Extensions are case-insensitive.
+Directory names label tabs; filenames without their final extension supply
+sticker names and image descriptions. Spaces, punctuation, underscores,
+case, and Unicode are preserved. There are no manifests. Hidden entries,
+symlinks, special files, nested directories, unsupported formats, and empty
+images are skipped. A missing root gives an empty picker; failure to read
+an existing directory prevents startup. Discovery reads metadata only.
+
+Publish packs with ordinary filesystem tools, for example:
+
+```sh
+ssh server 'sudo install -d -o root -g unspoken -m 0750 /var/lib/unspoken/stickers/cats'
+scp happy_cat.webp server:/tmp/happy_cat.webp
+ssh server 'sudo install -o root -g unspoken -m 0640 /tmp/happy_cat.webp /var/lib/unspoken/stickers/cats/.happy_cat.webp.tmp && sudo mv /var/lib/unspoken/stickers/cats/.happy_cat.webp.tmp /var/lib/unspoken/stickers/cats/happy_cat.webp'
+ssh server 'sudo systemctl restart unspoken'
+```
+
+The service needs read/search access to this tree, without write access.
+The packaged systemd service makes the default sticker tree read-only if
+it exists. For a different location, configure equivalent access in the
+service override. Upload to hidden temporary filenames and rename only
+after transfer completes. Finish all pack changes before restarting;
+startup is a filesystem scan, not a transactional import. Restart to refresh
+the picker. New files can already be fetched before the restart.
+
+All stickers are public at `<url_root>stickers/<pack>/<filename>` with URL
+path components percent-encoded. The application serves these images
+without authentication or database attachment rows. No proxy mapping is
+needed. Any optional proxy mapping must enforce the same path and MIME
+restrictions, reject symlinks, and avoid directory listings. Responses use
+`Cache-Control: public, no-cache`, without immutable caching. Upload limits
+apply to HTTP uploads, not these static files. Operators validate artwork
+and choose sensible sizes; images and animation are served unchanged.
+
+A post or reply can contain one sticker, with optional text and ordinary
+attachments. The picker replaces its selection; Remove clears it. Native
+standalone compose, reply, and edit links support selection without
+JavaScript: choose both “Set selected sticker” and an image. Keep/clear
+require the selection control to be empty. Edits default to keeping saved
+stickers, even when their source files have disappeared. Clearing the only
+content is rejected. A selection missing since startup requires refreshing
+the picker after the operator restarts the service.
+
+Posts save the public URL and a description snapshot. They federate the
+sticker as an ordinary image attachment with that saved name. Images remain
+public even for private posts. Posting never copies images into
+`attachment_dir`, fetches them, or imports unused catalog entries into the
+database. Incoming images remain ordinary attachments.
+
+Published paths must remain permanent. Publish revised artwork at a new
+filename such as `happy_cat_v2.webp`, retaining the old file. Retained eligible
+files also stay in the picker. Replacing a file changes every old reference;
+renaming/deleting it breaks old URLs. These actions do not send federated
+Updates. Remote caches may show earlier bytes, and provide no reliable
+archive. Do not remove files based on local post counts: remote references
+may outlive local posts. Attachment cleanup never manages sticker files.
+
+Back up the database, attachment directory, and sticker tree separately.
+The sticker tree is the only persistent copy of these bytes. Preserve
+`url_root` and the pack/file paths when restoring or moving deployments.
+
+For a deployment check, copy a pack, restart, and publish a sticker-only
+post. Fetch its static URL without a session and check the federated object
+contains that URL and filename-derived name. Confirm no sticker copy appears
+in `attachment_dir`. Add new artwork under a new filename, restart, and
+confirm the old post still points to the retained original. In a disposable
+test pack, delete an old image and verify the URL returns 404: there is no
+automatic restoration or historical archive.

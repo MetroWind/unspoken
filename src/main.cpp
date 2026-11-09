@@ -185,7 +185,15 @@ int main(int argc, char** argv)
     }
     db_init->reset();
 
-    App app(*config);
+    auto stickers = unspoken::StickerRegistry::scan(
+        config->sticker_dir, config->url_root);
+    if(!stickers)
+    {
+        spdlog::error("Sticker discovery failed: {}",
+                      mw::errorMsg(stickers.error()));
+        return 1;
+    }
+    App app(*config, std::move(*stickers));
     auto start = app.start();
     if(!start.has_value())
     {

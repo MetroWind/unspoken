@@ -58,7 +58,6 @@
     <summary>{{ post.summary }}</summary>
     <div class="content">{{ post.content_html }}</div>
     {% include "_link_preview.html" %}
-  </details>
 {% else %}
   <div class="content">{{ post.content_html }}</div>
 {% if post.sensitive and post.has_link_preview %}
@@ -67,6 +66,19 @@
   </details>
 {% else %}
   {% include "_link_preview.html" %}
+{% endif %}
+{% endif %}
+
+{% if existsIn(post, "sticker") %}
+{% if post.sticker != null %}
+{% if post.sensitive %}
+  <details class="sensitive"><summary>sensitive sticker</summary>
+{% endif %}
+  <div class="post-sticker">
+    <a href="{{ post.sticker.url }}"><img src="{{ post.sticker.url }}"
+        alt="{{ post.sticker.original_name }}" loading="lazy"></a>
+  </div>
+{% if post.sensitive %}</details>{% endif %}
 {% endif %}
 {% endif %}
 
@@ -88,6 +100,7 @@
   </div>
 {% endif %}
 
+{% if post.has_summary %}</details>{% endif %}
 </div>
 
 {% if length(post.reactions) > 0 %}
@@ -168,10 +181,11 @@
       <i class="nf nf-fa-reply ui-icon" aria-hidden="true"></i> reply
     </a>
 {% if logged_in and post.can_edit %}
-    <button type="button" class="linkbtn post-edit-trigger" hidden
+    <a href="{{ site.root }}post/{{ post.id }}/edit"
+       class="linkbtn post-edit-trigger"
             aria-expanded="false" title="Edit post" aria-label="Edit post">
       <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i> edit
-    </button>
+    </a>
 {% endif %}
 {% if post.can_delete %}
     <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/delete"
@@ -191,6 +205,8 @@
     <label>Post text
       <textarea name="content" rows="6">{{ post.edit_source }}</textarea>
     </label>
+    {% set sticker_preview = post.sticker %}
+    {% include "_sticker_controls.html" %}
     <div class="composer-row">
       <label>CW <input type="text" name="summary" value="{{ post.summary }}"></label>
       <label class="cb"><input type="checkbox" name="sensitive" value="1"

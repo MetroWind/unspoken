@@ -218,6 +218,10 @@ public:
     bookmarksFor(int64_t user_id, const Cursor& c, int limit) const = 0;
 
     // ── Attachments ─────────────────────────────────────────────
+    // Replace or clear only the sticker, promoting an existing URL relation.
+    virtual mw::E<void> setPostSticker(int64_t post_id,
+        std::optional<int64_t> attachment_id,
+        std::optional<std::string> name) const = 0;
     virtual mw::E<int64_t> insertAttachment(const Attachment& a) const = 0;
     virtual mw::E<std::optional<Attachment>>
     getAttachmentById(int64_t attachment_id) const = 0;
@@ -313,6 +317,8 @@ public:
     mw::E<void> migrate6To7() const;
     // Retain the timestamp of local post edits.
     mw::E<void> migrate7To8() const;
+    // Add sticker relationship metadata without reading source files.
+    mw::E<void> migrate8To9() const;
     // Commit an application operation atomically, joining an outer write.
     mw::E<void> withWrite(
         const std::function<mw::E<void>()>& operation) const override;
@@ -472,6 +478,10 @@ public:
     mw::E<std::vector<Post>>
     bookmarksFor(int64_t user_id, const Cursor& c, int limit) const override;
 
+    // Change the optional sticker without touching ordinary attachments.
+    mw::E<void> setPostSticker(int64_t post_id,
+        std::optional<int64_t> attachment_id,
+        std::optional<std::string> name) const override;
     mw::E<int64_t> insertAttachment(const Attachment& a) const override;
     mw::E<std::optional<Attachment>>
     getAttachmentById(int64_t attachment_id) const override;

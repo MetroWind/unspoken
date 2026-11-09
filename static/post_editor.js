@@ -2,20 +2,19 @@
 {
     if(!window.fetch || !window.DOMParser) return;
 
-    function enableEditor(button)
-    {
-        button.hidden = false;
-    }
-
     function handleClick(event)
     {
         var button = event.target.closest(
             ".post-edit-trigger, .post-edit-cancel");
-        if(!button) return;
+        if(!button || event.defaultPrevented) return;
+        var opening = button.classList.contains("post-edit-trigger");
+        if(opening && (event.ctrlKey || event.metaKey || event.shiftKey
+                       || event.altKey || event.button > 0)) return;
         var post = button.closest(".post");
         var form = post.querySelector(".post-edit-form");
+        if(!form) return;
+        event.preventDefault();
         if(post.dataset.actionPending) return;
-        var opening = button.classList.contains("post-edit-trigger");
         form.hidden = !opening;
         post.querySelector(".post-edit-trigger")
             .setAttribute("aria-expanded", String(opening));
@@ -69,7 +68,7 @@
         post.dataset.actionPending = "true";
         var status = form.querySelector(".post-edit-status");
         var body = new URLSearchParams(new FormData(form));
-        var controls = form.querySelectorAll("input, textarea, button");
+        var controls = form.querySelectorAll("input, textarea, select, button");
         controls.forEach(disableControl);
         form.setAttribute("aria-busy", "true");
         status.textContent = "Saving…";
@@ -105,7 +104,6 @@
         }
     }
 
-    document.querySelectorAll(".post-edit-trigger").forEach(enableEditor);
     document.addEventListener("click", handleClick);
     document.addEventListener("submit", handleSubmit);
 })();

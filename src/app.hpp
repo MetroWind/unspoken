@@ -17,6 +17,7 @@
 #include "config.hpp"
 #include "data.hpp"
 #include "emoji.hpp"
+#include "stickers.hpp"
 #include "link_preview.hpp"
 #include "structs.hpp"
 
@@ -32,7 +33,8 @@ public:
     using Response = mw::HTTPServer::Response;
 
     App() = delete;
-    explicit App(const Config& conf);
+    explicit App(const Config& conf,
+                 unspoken::StickerRegistry registry);
     ~App();
 
     // Build a URL under the configured url_root.
@@ -99,6 +101,9 @@ private:
     void handleProfilePost(const Request& req, Response& res) const;
     void handleSearch(const Request& req, Response& res) const;
     void handleMedia(const Request& req, Response& res) const;
+    // Public current filesystem images and authenticated standalone composers.
+    void handleSticker(const Request& req, Response& res) const;
+    void handleCompose(const Request& req, Response& res, bool edit) const;
     void handleEmoji(const Request& req, Response& res) const;
     void handleSystemActor(const Request& req, Response& res) const;
     void handleWebFinger(const Request& req, Response& res) const;
@@ -126,6 +131,8 @@ private:
     mutable mw::Crypto crypto;
     // Server-wide custom emoji, scanned once at startup (design §13.4).
     unspoken::EmojiRegistry emoji;
+    unspoken::StickerRegistry stickers;
+    std::string sticker_catalog;
     // Serialized once at startup and served without page rendering.
     std::string emoji_catalog;
     std::string emoji_catalog_etag;

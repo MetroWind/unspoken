@@ -183,6 +183,10 @@ struct PostRecipient
     std::string field;          // "to" | "cc"
 };
 
+// Presentation role belongs to a post relationship, not the stored asset.
+enum class AttachmentRole { ATTACHMENT = 0, STICKER = 1 };
+
+// A stored asset with optional per-post presentation metadata.
 struct Attachment
 {
     int64_t id = 0;
@@ -191,11 +195,16 @@ struct Attachment
     std::string sha256;         // lowercase hex
     std::string extension;      // lowercase, no dot; local attachments only
     std::string media_type;     // MIME
+    // Asset filename retained for uploads and bare profile media.
     std::string original_name;
     bool is_image = false;
     // Relation metadata populated for post attachment views.
     bool sensitive = false;
-    std::optional<std::string> remote_url; // set for remote attachments
+    std::optional<std::string> remote_url; // URL-backed, including local static media
+    // Saved presentation metadata on post relationships only.
+    AttachmentRole role = AttachmentRole::ATTACHMENT;
+    // Per-post description; unset on bare asset lookups.
+    std::optional<std::string> description;
 };
 
 // Maximum number of metadata rows a local profile may contain.

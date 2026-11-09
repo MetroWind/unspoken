@@ -1283,6 +1283,7 @@ TEST(ServiceView, PagesDeferEmojiCatalogUntilPickerOpens)
         {"site", {{"title", "Test"}, {"root", "/"}, {"commit", "test"}}},
         {"logged_in", true}, {"error", ""}, {"csrf", "test-csrf"},
         {"me", {{"username", "alice"}, {"handle", "@alice@f.test"}}},
+        {"has_stickers", false},
         {"timeline", "home"}, {"has_more", false}, {"focus_id", 0},
         {"posts", nlohmann::json::array()},
     };
@@ -1751,6 +1752,7 @@ TEST(ServiceEdit, PreservesIdentityAudienceAttachmentsAndInteractions)
     inja::Environment environment("templates/");
     auto html = environment.render_file("_post.html", {
         {"post", view}, {"logged_in", true}, {"csrf", "token"},
+        {"has_stickers", false},
         {"focus_id", 0}, {"site", {{"root", config.url_root}}}});
     const auto editor_start = html.find("class=\"composer post-edit-form\"");
     ASSERT_NE(editor_start, std::string::npos);

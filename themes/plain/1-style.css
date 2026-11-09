@@ -3,6 +3,7 @@
 :root
 {
     --attachment-size: 240px;
+    --sticker-size: 140px;
 }
 
 *
@@ -151,6 +152,13 @@ article.post
     .content
     {
         margin: 0.5em 0;
+    }
+
+    .post-sticker img
+    {
+        max-width: var(--sticker-size);
+        max-height: var(--sticker-size);
+        object-fit: contain;
     }
 
     .attachments
@@ -316,4 +324,19 @@ nav.notification-pager
 {
     font-size: 0.85em;
     white-space: nowrap;
+}
+
+.sticker-picker
+{
+    #sticker-panel button
+    {
+        padding: 0;
+        line-height: 0;
+    }
+    img
+    {
+        max-width: var(--sticker-size);
+        max-height: var(--sticker-size);
+        object-fit: contain;
+    }
 }

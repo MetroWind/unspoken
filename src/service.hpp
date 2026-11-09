@@ -18,20 +18,29 @@
 #include "config.hpp"
 #include "data.hpp"
 #include "emoji.hpp"
+#include "stickers.hpp"
 #include "structs.hpp"
 
 namespace unspoken
 {
 
+// Requested change to the optional sticker relationship.
+enum class StickerAction { KEEP, CLEAR, SET };
+
 // Parameters for composing a new local post.
 struct ComposeParams
 {
+    // Existing callers preserve the saved sticker by default.
+    StickerAction sticker_action = StickerAction::KEEP;
+    std::string sticker;
     std::string source;                       // markdown
     Visibility visibility = Visibility::PUBLIC;
     std::optional<std::string> summary;       // content warning
     bool sensitive = false;
     std::optional<std::string> in_reply_to_uri;
     std::vector<std::string> mentioned_actor_uris;
+    // Per-post upload labels, independent of asset deduplication.
+    std::map<int64_t, std::string> attachment_descriptions;
     std::vector<int64_t> attachment_ids;      // draft attachments to attach
 };
 
@@ -39,9 +48,17 @@ class Service
 {
 public:
     Service(const Config& conf, const DataSourceInterface& data_source,
-            const EmojiRegistry& emoji_registry)
-            : config(conf), data(data_source), emoji(emoji_registry)
+            const EmojiRegistry& emoji_registry,
+            const StickerRegistry& sticker_registry = emptyStickerRegistry())
+            : config(conf), data(data_source), emoji(emoji_registry),
+              stickers(sticker_registry)
     {}
+
+    // Resolve and validate selections before processing uploaded media.
+    mw::E<std::optional<StickerInfo>> resolveSticker(
+        const ComposeParams& params) const;
+    // Shared empty registry for callers without sticker configuration.
+    static const StickerRegistry& emptyStickerRegistry();
 
     // ── URI construction (design §6.2) ──────────────────────────────
     std::string actorUri(std::string_view username) const;
@@ -149,6 +166,7 @@ private:
     const Config& config;
     const DataSourceInterface& data;
     const EmojiRegistry& emoji;
+    const StickerRegistry& stickers;
 };
 
 // Format a unix timestamp (seconds) as "YYYY-MM-DD HH:MM:SS" UTC.

@@ -1,2 +1,29 @@
 @import url("../themes/plain/0-reset.css");
 @import url("../themes/plain/1-style.css");
+
+.post-sticker img, .sticker-preview
+{
+    max-width: min(192px, 100%);
+    max-height: 192px;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
+.sticker-selection { margin: .5rem 0; }
+.sticker-selection[hidden] { display: none; }
+.sticker-selection img { display: block; }
+.sticker-picker { max-width: min(32rem, 95vw); }
+.sticker-tabs { display: flex; gap: .5rem; overflow-x: auto; }
+.sticker-grid
+{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: .5rem;
+    max-height: 55vh;
+    overflow-y: auto;
+    min-width: min(24rem, 75vw);
+}
+.sticker-grid img { max-width: 64px; max-height: 64px; }
+.sticker-tabs [aria-selected="true"] { font-weight: bold; }
+.composer-tools { display: flex; align-items: start; gap: .5rem; }
+.sticker-controls { min-width: 0; }

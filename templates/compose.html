@@ -1,0 +1,43 @@
+{% include "_header.html" %}
+<h1 class="page-title">{% if editing %}Edit post{% else %}Compose{% endif %}</h1>
+<form class="composer" method="post" action="{{ submit_url }}"
+      enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="standalone" value="1">
+  <label>Post text <textarea name="content" rows="6">{{ draft.edit_source }}</textarea></label>
+  <label>CW <input name="summary" value="{{ draft.summary }}"></label>
+  <label><input type="checkbox" name="sensitive" value="1"{% if draft.sensitive %} checked{% endif %}> sensitive</label>
+{% if draft.sticker != null %}
+  <p>Current sticker: <img class="sticker-preview" src="{{ draft.sticker.url }}" alt="{{ draft.sticker.original_name }}"></p>
+{% endif %}
+  <label>Sticker action
+    <select name="sticker_action">
+      <option value="keep">Keep current sticker</option>
+      <option value="clear">Clear sticker</option>
+      <option value="set">Set selected sticker</option>
+    </select>
+  </label>
+  <label>Sticker
+    <select name="sticker">
+      <option value="">No selection</option>
+{% for pack in sticker_packs %}
+      <optgroup label="{{ pack.name }}">
+{% for sticker in pack.stickers %}
+        <option value="{{ sticker.key }}">{{ sticker.name }}</option>
+{% endfor %}
+      </optgroup>
+{% endfor %}
+    </select>
+  </label>
+{% if not editing %}
+  <label>visibility <select name="visibility">
+    <option value="public">public</option>
+    <option value="unlisted">unlisted</option>
+    <option value="followers">followers-only</option>
+    <option value="direct">direct</option>
+  </select></label>
+  <label>attach <input type="file" name="attachments" multiple></label>
+{% endif %}
+  <button type="submit">{% if editing %}Save{% else %}Post{% endif %}</button>
+</form>
+{% include "_footer.html" %}

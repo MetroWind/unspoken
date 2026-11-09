@@ -12,9 +12,9 @@ function setup(mode)
     const handlers = {};
     const status = {textContent: ""};
     const textarea = {disabled: false, value: "My draft", focus() {}};
-    const control = {disabled: false};
+    const control = {disabled: false, value: "keep"};
     const trigger = {
-        hidden: true, expanded: "false", focused: false,
+        hidden: false, expanded: "false", focused: false,
         setAttribute(name, value) { this.expanded = value; },
         focus() { this.focused = true; }
     };
@@ -24,7 +24,11 @@ function setup(mode)
         {
             return selector === "textarea" ? textarea : status;
         },
-        querySelectorAll() { return [textarea, control]; },
+        querySelectorAll(selector)
+        {
+            assert.equal(selector, "input, textarea, select, button");
+            return [textarea, control];
+        },
         closest() { return post; },
         contains() { return true; },
         setAttribute() {}, removeAttribute() {},
@@ -104,7 +108,7 @@ function setup(mode)
         fetch, DOMParser, FormData, URLSearchParams});
     const event = {target: {closest() { return form; }}, preventDefault() {}};
     return {handlers, event, form, textarea, post, status, body, edited,
-        trigger, new_details, get requests() { return requests; },
+        trigger, control, new_details, get requests() { return requests; },
         finish() {
             if(mode === "network")
             {
@@ -121,6 +125,7 @@ test("SaveUpdatesContentWithoutNavigationOrDuplicateRequests", async function()
     assert.equal(state.trigger.hidden, false);
     const pending = state.handlers.submit(state.event);
     assert.equal(state.textarea.disabled, true);
+    assert.equal(state.control.disabled, true);
     await state.handlers.submit(state.event);
     assert.equal(state.requests, 1);
     state.finish();
@@ -156,9 +161,47 @@ test("CancelDiscardsDraftAndReturnsFocus", function()
     state.handlers.click({target: {closest() { return {
         closest() { return state.post; },
         classList: {contains() { return false; }}
-    }; }}});
+    }; }}, preventDefault() {}});
     assert.equal(state.form.hidden, true);
     assert.equal(state.textarea.value, "Original");
     assert.equal(state.trigger.focused, true);
     assert.equal(state.requests, 0);
+});
+
+
+test("EditLinkOpensInlineFormWithoutNavigation", function()
+{
+    const state = setup("success");
+    state.form.hidden = true;
+    let prevented = false;
+    state.handlers.click({
+        target: {closest() { return {
+            closest() { return state.post; },
+            classList: {contains() { return true; }}
+        }; }},
+        preventDefault() { prevented = true; }
+    });
+    assert.equal(prevented, true);
+    assert.equal(state.form.hidden, false);
+    assert.equal(state.trigger.expanded, "true");
+    assert.equal(state.requests, 0);
+});
+
+test("ModifiedEditLinkClicksKeepNativeNavigation", function()
+{
+    const state = setup("success");
+    state.form.hidden = true;
+    for(const modifier of ["ctrlKey", "metaKey", "shiftKey", "altKey"])
+    {
+        let prevented = false;
+        state.handlers.click({
+            [modifier]: true,
+            target: {closest() { return {
+                classList: {contains() { return true; }}
+            }; }},
+            preventDefault() { prevented = true; }
+        });
+        assert.equal(prevented, false);
+        assert.equal(state.form.hidden, true);
+    }
 });

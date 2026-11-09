@@ -15,7 +15,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadOnlyPaths=/etc/unspoken
+ReadOnlyPaths=/etc/unspoken -/var/lib/unspoken/stickers
 ReadWritePaths=/var/lib/unspoken
 
 [Install]

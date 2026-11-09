@@ -26,6 +26,8 @@
               title="insert emoji" aria-label="insert emoji" hidden>
         <i class="nf nf-md-emoticon_outline ui-icon" aria-hidden="true"></i>
       </button>
+      {% set sticker_preview = null %}
+      {% include "_sticker_controls.html" %}
     </div>
     <div class="composer-row">
       <label>visibility
@@ -39,6 +41,7 @@
       <label>attach <input type="file" name="attachments" multiple></label>
       <button type="submit">Reply</button>
     </div>
+    <a href="{{ site.root }}compose?reply_to={{ reply_to_id }}">Standalone reply composer</a>
   </form>
 </section>
 {% endif %}

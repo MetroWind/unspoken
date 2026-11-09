@@ -277,23 +277,32 @@ Extend `post_attachments`:
 
 ```sql
 ALTER TABLE post_attachments
-    ADD COLUMN role TEXT NOT NULL DEFAULT 'ATTACHMENT'
-    CHECK (role IN ('ATTACHMENT', 'STICKER'));
+    ADD COLUMN role INTEGER NOT NULL DEFAULT 0
+    CHECK (role IN (0, 1));
 
-ALTER TABLE post_attachments ADD COLUMN sticker_name TEXT;
+ALTER TABLE post_attachments
+    ADD COLUMN description TEXT NOT NULL DEFAULT '';
+
+UPDATE post_attachments SET description = (
+    SELECT original_name FROM attachments
+    WHERE id = post_attachments.attachment_id
+);
 
 CREATE UNIQUE INDEX idx_post_attachments_one_sticker
-    ON post_attachments(post_id) WHERE role = 'STICKER';
+    ON post_attachments(post_id) WHERE role = 1;
 ```
 
-Require a nonempty `sticker_name` for sticker relationships and null for
-ordinary relationships. Enforce through data validation and equivalent
-insert/update triggers in migrated and fresh schemas. Snapshot the
-filename-derived name when posting; do not depend on the asset-wide
-`original_name`, which URL deduplication may have populated earlier.
+Store descriptions on every post attachment relationship, including
+ordinary incoming media. Backfill existing relationships from the asset
+`original_name`. Require a nonempty `description` for stickers through
+data validation and equivalent insert/update triggers in migrated and fresh
+schemas. Ordinary descriptions may be empty. Snapshot the filename-derived
+sticker name when posting; asset-wide `original_name` retains the original
+filename as upload/profile metadata and does not determine post descriptions.
 
-Add `AttachmentRole` with `ATTACHMENT` and `STICKER` cases, plus role and
-optional sticker name on post attachment views. A bare asset lookup has
+Store `ATTACHMENT` as integer `0` and `STICKER` as integer `1`.
+Add `AttachmentRole` with those explicit values, plus role and
+an optional per-post description on attachment views. A bare asset lookup has
 no intrinsic sticker role. Update `attachmentsForPost()` to read the
 relationship fields.
 

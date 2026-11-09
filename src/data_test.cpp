@@ -40,6 +40,17 @@ NewUser sampleUser(const std::string& name)
     return nu;
 }
 
+// Reconstruct pre-sticker schemas before exercising older migrations.
+void removeStickerSchema(mw::SQLite& db)
+{
+    ASSERT_TRUE(db.execute("DROP TRIGGER description_INSERT"));
+    ASSERT_TRUE(db.execute("DROP TRIGGER description_UPDATE"));
+    ASSERT_TRUE(db.execute("DROP INDEX idx_post_attachments_one_sticker"));
+    ASSERT_TRUE(db.execute("ALTER TABLE post_attachments DROP COLUMN role"));
+    ASSERT_TRUE(db.execute(
+        "ALTER TABLE post_attachments DROP COLUMN description"));
+}
+
 // Insert a local public post by author, returning the stored Post.
 Post insertLocalPost(const DataSourceSQLite& db, int64_t author_id,
                      const std::string& body)
@@ -70,11 +81,11 @@ RemoteActor sampleRemoteActor(const std::string& uri)
 
 } // namespace
 
-TEST(Data, SchemaVersionIsSeven)
+TEST(Data, SchemaVersionIsNine)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 8);
+    EXPECT_EQ(v, 9);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -99,7 +110,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 8);
+    EXPECT_EQ(version, 9);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -173,7 +184,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 8);
+    EXPECT_EQ(version, 9);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -1345,7 +1356,7 @@ TEST(Data, OpensOlderVersionThreeSchema)
     }
     {
         ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(source->getSchemaVersion().value(), 8);
+        EXPECT_EQ(source->getSchemaVersion().value(), 9);
         ASSIGN_OR_FAIL(auto system, source->getSystemActor());
         EXPECT_FALSE(system.has_value());
         ASSIGN_OR_FAIL(auto migrated_keys,
@@ -1489,11 +1500,12 @@ TEST(Data, MigrationFiveToSixBackfillsOrderedEvents)
         ASSERT_TRUE(db->connection().execute("DROP TABLE notifications"));
         ASSERT_TRUE(db->connection().execute(
             "ALTER TABLE posts DROP COLUMN updated_at"));
+        removeStickerSchema(db->connection());
         ASSERT_TRUE(db->connection().execute("PRAGMA user_version=5"));
     }
     {
         ASSIGN_OR_FAIL(auto db,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(db->getSchemaVersion().value(),8);
+        EXPECT_EQ(db->getSchemaVersion().value(),9);
         auto timeline = db->homeTimelinePosts({1},{},1,{},20,
                                               "https://f.test/u/viewer").value();
         ASSERT_EQ(timeline.size(),2u);
@@ -1530,11 +1542,12 @@ TEST(DataMigration, PostEditTimestampSurvivesReopening)
         ASSERT_TRUE(data->insertPost(post, {}, ""));
         ASSERT_TRUE(data->connection().execute(
             "ALTER TABLE posts DROP COLUMN updated_at"));
+        removeStickerSchema(data->connection());
         ASSERT_TRUE(data->connection().execute("PRAGMA user_version=7"));
     }
     {
         ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(data->getSchemaVersion().value(), 8);
+        EXPECT_EQ(data->getSchemaVersion().value(), 9);
         ASSIGN_OR_FAIL(auto post, data->getPostById(1));
         ASSERT_TRUE(post);
         EXPECT_FALSE(post->updated_at);

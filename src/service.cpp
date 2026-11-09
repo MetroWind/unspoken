@@ -407,9 +407,55 @@ Service::recipientsFor(Visibility vis, std::string_view author_username,
 
 // ─── Posting ───────────────────────────────────────────────────────────
 
+const StickerRegistry& Service::emptyStickerRegistry()
+{
+    static const StickerRegistry registry;
+    return registry;
+}
+
+mw::E<std::optional<StickerInfo>> Service::resolveSticker(
+    const ComposeParams& params) const
+{
+    if(params.sticker_action != StickerAction::KEEP
+       && params.sticker_action != StickerAction::CLEAR
+       && params.sticker_action != StickerAction::SET)
+        return std::unexpected(mw::HTTPError(400, "Invalid sticker action"));
+    if(params.sticker_action != StickerAction::SET)
+    {
+        if(!params.sticker.empty()) return std::unexpected(
+            mw::HTTPError(400, "Unexpected sticker selection"));
+        return std::optional<StickerInfo>{};
+    }
+    auto selected = stickers.lookup(params.sticker);
+    if(!selected) return std::unexpected(mw::HTTPError(400,
+        "Unknown sticker. Refresh the picker."));
+    DO_OR_RETURN(stickers.available(*selected));
+    return selected;
+}
+
+namespace
+{
+
+mw::E<void> saveSticker(const DataSourceInterface& data, int64_t post_id,
+                       const StickerInfo& selected)
+{
+    Attachment attachment;
+    attachment.remote_url = selected.url;
+    attachment.original_name = selected.name;
+    attachment.media_type = selected.media_type;
+    attachment.is_image = true;
+    ASSIGN_OR_RETURN(auto id, data.insertAttachment(attachment));
+    return data.setPostSticker(post_id, id, selected.name);
+}
+
+} // namespace
+
 mw::E<Post> Service::createPost(const User& author,
                                 const ComposeParams& p) const
 {
+    ASSIGN_OR_RETURN(auto selected, resolveSticker(p));
+    if(mw::strip(p.source).empty() && p.attachment_ids.empty() && !selected)
+        return std::unexpected(mw::HTTPError(400, "Empty post"));
     RenderedPostContent rendered = parsePostContent(p.source, emoji);
     ASSIGN_OR_RETURN(auto mentioned_actors,
                      localMentionActorUris(config, data, rendered.mentions));
@@ -427,6 +473,7 @@ mw::E<Post> Service::createPost(const User& author,
     np.preview_origin = config.url_root;
     np.previews_enabled = config.link_previews_enabled;
     np.preview_excluded_urls = mentioned_actors;
+    if(selected) np.preview_excluded_urls.push_back(selected->url);
     for(int64_t aid : p.attachment_ids)
     {
         ASSIGN_OR_RETURN(auto attachment, data.getAttachmentById(aid));
@@ -450,8 +497,23 @@ mw::E<Post> Service::createPost(const User& author,
         ASSIGN_OR_RETURN(auto post, data.insertPost(np, recipients, prefix));
         for(int64_t aid : p.attachment_ids)
         {
-            DO_OR_RETURN(data.attachToPost(aid, post.id));
+            auto description = p.attachment_descriptions.find(aid);
+            if(description == p.attachment_descriptions.end())
+            {
+                DO_OR_RETURN(data.attachToPost(aid, post.id));
+            }
+            else
+            {
+                ASSIGN_OR_RETURN(auto attachment, data.getAttachmentById(aid));
+                if(!attachment) return std::unexpected(
+                    mw::HTTPError(400, "Missing attachment"));
+                attachment->post_id = post.id;
+                attachment->sensitive = post.sensitive;
+                attachment->description = description->second;
+                DO_OR_RETURN(data.insertAttachment(*attachment));
+            }
         }
+        if(selected) DO_OR_RETURN(saveSticker(data, post.id, *selected));
         DO_OR_RETURN(notifyReply(post, actorUri(author.username),
                                 nowSeconds()));
         result = std::move(post);
@@ -468,7 +530,12 @@ mw::E<Post> Service::editPost(const User& author, int64_t id,
     if(!post || post->local_author_id != author.id || !post->content_source)
         return std::unexpected(mw::HTTPError(404, "Not found"));
     ASSIGN_OR_RETURN(auto attachments, data.attachmentsForPost(id));
-    if(mw::strip(params.source).empty() && attachments.empty())
+    ASSIGN_OR_RETURN(auto selected, resolveSticker(params));
+    bool has_media = selected.has_value();
+    for(const auto& attachment : attachments)
+        if(attachment.role == AttachmentRole::ATTACHMENT
+           || params.sticker_action == StickerAction::KEEP) has_media = true;
+    if(mw::strip(params.source).empty() && !has_media)
         return std::unexpected(mw::HTTPError(400, "Empty post"));
     ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(id));
     NewPost np;
@@ -489,9 +556,27 @@ mw::E<Post> Service::editPost(const User& author, int64_t id,
     for(const auto& recipient : recipients)
         np.preview_excluded_urls.push_back(recipient.recipient_uri);
     for(const auto& attachment : attachments)
+    {
+        if(attachment.role == AttachmentRole::STICKER
+           && params.sticker_action != StickerAction::KEEP) continue;
         np.preview_excluded_urls.push_back(attachment.remote_url.value_or(
             localAttachmentUrl(config, attachment)));
-    DO_OR_RETURN(data.updatePost(id, np, recipients));
+    }
+    if(selected) np.preview_excluded_urls.push_back(selected->url);
+    auto edit = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(data.updatePost(id, np, recipients));
+        if(selected)
+        {
+            DO_OR_RETURN(saveSticker(data, id, *selected));
+        }
+        else if(params.sticker_action == StickerAction::CLEAR)
+        {
+            DO_OR_RETURN(data.setPostSticker(id, std::nullopt, std::nullopt));
+        }
+        return {};
+    };
+    DO_OR_RETURN(data.withWrite(edit));
     ASSIGN_OR_RETURN(auto updated, data.getPostById(id));
     if(!updated) return std::unexpected(mw::HTTPError(404, "Not found"));
     return *updated;
@@ -1210,6 +1295,7 @@ Service::postViewWithAuthorCache(
     // ── Attachments ──
     ASSIGN_OR_RETURN(auto atts, data.attachmentsForPost(p.id));
     nlohmann::json att_arr = nlohmann::json::array();
+    j["sticker"] = nullptr;
     for(const auto& a : atts)
     {
         nlohmann::json aj;
@@ -1223,9 +1309,13 @@ Service::postViewWithAuthorCache(
         }
         aj["media_type"] = esc(a.media_type);
         aj["is_image"] = a.is_image;
-        aj["original_name"] = esc(a.original_name);
+        aj["original_name"] = esc(a.description.value_or(a.original_name));
         aj["sensitive"] = a.sensitive;
-        att_arr.push_back(std::move(aj));
+        if(a.role == AttachmentRole::STICKER)
+        {
+            j["sticker"] = std::move(aj);
+        }
+        else att_arr.push_back(std::move(aj));
     }
     j["attachments"] = att_arr;
 
@@ -1353,7 +1443,8 @@ mw::E<nlohmann::json> Service::postMetadata(const Post& post) const
             auto valid = validatePreviewImageUrl(url, config.url_root);
             if(!valid) continue;
             metadata["image"] = mw::escapeHTML(*valid);
-            metadata["image_alt"] = mw::escapeHTML(attachment.original_name);
+            metadata["image_alt"] = mw::escapeHTML(
+                attachment.description.value_or(attachment.original_name));
             break;
         }
     }

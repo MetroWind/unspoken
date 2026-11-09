@@ -161,6 +161,9 @@ public:
     MOCK_METHOD(mw::E<std::vector<Post>>, bookmarksFor,
                 (int64_t, const Cursor&, int), (const, override));
 
+    MOCK_METHOD(mw::E<void>, setPostSticker,
+        (int64_t, std::optional<int64_t>, std::optional<std::string>),
+        (const, override));
     MOCK_METHOD(mw::E<int64_t>, insertAttachment, (const Attachment&),
                 (const, override));
     MOCK_METHOD(mw::E<std::optional<Attachment>>, getAttachmentById,

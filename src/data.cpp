@@ -29,7 +29,7 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 8;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 9;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
@@ -563,6 +563,7 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
         DO_OR_RETURN(data_source->migrate5To6());
         DO_OR_RETURN(data_source->migrate6To7());
         DO_OR_RETURN(data_source->migrate7To8());
+        DO_OR_RETURN(data_source->migrate8To9());
         DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
@@ -615,6 +616,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate7To8());
                 version = 8;
+                continue;
+            }
+            if(version == 8)
+            {
+                DO_OR_RETURN(data_source->migrate8To9());
+                version = 9;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -2183,13 +2190,13 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
 namespace
 {
 
-mw::E<int64_t> insertOrGetRemoteAttachment(
+mw::E<int64_t> insertOrGetUrlAttachment(
     mw::SQLite& db, const Attachment& a, int64_t created)
 {
     if(!a.remote_url.has_value())
     {
         return std::unexpected(mw::runtimeError(
-            "Remote attachment insert needs remote_url"));
+            "URL-backed attachment insert needs remote_url"));
     }
 
     ASSIGN_OR_RETURN(auto st, db.statementFromStr(
@@ -2209,7 +2216,7 @@ mw::E<int64_t> insertOrGetRemoteAttachment(
     if(rows.empty())
     {
         return std::unexpected(mw::runtimeError(
-            "Remote attachment vanished after insert"));
+            "URL-backed attachment vanished after insert"));
     }
     return std::get<0>(rows[0]);
 }
@@ -2253,15 +2260,17 @@ mw::E<void> insertPostAttachmentRelation(
 
     ASSIGN_OR_RETURN(auto st, db.statementFromStr(
         "INSERT INTO post_attachments "
-        "(post_id, attachment_id, sensitive, sort_order, created_at) "
+        "(post_id, attachment_id, sensitive, sort_order, created_at, "
+        "description) "
         "VALUES (?, ?, ?, "
         "COALESCE((SELECT MAX(sort_order) + 1 FROM post_attachments "
-        "WHERE post_id = ?), 0), ?) "
+        "WHERE post_id = ?), 0), ?, ?) "
         "ON CONFLICT(post_id, attachment_id) DO UPDATE SET "
-        "sensitive = excluded.sensitive;"));
-    DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
+        "sensitive = excluded.sensitive,description=excluded.description;"));
+    DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t,
+        std::string>(
         *a.post_id, attachment_id, a.sensitive ? 1 : 0, *a.post_id,
-        created)));
+        created, a.description.value_or(a.original_name))));
     return db.execute(std::move(st));
 }
 
@@ -2283,7 +2292,7 @@ mw::E<int64_t> DataSourceSQLite::insertAttachment(const Attachment& a) const
 
         if(a.remote_url.has_value())
         {
-            auto id = insertOrGetRemoteAttachment(*db, a, created);
+            auto id = insertOrGetUrlAttachment(*db, a, created);
             if(!id.has_value())
                 return rollback(id.error());
             attachment_id = *id;
@@ -2338,14 +2347,16 @@ mw::E<void> DataSourceSQLite::attachToPost(int64_t attachment_id,
     auto txn = [&]() -> mw::E<void> {
         ASSIGN_OR_RETURN(auto st, db->statementFromStr(
             "INSERT INTO post_attachments "
-            "(post_id, attachment_id, sensitive, sort_order, created_at) "
+            "(post_id, attachment_id, sensitive, sort_order, created_at, "
+            "description) "
             "VALUES (?, ?, COALESCE((SELECT sensitive FROM posts "
             "WHERE id = ?), 0), "
             "COALESCE((SELECT MAX(sort_order) + 1 FROM post_attachments "
-            "WHERE post_id = ?), 0), ?) "
+            "WHERE post_id = ?), 0), ?, "
+            "(SELECT original_name FROM attachments WHERE id=?)) "
             "ON CONFLICT(post_id, attachment_id) DO NOTHING;"));
-        DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
-            post_id, attachment_id, post_id, post_id, created)));
+        DO_OR_RETURN((st.bind<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>(
+            post_id, attachment_id, post_id, post_id, created, attachment_id)));
         return db->execute(std::move(st));
     };
     return withDataWrite(*db, txn);
@@ -2356,7 +2367,8 @@ DataSourceSQLite::attachmentsForPost(int64_t post_id) const
 {
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(
         "SELECT a.id, pa.post_id, a.sha256, a.extension, a.media_type, "
-        "a.original_name, a.is_image, pa.sensitive, a.remote_url "
+        "a.original_name, a.is_image, pa.sensitive, a.remote_url, "
+        "pa.role, pa.description "
         "FROM post_attachments pa "
         "JOIN attachments a ON a.id = pa.attachment_id "
         "WHERE pa.post_id = ? "
@@ -2365,6 +2377,7 @@ DataSourceSQLite::attachmentsForPost(int64_t post_id) const
     ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::optional<int64_t>,
         std::optional<std::string>, std::optional<std::string>, std::string,
         std::string, int64_t, int64_t,
+        std::optional<std::string>, int64_t,
         std::optional<std::string>>(std::move(st))));
     std::vector<Attachment> out;
     out.reserve(rows.size());
@@ -2380,6 +2393,9 @@ DataSourceSQLite::attachmentsForPost(int64_t post_id) const
         a.is_image = std::get<6>(r) != 0;
         a.sensitive = std::get<7>(r) != 0;
         a.remote_url = std::get<8>(r);
+        a.role = std::get<9>(r) == static_cast<int64_t>(AttachmentRole::STICKER)
+            ? AttachmentRole::STICKER : AttachmentRole::ATTACHMENT;
+        a.description = std::get<10>(r);
         out.push_back(std::move(a));
     }
     return out;
@@ -2415,13 +2431,15 @@ mw::E<void> DataSourceSQLite::replacePostAttachments(
         {
             auto st_e = db->statementFromStr(
                 "INSERT INTO post_attachments "
-                "(post_id, attachment_id, sensitive, sort_order, created_at) "
+                "(post_id, attachment_id, sensitive, sort_order, created_at, "
+                "description) "
                 "VALUES (?, ?, COALESCE((SELECT sensitive FROM posts "
-                "WHERE id = ?), 0), ?, ?);");
+                "WHERE id = ?), 0), ?, ?, "
+                "(SELECT original_name FROM attachments WHERE id=?));");
             if(!st_e.has_value())
                 return rollback(st_e.error());
-            auto b = st_e->bind<int64_t, int64_t, int64_t, int64_t, int64_t>(
-                post_id, attachment_id, post_id, sort, created);
+            auto b = st_e->bind<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t>(
+                post_id, attachment_id, post_id, sort, created, attachment_id);
             if(!b.has_value())
                 return rollback(b.error());
             auto ex = db->execute(std::move(*st_e));
@@ -3144,6 +3162,68 @@ mw::E<void> DataSourceSQLite::migrate7To8() const
         return setSchemaVersion(8);
     };
     return withDataWrite(*db, migrate);
+}
+
+mw::E<void> DataSourceSQLite::migrate8To9() const
+{
+    auto migrate = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(db->execute(
+            "ALTER TABLE post_attachments ADD COLUMN role INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(role IN (0,1));"));
+        DO_OR_RETURN(db->execute(
+            "ALTER TABLE post_attachments ADD COLUMN description TEXT "
+            "NOT NULL DEFAULT '';"));
+        DO_OR_RETURN(db->execute(
+            "CREATE UNIQUE INDEX idx_post_attachments_one_sticker "
+            "ON post_attachments(post_id) WHERE role=1;"));
+        DO_OR_RETURN(db->execute(
+            "UPDATE post_attachments SET description=(SELECT original_name "
+            "FROM attachments WHERE id=post_attachments.attachment_id);"));
+        for(const auto* operation : {"INSERT", "UPDATE"})
+        {
+            DO_OR_RETURN(db->execute(std::format(
+                "CREATE TRIGGER description_{} BEFORE {} "
+                "ON post_attachments WHEN "
+                "(NEW.role=1 AND (NEW.description IS NULL "
+                "OR length(NEW.description)=0)) "
+                "BEGIN SELECT RAISE(ABORT,'Invalid sticker name'); END;",
+                operation, operation)));
+        }
+        return setSchemaVersion(9);
+    };
+    return withDataWrite(*db, migrate);
+}
+
+mw::E<void> DataSourceSQLite::setPostSticker(int64_t post_id,
+    std::optional<int64_t> attachment_id,
+    std::optional<std::string> name) const
+{
+    if(attachment_id.has_value() != name.has_value()
+       || (name && name->empty()))
+        return std::unexpected(mw::runtimeError("Invalid sticker name"));
+    auto change = [&]() -> mw::E<void>
+    {
+        ASSIGN_OR_RETURN(auto remove, db->statementFromStr(
+            "DELETE FROM post_attachments WHERE post_id=? AND role=1;"));
+        DO_OR_RETURN(remove.bind<int64_t>(post_id));
+        DO_OR_RETURN(db->execute(std::move(remove)));
+        if(!attachment_id) return {};
+        ASSIGN_OR_RETURN(auto insert, db->statementFromStr(
+            "INSERT INTO post_attachments (post_id,attachment_id,sensitive,"
+            "sort_order,created_at,role,description) VALUES "
+            "(?,?,(SELECT sensitive FROM posts WHERE id=?),"
+            "COALESCE((SELECT MAX(sort_order)+1 FROM post_attachments "
+            "WHERE post_id=?),0),?,1,?) "
+            "ON CONFLICT(post_id,attachment_id) DO UPDATE SET "
+            "role=1,description=excluded.description,"
+            "sort_order=excluded.sort_order,sensitive=excluded.sensitive;"));
+        DO_OR_RETURN((insert.bind<int64_t,int64_t,int64_t,int64_t,
+            int64_t,std::string>(post_id,*attachment_id,post_id,post_id,
+                                now(),*name)));
+        return db->execute(std::move(insert));
+    };
+    return withDataWrite(*db, change);
 }
 
 } // namespace unspoken

@@ -53,6 +53,8 @@ struct Config
     // ─── Storage ─────────────────────────────────────────────────
     std::string database_path = "unspoken.db";
     std::string attachment_dir = "attachments";
+    // Read-only operator-managed sticker pack directory.
+    std::string sticker_dir = "stickers";
     std::string emoji_dir = "emoji";
     std::string emoji_data_file = UNSPOKEN_DEFAULT_EMOJI_DATA_FILE;
     // Where Inja templates and static assets live. App-level dirs (not

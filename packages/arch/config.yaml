@@ -7,6 +7,8 @@ verbose: false
 
 database_path: "/var/lib/unspoken/unspoken.db"
 attachment_dir: "/var/lib/unspoken/attachments"
+# Public operator-managed sticker packs; read access only.
+sticker_dir: "/var/lib/unspoken/stickers"
 emoji_dir: "/var/lib/unspoken/emoji"
 emoji_data_file: "/usr/share/unspoken/data/emoji_categories.json"
 template_dir: "/usr/share/unspoken/templates"

@@ -184,6 +184,11 @@ article.post
         overflow-wrap: break-word;
     }
 
+    .post-sticker
+    {
+        text-align: center;
+    }
+
     a.link-preview
     {
         display: flex;

@@ -142,6 +142,8 @@ set(SOURCE_FILES
   src/data.hpp
   src/auth.cpp
   src/auth.hpp
+  src/stickers.cpp
+  src/stickers.hpp
   src/emoji.cpp
   src/emoji.hpp
   src/render.cpp
@@ -225,6 +227,7 @@ if(UNSPOKEN_BUILD_TESTS)
     src/service_test.cpp
     src/notification_test.cpp
     src/federation_test.cpp
+    src/stickers_test.cpp
     src/emoji_test.cpp
   )
 
@@ -255,6 +258,9 @@ if(UNSPOKEN_BUILD_TESTS)
     add_test(NAME PostEditor
       COMMAND "${NODE_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/tests/post_editor_test.js")
+    add_test(NAME StickerPicker
+      COMMAND "${NODE_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/sticker_picker_test.js")
   endif()
   include(GoogleTest)
   gtest_discover_tests(unspoken_test

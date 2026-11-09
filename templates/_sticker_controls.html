@@ -1,0 +1,16 @@
+<div class="sticker-controls">
+  <input type="hidden" name="sticker_action" value="keep">
+  <input type="hidden" name="sticker" value="">
+{% if has_stickers %}
+  <button type="button" class="linkbtn sticker-picker-trigger"
+          aria-haspopup="dialog" aria-expanded="false" hidden>sticker</button>
+{% endif %}
+  <div class="sticker-selection"{% if sticker_preview == null %} hidden{% endif %}>
+    <img class="sticker-preview" alt="{% if sticker_preview != null %}{{ sticker_preview.original_name }}{% endif %}"
+{% if sticker_preview != null %}
+         src="{{ sticker_preview.url }}"
+{% endif %}
+    >
+    <button type="button" class="sticker-remove">Remove sticker</button>
+  </div>
+</div>

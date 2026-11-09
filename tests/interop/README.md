@@ -184,3 +184,19 @@ metadata as account `fields`, and actor `icon`/`image` as account avatar
 and header URLs. Actor/profile refresh is eventually consistent, so the
 runner polls account search and Unspoken's cached actor JSON before
 asserting rendered profile fields.
+
+## Local sticker interoperability check
+
+After `cmake --build build -j24`, run:
+
+```sh
+python tests/stickers_http_test.py --binary build/unspoken
+```
+
+This disposable two-instance check uses loopback HTTP, development private
+host exceptions, test users/sessions, and generated RSA keys. It requires
+Python and OpenSSL but no Docker or OIDC server. It checks public static
+images, catalog authentication, native forms, malformed selections,
+source removal, restart retention, signed Create/Update delivery, and
+ordinary attachment presentation on the receiver. Databases, artwork, and
+keys live in temporary directories and are removed afterward.
