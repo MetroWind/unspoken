@@ -23,7 +23,7 @@
       <a class="author" href="{{ post.author.profile_url }}">{{ post.author.display_name }}</a>
       <span class="handle">{{ post.author.handle }}</span>
     </span>
-    <a class="permalink" href="{{ site.root }}p/{{ post.id }}">
+    <a class="permalink" href="{{ site.root }}p/{{ post.id }}" title="Local URL">
       <time data-local-time datetime="{{ post.created_datetime }}">{{ post.created_at }} UTC</time>
     </a>
     <span class="post-edited"
@@ -35,7 +35,7 @@
       </span>
 {% endif %}
     </span>
-    <span class="vis vis-{{ post.visibility }}" role="img"
+    <a class="vis vis-{{ post.visibility }}" href="{{ post.url }}" title="Remote URL"
 {% if post.visibility == "followers" %}
           title="followers-only" aria-label="followers-only">
       <i class="nf nf-fa-users ui-icon" aria-hidden="true"></i>
@@ -49,7 +49,7 @@
           title="public" aria-label="public">
       <i class="nf nf-fa-globe ui-icon" aria-hidden="true"></i>
 {% endif %}
-    </span>
+    </a>
   </div>
 
 <div class="post-body">
