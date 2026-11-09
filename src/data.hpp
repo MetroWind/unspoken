@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <mw/database.hpp>
 #include <mw/error.hpp>
 
@@ -132,6 +133,9 @@ public:
     virtual mw::E<std::optional<Post>> getPostById(int64_t id) const = 0;
     virtual mw::E<std::optional<Post>>
     getPostByUri(std::string_view uri) const = 0;
+    // Read retained language metadata without fetching the remote object.
+    virtual mw::E<std::optional<nlohmann::json>>
+    remotePostDocument(std::string_view uri) const = 0;
     virtual mw::E<void> deletePost(int64_t id) const = 0;
     virtual mw::E<void>
     updatePost(int64_t id, const NewPost& np,
@@ -412,6 +416,9 @@ public:
     mw::E<std::optional<Post>> getPostById(int64_t id) const override;
     mw::E<std::optional<Post>>
     getPostByUri(std::string_view uri) const override;
+    // Return a retained, undeleted remote object for display metadata.
+    mw::E<std::optional<nlohmann::json>>
+    remotePostDocument(std::string_view uri) const override;
     mw::E<void> deletePost(int64_t id) const override;
     mw::E<void>
     updatePost(int64_t id, const NewPost& np,

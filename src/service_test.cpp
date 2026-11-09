@@ -2002,3 +2002,118 @@ TEST(Render, RemoteEmojiRejectsInvalidNamesAndUnsafeUrls)
               std::string::npos);
     EXPECT_EQ(substituteRemoteEmoji(html, emoji), html);
 }
+
+TEST(Render, LanguageMetadataMatchesTheRenderedText)
+{
+    nlohmann::json object = {
+        {"content", "<p>你好</p>"},
+        {"contentMap", {{"zh-Hant", "<p>你好</p>"}, {"en", "Hello"}}},
+        {"summary", "注意"}, {"summaryMap", {{"ja", "注意"}}},
+    };
+    EXPECT_EQ(languageForText(object, "content"), "zh-Hant");
+    EXPECT_EQ(languageForText(object, "summary"), "ja");
+    object["contentMap"]["fr"] = "<p>你好</p>";
+    EXPECT_FALSE(languageForText(object, "content"));
+    object["@context"] = nlohmann::json::array({
+        "https://www.w3.org/ns/activitystreams", {{"@language", "fr"}}});
+    EXPECT_EQ(languageForText(object, "content"), "fr");
+    object.erase("contentMap");
+    EXPECT_EQ(languageForText(object, "content"), "fr");
+    object["@context"].push_back({{"@language", nullptr}});
+    EXPECT_FALSE(languageForText(object, "content"));
+    EXPECT_FALSE(languageForText(nlohmann::json::array(), "content"));
+    EXPECT_FALSE(languageForText({{"content", 7}}, "content"));
+}
+
+TEST(Render, LanguageMetadataPreservesSuppliedStrings)
+{
+    for(const auto* tag : {"en", "zh-Hans", "", "en_US", "日本語",
+                           "en\" onclick=\"bad<&"})
+    {
+        EXPECT_EQ(languageForText({{"content", "text"},
+            {"contentMap", {{tag, "text"}}}}, "content"), tag);
+        EXPECT_EQ(languageForText({{"content", "text"},
+            {"@context", {{"@language", tag}}}}, "content"), tag);
+    }
+    EXPECT_FALSE(languageForText({{"content", "text"},
+        {"contentMap", {{"en", "other text"}}}}, "content"));
+    EXPECT_FALSE(languageForText({{"content", "text"},
+        {"@context", {{"@language", 7}}}}, "content"));
+    EXPECT_FALSE(languageForText({{"content", "text"},
+        {"contentMap", {{"en", 7}}}}, "content"));
+}
+
+TEST(ServiceView, RemotePostLanguagesUseRetainedMetadata)
+{
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    auto config = testConfig();
+    EmojiRegistry emoji;
+    Service service(config, *data, emoji);
+    RemoteActor remote;
+    remote.uri = "https://remote.test/u/bob";
+    remote.username = "bob";
+    remote.domain = "remote.test";
+    remote.actor_json = "{}";
+    ASSIGN_OR_FAIL(auto actor, data->upsertRemoteActor(remote));
+    NewPost params;
+    params.uri = "https://remote.test/o/language";
+    params.remote_author_id = actor.id;
+    params.content_html = "<p>你好</p>";
+    params.summary = "注意";
+    ASSIGN_OR_FAIL(auto post, data->insertPost(params, {}, ""));
+    nlohmann::json document = {
+        {"content", params.content_html},
+        {"contentMap", {{"zh-Hant", params.content_html}}},
+        {"summary", *params.summary}, {"summaryMap", {{"ja", *params.summary}}},
+    };
+    ASSIGN_OR_FAIL(auto insert, data->connection().statementFromStr(
+        "INSERT INTO ap_objects(uri,owner_uri,local,document_json) "
+        "VALUES(?,?,0,?);"));
+    ASSERT_TRUE((insert.bind<std::string,std::string,std::string>(
+        post.uri, actor.uri, document.dump())));
+    ASSERT_TRUE(data->connection().execute(std::move(insert)));
+    ASSIGN_OR_FAIL(auto view, service.postView(post, std::nullopt));
+    EXPECT_EQ(view["content_lang"], "zh-Hant");
+    EXPECT_EQ(view["summary_lang"], "ja");
+    inja::Environment templates("templates/");
+    nlohmann::json context = {{"post", view}, {"logged_in", false},
+        {"focus_id", 0}, {"site", {{"root", "/"}}}};
+    auto html = templates.render_file("_post.html", context);
+    EXPECT_NE(html.find("class=\"content\" lang=\"zh-Hant\""), std::string::npos);
+    EXPECT_NE(html.find("<summary lang=\"ja\">"), std::string::npos);
+    const std::string supplied = "en\" onmouseover=\"bad<&";
+    const std::string escaped = "en&quot; onmouseover=&quot;bad&lt;&amp;";
+    document["contentMap"] = {{supplied, params.content_html}};
+    document.erase("summaryMap");
+    document["@context"] = {{"@language", supplied}};
+    ASSIGN_OR_FAIL(auto update, data->connection().statementFromStr(
+        "UPDATE ap_objects SET document_json=? WHERE uri=?"));
+    ASSERT_TRUE((update.bind<std::string,std::string>(document.dump(), post.uri)));
+    ASSERT_TRUE(data->connection().execute(std::move(update)));
+    ASSIGN_OR_FAIL(auto escaped_view, service.postView(post, std::nullopt));
+    EXPECT_EQ(escaped_view["content_lang"], escaped);
+    EXPECT_EQ(escaped_view["summary_lang"], escaped);
+    context["post"] = escaped_view;
+    const auto escaped_html = templates.render_file("_post.html", context);
+    EXPECT_NE(escaped_html.find("class=\"content\" lang=\"" + escaped + "\""),
+              std::string::npos);
+    EXPECT_NE(escaped_html.find("<summary lang=\"" + escaped + "\">"),
+              std::string::npos);
+    EXPECT_EQ(escaped_html.find("lang=\"en\" onmouseover=\""), std::string::npos);
+    ASSERT_TRUE(data->connection().execute("DELETE FROM ap_objects"));
+    ASSIGN_OR_FAIL(auto unknown, service.postView(post, std::nullopt));
+    EXPECT_EQ(unknown["content_lang"], "");
+    context["post"] = unknown;
+    EXPECT_NE(templates.render_file("_post.html", context).find(
+        "class=\"content\" lang=\"\""), std::string::npos);
+    ASSIGN_OR_FAIL(auto author, data->createUser(NewUser{
+        "alice", "Alice", "", "iss", "sub-a", "PRIV", "PUB"}));
+    ComposeParams local;
+    local.source = "Local text";
+    ASSIGN_OR_FAIL(auto local_post, service.createPost(author, local));
+    ASSIGN_OR_FAIL(auto local_view, service.postView(local_post, std::nullopt));
+    EXPECT_TRUE(local_view["content_lang"].is_null());
+    context["post"] = local_view;
+    EXPECT_EQ(templates.render_file("_post.html", context).find(
+        "class=\"content\" lang="), std::string::npos);
+}

@@ -1441,6 +1441,20 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
     return std::optional<Post>{std::move(p)};
 }
 
+mw::E<std::optional<nlohmann::json>>
+DataSourceSQLite::remotePostDocument(std::string_view uri) const
+{
+    ASSIGN_OR_RETURN(auto query, db->statementFromStr(
+        "SELECT document_json FROM ap_objects WHERE uri=? "
+        "AND local=0 AND deleted=0;"));
+    DO_OR_RETURN(query.bind<std::string>(std::string(uri)));
+    ASSIGN_OR_RETURN(auto rows, db->eval<std::string>(std::move(query)));
+    if(rows.empty()) return std::nullopt;
+    auto document = nlohmann::json::parse(std::get<0>(rows[0]), nullptr, false);
+    if(!document.is_object()) return std::nullopt;
+    return document;
+}
+
 mw::E<void> DataSourceSQLite::deletePost(int64_t id) const
 {
     int64_t retained_at = now();

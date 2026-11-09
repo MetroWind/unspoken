@@ -94,6 +94,8 @@ public:
                 (const, override));
     MOCK_METHOD(mw::E<std::optional<Post>>, getPostByUri, (std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<std::optional<nlohmann::json>>, remotePostDocument,
+                (std::string_view), (const, override));
     MOCK_METHOD(mw::E<void>, deletePost, (int64_t), (const, override));
     MOCK_METHOD(mw::E<void>, updatePost,
                 (int64_t, const NewPost&, (const std::vector<PostRecipient>&)),

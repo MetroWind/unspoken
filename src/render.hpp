@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -81,6 +82,11 @@ std::string emojiShortcodesForFederation(std::string_view html);
 // Extract a bounded UTF-8 excerpt, decoding entities and separating blocks.
 // Omit scripts/styles and use image alt text for inline emoji.
 std::string plainTextExcerpt(std::string_view html, size_t max_chars = 300);
+
+// Find the language of an existing content/summary string from its matching
+// language map or inline JSON-LD default. Missing/ambiguous metadata is unknown.
+std::optional<std::string> languageForText(const nlohmann::json& object,
+                                          std::string_view property);
 
 // Parse remote ActivityPub HTML as UTF-8 and rebuild it using an allowlist,
 // escaping decoded text and attributes once before storage or display.

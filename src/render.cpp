@@ -108,6 +108,24 @@ bool safeImageSrc(std::string_view src)
     return s.starts_with("https://") || s.starts_with("/");
 }
 
+void contextLanguage(const nlohmann::json& context,
+                     std::optional<std::string>& language)
+{
+    if(context.is_array())
+    {
+        for(const auto& entry : context) contextLanguage(entry, language);
+    }
+    else if(context.is_object())
+    {
+        auto value = context.find("@language");
+        if(value == context.end()) return;
+        language.reset();
+        if(value->is_string())
+            language = value->get<std::string>();
+    }
+    else if(context.is_null()) language.reset();
+}
+
 bool safeSpanClass(std::string_view cls)
 {
     return cls == "mention" || cls == "hashtag";
@@ -682,6 +700,32 @@ std::string plainTextExcerpt(std::string_view html, size_t max_chars)
         ++count;
     }
     return result;
+}
+
+std::optional<std::string> languageForText(const nlohmann::json& object,
+                                          std::string_view property)
+{
+    if(!object.is_object()) return std::nullopt;
+    auto text = object.find(std::string(property));
+    if(text == object.end() || !text->is_string()) return std::nullopt;
+    std::optional<std::string> fallback;
+    auto context = object.find("@context");
+    if(context != object.end()) contextLanguage(*context, fallback);
+    auto map = object.find(std::string(property) + "Map");
+    if(map == object.end() || !map->is_object()) return fallback;
+    std::optional<std::string> matching;
+    bool ambiguous = false;
+    for(auto entry = map->begin(); entry != map->end(); ++entry)
+    {
+        if(!entry->is_string() || *entry != *text) continue;
+        if(fallback && lowerAscii(*fallback) == lowerAscii(entry.key()))
+            return fallback;
+        if(matching && lowerAscii(*matching) != lowerAscii(entry.key()))
+            ambiguous = true;
+        else matching = entry.key();
+    }
+    if(ambiguous) return std::nullopt;
+    return matching ? matching : fallback;
 }
 
 std::string sanitizeRemoteHtml(std::string_view html)

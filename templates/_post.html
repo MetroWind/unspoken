@@ -55,11 +55,11 @@
 <div class="post-body">
 {% if post.has_summary %}
   <details class="cw">
-    <summary>{{ post.summary }}</summary>
-    <div class="content">{{ post.content_html }}</div>
+    <summary{% if post.summary_lang != null %} lang="{{ post.summary_lang }}"{% endif %}>{{ post.summary }}</summary>
+    <div class="content"{% if post.content_lang != null %} lang="{{ post.content_lang }}"{% endif %}>{{ post.content_html }}</div>
     {% include "_link_preview.html" %}
 {% else %}
-  <div class="content">{{ post.content_html }}</div>
+  <div class="content"{% if post.content_lang != null %} lang="{{ post.content_lang }}"{% endif %}>{{ post.content_html }}</div>
 {% if post.sensitive and post.has_link_preview %}
   <details class="sensitive"><summary>sensitive link preview</summary>
     {% include "_link_preview.html" %}

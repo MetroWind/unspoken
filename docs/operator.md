@@ -525,3 +525,14 @@ automatic restoration or historical archive.
 Custom emoji shortcodes accept only `[a-zA-Z0-9_-]+`, preserving case.
 Remote Emoji tags use the same rules. Remote substitution affects text only
 and does not rewrite links or attributes.
+
+## Remote post languages
+
+Remote post text and content warnings use their advertised language in
+HTML `lang` attributes. Language-map entries must match the displayed
+source text; an inline JSON-LD default language is also recognized. Missing,
+ambiguous, or non-string metadata yields `lang=""` (unknown), rather than
+inheriting the interface language. Supplied language strings are HTML-escaped
+without validation. Local posts keep their current behavior.
+Language metadata is read from retained remote objects without network
+requests, schema changes, or rewriting existing posts.

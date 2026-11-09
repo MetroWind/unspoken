@@ -1182,6 +1182,23 @@ Service::postViewWithAuthorCache(
             postTagsForSource(config,recipients,*p.content_source,&emoji));
     }
     j["content_html"] = shortenMentionLabels(content_html, config.url_root);
+    j["content_lang"] = nullptr;
+    j["summary_lang"] = nullptr;
+    if(!p.local_author_id)
+    {
+        // Empty lang explicitly marks unknown remote text instead of inheriting
+        // the interface's language. Local composition keeps its current policy.
+        j["content_lang"] = "";
+        j["summary_lang"] = "";
+        ASSIGN_OR_RETURN(auto document, data.remotePostDocument(p.uri));
+        if(document)
+        {
+            j["content_lang"] = esc(
+                languageForText(*document, "content").value_or(""));
+            j["summary_lang"] = esc(
+                languageForText(*document, "summary").value_or(""));
+        }
+    }
     j["summary"] = esc(p.summary.value_or(""));
     j["has_summary"] = p.summary.has_value() && !p.summary->empty();
     j["sensitive"] = p.sensitive;
