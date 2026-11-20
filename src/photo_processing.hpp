@@ -46,8 +46,9 @@ mw::E<void> initializePhotoProcessing();
 // At most two validation/processing callers run concurrently.
 mw::E<PhotoInfo> validatePhoto(const std::string &bytes);
 
-// Orient, fit within 1024x1024, convert to sRGB, strip metadata, and encode
-// the first frame. JPEG composites transparency on white. No files are saved.
+// Orient the first frame, transform embedded ICC profiles to sRGB, resize to
+// fit within 1024x1024, strip metadata, and encode. JPEG composites alpha on
+// white. No files are saved.
 mw::E<ProcessedPhoto> processPhoto(const std::string &bytes,
                                    const PhotoCompression &settings);
 } // namespace unspoken

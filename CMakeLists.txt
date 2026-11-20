@@ -12,9 +12,14 @@ find_package(LibXml2 2.14 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MAGICKPP REQUIRED IMPORTED_TARGET Magick++>=7)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/docs/photo_policy.xml")
+    "${CMAKE_SOURCE_DIR}/docs/photo_policy.xml"
+    "${CMAKE_SOURCE_DIR}/src/srgb.icc")
 file(READ "${CMAKE_SOURCE_DIR}/docs/photo_policy.xml" PHOTO_POLICY_XML)
 configure_file(cmake/photo_policy.hpp.in generated/photo_policy.hpp @ONLY)
+file(READ "${CMAKE_SOURCE_DIR}/src/srgb.icc" SRGB_PROFILE_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "    0x\\1,\n" SRGB_PROFILE_BYTES
+    "${SRGB_PROFILE_HEX}")
+configure_file(cmake/srgb_profile.hpp.in generated/srgb_profile.hpp @ONLY)
 
 FetchContent_Declare(
   libmw

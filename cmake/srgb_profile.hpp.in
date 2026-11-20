@@ -1,0 +1,7 @@
+#pragma once
+
+// Destination profile for photo ICC transforms, published by the ICC.
+// https://registry.color.org/rgb-registry/srgbprofiles
+inline constexpr unsigned char SRGB_PROFILE[] = {
+@SRGB_PROFILE_BYTES@
+};

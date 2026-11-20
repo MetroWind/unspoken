@@ -200,6 +200,23 @@ def run(binary, root):
             photo_urls.append(note["attachment"][0]["url"])
         assert photo_urls[0] == photo_urls[1]
 
+        # Identical JPEG pixels represent different colors with a linear ICC
+        # profile attached. Remove only the fixture's ICC segment to compare.
+        tagged = pathlib.Path("tests/fixtures/photos/linear_rgb.jpg").read_bytes()
+        icc_start = tagged.index(b"ICC_PROFILE\0") - 4
+        assert tagged[icc_start:icc_start + 2] == b"\xff\xe2"
+        icc_size = int.from_bytes(tagged[icc_start + 2:icc_start + 4], "big")
+        untagged = tagged[:icc_start] + tagged[icc_start + 2 + icc_size:]
+        photo_urls = []
+        for jpeg in (tagged, untagged):
+            code, headers, body = multipart(sender, [("post_kind", "photo")],
+                [("linear_rgb.jpg", "image/jpeg", jpeg)])
+            assert code == 302, body
+            note = json.loads(request(headers["Location"],
+                accept="application/activity+json")[2])
+            photo_urls.append(note["attachment"][0]["url"])
+        assert photo_urls[0] != photo_urls[1], "ICC profile had no effect"
+
         # With JPEG XL configured, Social still stores the original PNG bytes.
         code, headers, body = multipart(sender, [("post_kind", "social")],
             [("landscape.png", "image/png", large)])

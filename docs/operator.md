@@ -592,8 +592,11 @@ See the [Magick++ API](https://imagemagick.org/magick++/) and
 
 New local photo uploads and offline nspic imports are processed before
 storage. They fit inside **1024 × 1024 pixels**, retaining aspect ratio
-without cropping or upscaling. Orientation is applied before conversion
-to sRGB and metadata removal. Animated inputs use the first frame. JPEG
+without cropping or upscaling. After applying orientation, ImageMagick
+transforms tagged images from their embedded ICC profile to the ICC's
+`sRGB2014.icc` profile. Untagged images pass through this step as decoded.
+The pipeline strips metadata after conversion.
+Animated inputs use the first frame. JPEG
 composites transparency on white; WebP, AVIF and JPEG XL retain alpha.
 
 ```yaml

@@ -1,5 +1,6 @@
 #include "photo_processing.hpp"
 #include "photo_policy.hpp"
+#include "srgb_profile.hpp"
 
 #include <Magick++.h>
 #include <algorithm>
@@ -153,6 +154,16 @@ mw::Error photoError(const Magick::Exception &error)
                  "Photo processing failed (check image and codec support): ") +
                  error.what());
 }
+
+void convertToSrgb(Magick::Image &image)
+{
+    if(image.iccColorProfile().length() == 0)
+        return;
+
+    static const Magick::Blob srgb_profile(SRGB_PROFILE, sizeof(SRGB_PROFILE));
+    // Applying a target profile to a tagged image transforms its pixels.
+    image.iccColorProfile(srgb_profile);
+}
 } // namespace
 
 mw::E<void> validatePhotoCompression(const PhotoCompression &settings)
@@ -206,7 +217,7 @@ mw::E<ProcessedPhoto> processPhoto(const std::string &bytes,
         ASSIGN_OR_RETURN(auto frames, decodePhoto(bytes));
         auto image = frames.front();
         image.autoOrient();
-        image.colorSpace(Magick::sRGBColorspace);
+        convertToSrgb(image);
         if(image.columns() > PHOTO_MAX_DIMENSION ||
            image.rows() > PHOTO_MAX_DIMENSION)
             image.resize(
