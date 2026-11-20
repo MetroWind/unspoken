@@ -1,0 +1,3 @@
+#pragma once
+// Application-owned decode policy, embedded to avoid runtime path ambiguity.
+inline constexpr const char* PHOTO_POLICY = R"policy(@PHOTO_POLICY_XML@)policy";

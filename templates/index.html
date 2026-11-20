@@ -1,3 +1,4 @@
+{% if not exists("post_kind") %}{% set post_kind = "social" %}{% endif %}
 {% include "_header.html" %}
 <h1 class="page-title">
 {% if timeline == "home" %}home timeline{% else %}public timeline{% endif %}
@@ -19,7 +20,7 @@
 <p class="empty">No posts yet.</p>
 {% endif %}
 {% for post in posts %}
-{% include "_post.html" %}
+{% include "_post_card.html" %}
 {% endfor %}
 </div>
 

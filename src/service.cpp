@@ -3,6 +3,7 @@
 #include <cctype>
 #include <ctime>
 #include <format>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
@@ -19,6 +20,7 @@
 #include <mw/utils.hpp>
 
 #include "attachments.hpp"
+#include "photo_processing.hpp"
 #include "config.hpp"
 #include "data.hpp"
 #include "render.hpp"
@@ -453,6 +455,42 @@ mw::E<void> saveSticker(const DataSourceInterface& data, int64_t post_id,
 mw::E<Post> Service::createPost(const User& author,
                                 const ComposeParams& p) const
 {
+    if(p.post_kind == PostKind::PHOTO)
+    {
+        if(p.attachment_ids.empty()) return std::unexpected(
+            mw::HTTPError(400, "A photo post requires an uploaded raster image"));
+        std::set<int64_t> seen;
+        for(auto id : p.attachment_ids)
+        {
+            if(!seen.insert(id).second) return std::unexpected(
+                mw::HTTPError(400, "Duplicate photo selection"));
+            ASSIGN_OR_RETURN(auto attachment, data.getAttachmentById(id));
+            if(!attachment || attachment->remote_url || !attachment->is_image
+               || attachment->role != AttachmentRole::ATTACHMENT
+               || !isHexLower(attachment->sha256)
+               || !safeLocalExtension(attachment->extension))
+                return std::unexpected(mw::HTTPError(400,
+                    "Photo posts require ordinary local raster uploads"));
+            auto path = config.attachment_dir + "/"
+                + attachment->sha256.substr(0, 1) + "/" + attachment->sha256
+                + "." + attachment->extension;
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            auto size = file.tellg();
+            if(!file || size <= 0
+               || static_cast<uint64_t>(size) > MAX_PROCESSED_PHOTO_BYTES)
+                return std::unexpected(mw::HTTPError(400,
+                    "Missing or oversized photo"));
+            std::string bytes(static_cast<size_t>(size), '\0');
+            file.seekg(0);
+            if(!file.read(bytes.data(), size)) return std::unexpected(
+                mw::HTTPError(400, "Cannot read photo"));
+            ASSIGN_OR_RETURN(auto info, validatePhoto(bytes));
+            if(info.media_type != attachment->media_type
+               || info.extension != attachment->extension)
+                return std::unexpected(mw::HTTPError(400,
+                    "Photo asset metadata does not match decoded content"));
+        }
+    }
     ASSIGN_OR_RETURN(auto selected, resolveSticker(p));
     if(mw::strip(p.source).empty() && p.attachment_ids.empty() && !selected)
         return std::unexpected(mw::HTTPError(400, "Empty post"));
@@ -481,6 +519,7 @@ mw::E<Post> Service::createPost(const User& author,
             attachment->remote_url.value_or(
                 localAttachmentUrl(config,*attachment)));
     }
+    np.post_kind = p.post_kind;
     np.local_author_id = author.id;
     np.content_html = linkMentions(rendered.html,
         postTagsForSource(config,recipients,p.source,&emoji));
@@ -529,6 +568,8 @@ mw::E<Post> Service::editPost(const User& author, int64_t id,
     ASSIGN_OR_RETURN(auto post, data.getPostById(id));
     if(!post || post->local_author_id != author.id || !post->content_source)
         return std::unexpected(mw::HTTPError(404, "Not found"));
+    if(params.post_kind_supplied && params.post_kind != post->post_kind)
+        return std::unexpected(mw::HTTPError(400, "Post kind is immutable"));
     ASSIGN_OR_RETURN(auto attachments, data.attachmentsForPost(id));
     ASSIGN_OR_RETURN(auto selected, resolveSticker(params));
     bool has_media = selected.has_value();
@@ -539,6 +580,7 @@ mw::E<Post> Service::editPost(const User& author, int64_t id,
         return std::unexpected(mw::HTTPError(400, "Empty post"));
     ASSIGN_OR_RETURN(auto recipients, data.getPostRecipients(id));
     NewPost np;
+    np.post_kind = post->post_kind;
     np.uri = post->uri;
     np.local_author_id = post->local_author_id;
     np.content_source = params.source;
@@ -625,7 +667,7 @@ mw::E<bool> Service::canActorViewPost(const Post& post,
 // ─── Timelines ─────────────────────────────────────────────────────────
 
 mw::E<std::vector<Post>>
-Service::homeTimeline(const User& viewer, const Cursor& c) const
+Service::homeTimeline(PostKind post_kind, const User& viewer, const Cursor& c) const
 {
     const std::string viewer_actor = actorUri(viewer.username);
     ASSIGN_OR_RETURN(auto following, data.followingUris(viewer_actor));
@@ -654,7 +696,7 @@ Service::homeTimeline(const User& viewer, const Cursor& c) const
         ASSIGN_OR_RETURN(auto actor, data.getRemoteActorByUri(uri));
         if(actor.has_value()) remote_author_ids.push_back(actor->id);
     }
-    return data.homeTimelinePosts(author_ids, remote_author_ids, viewer.id, c,
+    return data.homeTimelinePosts(post_kind, author_ids, remote_author_ids, viewer.id, c,
                                   config.posts_per_page, viewer_actor);
 }
 
@@ -1171,6 +1213,7 @@ Service::postViewWithAuthorCache(
     auto esc = [](std::string_view s) { return mw::escapeHTML(s); };
     nlohmann::json j;
     j["id"] = p.id;
+    j["post_kind"] = postKindToStr(p.post_kind);
     j["uri"] = esc(p.uri);
     j["url"] = esc(p.uri); // local posts: the uri is the canonical URL
     std::string content_html = p.content_html; // rendered/sanitized HTML
@@ -1205,10 +1248,21 @@ Service::postViewWithAuthorCache(
     j["visibility"] = std::string(visibilityToStr(p.visibility));
     j["created_at"] = formatTimestamp(p.created_at);
     j["created_datetime"] = formatDatetime(p.created_at);
+    if(p.local_author_id && p.published && p.published->size() == 20
+       && (*p.published)[10] == 'T' && p.published->back() == 'Z')
+    {
+        // Offline imports retain historical publication dates; cursors still
+        // use the insertion/event IDs assigned by the database.
+        auto timestamp = *p.published;
+        timestamp[10] = ' ';
+        timestamp.pop_back();
+        j["created_at"] = esc(timestamp);
+        j["created_datetime"] = esc(*p.published);
+    }
     j["in_reply_to_uri"] = esc(p.in_reply_to_uri.value_or(""));
     j["is_reply"] = p.in_reply_to_uri.has_value();
     j["has_link_preview"] = false;
-    if(p.link_preview_id)
+    if(p.link_preview_id && p.post_kind != PostKind::PHOTO)
     {
         auto entry = preview_cache.find(*p.link_preview_id);
         if(entry != preview_cache.end() &&
@@ -1313,12 +1367,15 @@ Service::postViewWithAuthorCache(
     ASSIGN_OR_RETURN(auto atts, data.attachmentsForPost(p.id));
     nlohmann::json att_arr = nlohmann::json::array();
     j["sticker"] = nullptr;
+    j["photos"] = nlohmann::json::array();
     for(const auto& a : atts)
     {
         nlohmann::json aj;
         if(a.remote_url.has_value())
         {
-            aj["url"] = esc(*a.remote_url);
+            auto safe_url = validatedRemoteUrl(*a.remote_url);
+            if(safe_url.empty()) continue;
+            aj["url"] = esc(safe_url);
         }
         else
         {
@@ -1331,6 +1388,11 @@ Service::postViewWithAuthorCache(
         if(a.role == AttachmentRole::STICKER)
         {
             j["sticker"] = std::move(aj);
+        }
+        else if(p.post_kind == PostKind::PHOTO && a.is_image)
+        {
+            aj["id"] = a.id;
+            j["photos"].push_back(std::move(aj));
         }
         else att_arr.push_back(std::move(aj));
     }

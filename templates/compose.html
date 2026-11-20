@@ -1,10 +1,15 @@
 {% include "_header.html" %}
-<h1 class="page-title">{% if editing %}Edit post{% else %}Compose{% endif %}</h1>
+<h1 class="page-title">{% if editing %}Edit post{% else if post_kind == "photo" %}Compose photos{% else %}Compose{% endif %}</h1>
 <form class="composer" method="post" action="{{ submit_url }}"
       enctype="multipart/form-data">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="standalone" value="1">
-  <label>Post text <textarea name="content" rows="6">{{ draft.edit_source }}</textarea></label>
+{% if editing %}
+  <p>Stream: {{ post_kind }}</p>
+{% else %}
+  {% include "_post_mode.html" %}
+{% endif %}
+  <label>{% if post_kind == "photo" %}Caption (optional){% else %}Post text{% endif %} <textarea name="content" rows="6">{{ draft.edit_source }}</textarea></label>
   <label>CW <input name="summary" value="{{ draft.summary }}"></label>
   <label><input type="checkbox" name="sensitive" value="1"{% if draft.sensitive %} checked{% endif %}> sensitive</label>
 {% if draft.sticker != null %}
@@ -36,8 +41,21 @@
     <option value="followers">followers-only</option>
     <option value="direct">direct</option>
   </select></label>
-  <label>attach <input type="file" name="attachments" multiple></label>
+  <div class="photo-uploads">
+        <label>{% if post_kind == "photo" %}photos{% else %}attach{% endif %}
+          <input type="file" name="attachments" multiple
+{% if post_kind == "photo" %}
+                 accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/jxl" required
 {% endif %}
-  <button type="submit">{% if editing %}Save{% else %}Post{% endif %}</button>
+          >
+        </label>
+        <div class="upload-descriptions">
+          <label>First image description (alt text)
+            <input name="attachment_description_0" value="">
+          </label>
+        </div>
+      </div>
+{% endif %}
+  <button type="submit">{% if editing %}Save{% else if post_kind == "photo" %}Post photos{% else %}Post{% endif %}</button>
 </form>
 {% include "_footer.html" %}

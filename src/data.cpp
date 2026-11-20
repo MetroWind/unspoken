@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdint>
 #include <format>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -29,13 +30,13 @@ namespace unspoken
 namespace
 {
 
-constexpr int64_t CURRENT_SCHEMA_VERSION = 9;
+constexpr int64_t CURRENT_SCHEMA_VERSION = 10;
 
 // Column list shared by every post SELECT, in a fixed order.
 constexpr const char* POST_COLS =
     "id, uri, local_author_id, remote_author_id, content_html, "
     "content_source, summary, sensitive, visibility, in_reply_to_uri, "
-    "created_at, published, link_preview_id, updated_at";
+    "created_at, published, link_preview_id, updated_at, post_kind";
 
 template<typename Row>
 mw::E<Post> rowToPost(const Row& row)
@@ -61,6 +62,10 @@ mw::E<Post> rowToPost(const Row& row)
     p.published = std::get<11>(row);
     p.link_preview_id = std::get<12>(row);
     p.updated_at = std::get<13>(row);
+    auto kind = std::get<14>(row);
+    if(kind != 0 && kind != 1)
+        return std::unexpected(mw::runtimeError("Invalid post kind in DB"));
+    p.post_kind = kind == 1 ? PostKind::PHOTO : PostKind::SOCIAL;
     return p;
 }
 
@@ -564,6 +569,7 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
         DO_OR_RETURN(data_source->migrate6To7());
         DO_OR_RETURN(data_source->migrate7To8());
         DO_OR_RETURN(data_source->migrate8To9());
+        DO_OR_RETURN(data_source->migrate9To10());
         DO_OR_RETURN(transaction.commit());
     }
     else if(version > CURRENT_SCHEMA_VERSION)
@@ -622,6 +628,12 @@ DataSourceSQLite::fromFile(const std::string& db_file, int busy_timeout_ms)
             {
                 DO_OR_RETURN(data_source->migrate8To9());
                 version = 9;
+                continue;
+            }
+            if(version == 9)
+            {
+                DO_OR_RETURN(data_source->migrate9To10());
+                version = 10;
                 continue;
             }
             return std::unexpected(mw::runtimeError(std::format(
@@ -1219,9 +1231,10 @@ DataSourceSQLite::insertPost(const NewPost& np,
             std::string sql = std::format(
                 "INSERT INTO posts (uri, local_author_id, remote_author_id, "
                 "content_html, content_source, summary, sensitive, "
-                "visibility, in_reply_to_uri, created_at, published) VALUES "
-                "({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                is_local ? "lower(hex(randomblob(16)))" : "?");
+                "visibility, in_reply_to_uri, created_at, published, post_kind) VALUES "
+                "({}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {});",
+                is_local ? "lower(hex(randomblob(16)))" : "?",
+                static_cast<int>(np.post_kind));
             auto st_e = db->statementFromStr(sql);
             if(!st_e.has_value())
                 return rollback(st_e.error());
@@ -1349,11 +1362,12 @@ DataSourceSQLite::insertRemoteActorAndPost(
                          ap::Store(*db).upsertRemoteActor(actor));
         actor_id = stored_actor.id;
 
-        auto post_st_e = db->statementFromStr(
+        auto post_st_e = db->statementFromStr(std::format(
             "INSERT INTO posts (uri, local_author_id, remote_author_id, "
             "content_html, content_source, summary, sensitive, visibility, "
-            "in_reply_to_uri, created_at, published) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+            "in_reply_to_uri, created_at, published, post_kind) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, {});",
+            static_cast<int>(post.post_kind)));
         if(!post_st_e.has_value())
             return rollback(post_st_e.error());
         auto post_bind = post_st_e->bind<std::string,
@@ -1418,7 +1432,7 @@ mw::E<std::optional<Post>> DataSourceSQLite::getPostById(int64_t id) const
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1435,7 +1449,7 @@ DataSourceSQLite::getPostByUri(std::string_view uri) const
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     if(rows.empty()) return std::optional<Post>{};
     ASSIGN_OR_RETURN(Post p, rowToPost(rows[0]));
     return std::optional<Post>{std::move(p)};
@@ -1601,13 +1615,13 @@ DataSourceSQLite::updatePost(int64_t id, const NewPost& np,
             }
         }
         {
-            auto st_e = db->statementFromStr(
+            auto st_e = db->statementFromStr(std::format(
                 "UPDATE posts SET uri = ?, local_author_id = ?, "
                 "remote_author_id = ?, content_html = ?, "
                 "content_source = ?, summary = ?, sensitive = ?, "
                 "visibility = ?, in_reply_to_uri = ?, published = ?, "
-                "updated_at = ? "
-                "WHERE id = ?;");
+                "updated_at = ?, post_kind = {} "
+                "WHERE id = ?;", static_cast<int>(np.post_kind)));
             if(!st_e.has_value())
                 return rollback(st_e.error());
             auto& st = *st_e;
@@ -1758,10 +1772,19 @@ std::string buildTimelineSql(const Cursor& c, std::string_view extra_where)
 
 } // namespace
 
-mw::E<std::vector<Post>>
-DataSourceSQLite::timelinePublic(const Cursor& c, int limit) const
+namespace
 {
-    std::string sql = buildTimelineSql(c, "visibility = 'public'");
+std::string streamPredicate(PostKind kind)
+{
+    return std::format("post_kind = {}{}", static_cast<int>(kind),
+        kind == PostKind::PHOTO ? " AND in_reply_to_uri IS NULL" : "");
+}
+}
+
+mw::E<std::vector<Post>>
+DataSourceSQLite::timelinePublic(PostKind post_kind, const Cursor& c, int limit) const
+{
+    std::string sql = buildTimelineSql(c, "visibility = 'public' AND " + streamPredicate(post_kind));
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     // Bind in the order placeholders appear: max_id?, min_id?, limit.
     int idx = 1;
@@ -1776,7 +1799,7 @@ DataSourceSQLite::timelinePublic(const Cursor& c, int limit) const
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1792,7 +1815,7 @@ DataSourceSQLite::timelinePublic(const Cursor& c, int limit) const
 }
 
 mw::E<std::vector<Post>>
-DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
+DataSourceSQLite::timelineHome(PostKind post_kind, int64_t user_id, const Cursor& c,
                               int limit) const
 {
     // Phase 1: the user's own posts. The follow-graph expansion (posts
@@ -1800,7 +1823,7 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
     // Phase 3, which has the url_root needed to build the user's actor
     // URI and resolve follows. The data primitives (followingUris,
     // timeline-by-author) it composes live here.
-    std::string sql = buildTimelineSql(c, "local_author_id = ?");
+    std::string sql = buildTimelineSql(c, "local_author_id = ? AND " + streamPredicate(post_kind));
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
     DO_OR_RETURN(internalBindAt(st, idx++, user_id));
@@ -1815,7 +1838,7 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1828,7 +1851,7 @@ DataSourceSQLite::timelineHome(int64_t user_id, const Cursor& c,
 }
 
 mw::E<std::vector<Post>>
-DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
+DataSourceSQLite::postsForAuthors(PostKind post_kind, const std::vector<int64_t>& author_ids,
                                   const Cursor& c, int limit) const
 {
     if(author_ids.empty()) return std::vector<Post>{};
@@ -1838,7 +1861,7 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
     for(size_t i = 0; i < author_ids.size(); ++i)
         in_list += (i == 0) ? "?" : ",?";
     std::string where = std::format("local_author_id IN ({})", in_list);
-    std::string sql = buildTimelineSql(c, where);
+    std::string sql = buildTimelineSql(c, where + " AND " + streamPredicate(post_kind));
 
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
@@ -1855,7 +1878,7 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -1868,7 +1891,39 @@ DataSourceSQLite::postsForAuthors(const std::vector<int64_t>& author_ids,
 }
 
 mw::E<std::vector<Post>>
-DataSourceSQLite::homeTimelinePosts(
+DataSourceSQLite::remotePostsForAuthor(PostKind post_kind, int64_t author_id,
+                                  const Cursor& c, int limit) const
+{
+    std::string sql = buildTimelineSql(c,
+        "remote_author_id = ? AND " + streamPredicate(post_kind));
+    ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
+    int idx = 1;
+    DO_OR_RETURN(internalBindAt(st, idx++, author_id));
+    if(c.max_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.max_id));
+    if(c.min_id.has_value())
+        DO_OR_RETURN(internalBindAt(st, idx++, *c.min_id));
+    DO_OR_RETURN(internalBindAt(st, idx++, static_cast<int64_t>(limit)));
+
+    ASSIGN_OR_RETURN(auto rows, (db->eval<int64_t, std::string,
+        std::optional<int64_t>, std::optional<int64_t>, std::string,
+        std::optional<std::string>, std::optional<std::string>, int64_t,
+        std::string, std::optional<std::string>, int64_t,
+        std::optional<std::string>, std::optional<int64_t>,
+        std::optional<int64_t>, int64_t>(std::move(st))));
+    std::vector<Post> out;
+    out.reserve(rows.size());
+    for(const auto& r : rows)
+    {
+        ASSIGN_OR_RETURN(Post p, rowToPost(r));
+        out.push_back(std::move(p));
+    }
+    if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
+    return out;
+}
+
+mw::E<std::vector<Post>>
+DataSourceSQLite::homeTimelinePosts(PostKind post_kind,
     const std::vector<int64_t>& author_ids,
     const std::vector<int64_t>& remote_author_ids, int64_t reply_author_id,
     const Cursor& c, int limit, std::string_view viewer_actor) const
@@ -1927,13 +1982,13 @@ DataSourceSQLite::homeTimelinePosts(
         "PARTITION BY posts.id ORDER BY e.id DESC) AS position "
         "FROM home_timeline_entries e JOIN posts ON posts.id=e.post_id "
         "LEFT JOIN ap_boosts b ON b.id=e.boost_id WHERE "
-        "(e.boost_id IS NULL AND {}) OR (e.boost_id IS NOT NULL "
+        "((e.boost_id IS NULL AND {}) OR (e.boost_id IS NOT NULL "
         "AND posts.visibility IN ('public','unlisted') AND "
         "(b.actor_uri=? OR b.actor_uri IN (SELECT followee_uri FROM follows "
-        "WHERE follower_uri=? AND state='accepted')))) "
+        "WHERE follower_uri=? AND state='accepted')))) AND {} ) "
         "SELECT {},eligible.timeline_id,eligible.boosted_by_uri "
         "FROM posts JOIN eligible ON eligible.post_id=posts.id "
-        "WHERE eligible.position=1",where,POST_COLS);
+        "WHERE eligible.position=1",where,streamPredicate(post_kind),POST_COLS);
     if(c.max_id) sql += " AND eligible.timeline_id < ?";
     if(c.min_id) sql += " AND eligible.timeline_id > ?";
     sql += c.min_id ? " ORDER BY eligible.timeline_id ASC LIMIT ?;"
@@ -1970,15 +2025,15 @@ DataSourceSQLite::homeTimelinePosts(
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>, int64_t,
+        std::optional<int64_t>, int64_t, int64_t,
         std::optional<std::string>>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
     {
         ASSIGN_OR_RETURN(Post p, rowToPost(r));
-        p.timeline_id = std::get<14>(r);
-        p.boosted_by_uri = std::get<15>(r);
+        p.timeline_id = std::get<15>(r);
+        p.boosted_by_uri = std::get<16>(r);
         out.push_back(std::move(p));
     }
     if(c.min_id.has_value()) std::reverse(out.begin(), out.end());
@@ -2006,7 +2061,7 @@ DataSourceSQLite::threadFor(std::string_view root_uri) const
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -2171,7 +2226,7 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         // qualify columns with p.
         "p.id, p.uri, p.local_author_id, p.remote_author_id, p.content_html, "
         "p.content_source, p.summary, p.sensitive, p.visibility, "
-        "p.in_reply_to_uri, p.created_at, p.published, p.link_preview_id, p.updated_at",
+        "p.in_reply_to_uri, p.created_at, p.published, p.link_preview_id, p.updated_at, p.post_kind",
         where, order);
     ASSIGN_OR_RETURN(auto st, db->statementFromStr(sql));
     int idx = 1;
@@ -2187,7 +2242,7 @@ DataSourceSQLite::bookmarksFor(int64_t user_id, const Cursor& c,
         std::optional<std::string>, std::optional<std::string>, int64_t,
         std::string, std::optional<std::string>, int64_t,
         std::optional<std::string>, std::optional<int64_t>,
-        std::optional<int64_t>>(std::move(st))));
+        std::optional<int64_t>, int64_t>(std::move(st))));
     std::vector<Post> out;
     out.reserve(rows.size());
     for(const auto& r : rows)
@@ -3241,3 +3296,61 @@ mw::E<void> DataSourceSQLite::setPostSticker(int64_t post_id,
 }
 
 } // namespace unspoken
+
+namespace unspoken
+{
+mw::E<void> DataSourceSQLite::migrate9To10() const
+{
+    auto migrate = [&]() -> mw::E<void>
+    {
+        for(const auto* statement : {
+            "ALTER TABLE posts ADD COLUMN post_kind INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(post_kind IN (0,1));",
+            "CREATE INDEX idx_posts_kind_id ON posts(post_kind,id);",
+            "CREATE INDEX idx_posts_local_author_kind_id "
+            "ON posts(local_author_id,post_kind,id);",
+            "CREATE INDEX idx_posts_remote_author_kind_id "
+            "ON posts(remote_author_id,post_kind,id);",
+            "CREATE TABLE nspic_imports (source_key TEXT NOT NULL,"
+            "source_post_id INTEGER NOT NULL,author_id INTEGER NOT NULL "
+            "REFERENCES users(id),post_id INTEGER REFERENCES posts(id) "
+            "ON DELETE SET NULL,source_digest TEXT NOT NULL,"
+            "imported_at INTEGER NOT NULL,PRIMARY KEY(source_key,source_post_id));"})
+            DO_OR_RETURN(db->execute(statement));
+        return setSchemaVersion(10);
+    };
+    return withDataWrite(*db, migrate);
+}
+
+mw::E<void> DataSourceSQLite::cleanupStoredAttachments(
+    const std::vector<StoredFile>& files) const
+{
+    for(const auto& file : files)
+    {
+        ASSIGN_OR_RETURN(auto query, db->statementFromStr(
+            "SELECT id FROM attachments WHERE sha256=? AND extension=? "
+            "AND remote_url IS NULL"));
+        DO_OR_RETURN((query.bind<std::string, std::string>(
+            file.sha256, extensionOf(file.filename))));
+        ASSIGN_OR_RETURN(auto rows, db->eval<int64_t>(std::move(query)));
+        std::vector<int64_t> ids;
+        for(const auto& [id] : rows) ids.push_back(id);
+        DO_OR_RETURN(deleteUnreferencedAttachments(ids));
+        bool retained = false;
+        for(auto id : ids)
+        {
+            ASSIGN_OR_RETURN(auto attachment, getAttachmentById(id));
+            if(attachment) retained = true;
+        }
+        if(!retained)
+        {
+            std::error_code error;
+            std::filesystem::remove(file.disk_path, error);
+            if(error) return std::unexpected(mw::runtimeError(
+                "Cannot clean copied attachment: " + error.message()));
+        }
+    }
+    return {};
+}
+
+}

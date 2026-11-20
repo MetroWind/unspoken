@@ -8,6 +8,9 @@ RUN pacman -Syu --needed --noconfirm \
         gcc-libs \
         icu \
         libxml2 \
+        imagemagick \
+        libheif \
+        libjxl \
         openssl \
         sqlite \
     && pacman -Scc --noconfirm < /dev/null

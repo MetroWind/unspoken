@@ -103,17 +103,19 @@ public:
     MOCK_METHOD(mw::E<std::vector<PostRecipient>>, getPostRecipients,
                 (int64_t), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, timelinePublic,
-                (const Cursor&, int), (const, override));
+                (PostKind, const Cursor&, int), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, timelineHome,
-                (int64_t, const Cursor&, int), (const, override));
+                (PostKind, int64_t, const Cursor&, int), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, postsForAuthors,
-                ((const std::vector<int64_t>&), const Cursor&, int),
+                (PostKind, (const std::vector<int64_t>&), const Cursor&, int),
                 (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, homeTimelinePosts,
-                ((const std::vector<int64_t>&),
+                (PostKind, (const std::vector<int64_t>&),
                  (const std::vector<int64_t>&), int64_t, const Cursor&,
                  int, std::string_view),
                 (const, override));
+    MOCK_METHOD(mw::E<std::vector<Post>>, remotePostsForAuthor,
+                (PostKind, int64_t, const Cursor&, int), (const, override));
     MOCK_METHOD(mw::E<std::vector<Post>>, threadFor, (std::string_view),
                 (const, override));
     MOCK_METHOD(mw::E<int64_t>, countLocalPosts, (), (const, override));

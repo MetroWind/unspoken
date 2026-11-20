@@ -36,6 +36,12 @@ job_retry_base_delay_seconds: 30
 
 max_upload_bytes: 10485760
 
+# Photo uploads only: fit within 1024x1024 and discard uploaded originals.
+# format: jpeg, webp, avif, jpegxl (or jxl); quality: 1..100.
+photos:
+  format: webp
+  quality: 85
+
 oidc:
   issuer: "https://sso.example.org/realms/main"
   client_id: "unspoken"

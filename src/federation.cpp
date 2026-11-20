@@ -862,6 +862,7 @@ mw::E<NewPost> remoteNotePostFromActivity(
     np.preview_origin = config.url_root;
     np.previews_enabled = config.link_previews_enabled;
     np.preview_excluded_urls = previewExcludedUrlsForObject(activity.object);
+    np.post_kind = remotePostKind(activity.object);
     np.uri = *uri;
     np.remote_author_id = remote_author_id;
     auto remote_emoji = emojiTagsForObject(activity.object);
@@ -907,17 +908,23 @@ mw::E<bool> handleCreateActivity(const Config& config,
     ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(config, data, activity));
     if(signature != nullptr && signature->actor_uri != activity.actor)
         return false;
-    if(signature != nullptr && !signature->actor_was_retained)
+    auto create = [&]() -> mw::E<void>
     {
-        ASSIGN_OR_RETURN(auto post, data.insertRemoteActorAndPost(
-            signature->actor, np, recipientsForObject(activity.object)));
-        DO_OR_RETURN(storeRemoteAttachments(data, activity.object, post.id));
-        return true;
-    }
-    if(signature != nullptr) np.remote_author_id = signature->actor.id;
-    ASSIGN_OR_RETURN(auto post, data.insertPost(
-        np, recipientsForObject(activity.object), config.url_root + "p/"));
-    DO_OR_RETURN(storeRemoteAttachments(data, activity.object, post.id));
+        Post post;
+        if(signature != nullptr && !signature->actor_was_retained)
+        {
+            ASSIGN_OR_RETURN(post, data.insertRemoteActorAndPost(
+                signature->actor, np, recipientsForObject(activity.object)));
+        }
+        else
+        {
+            if(signature != nullptr) np.remote_author_id = signature->actor.id;
+            ASSIGN_OR_RETURN(post, data.insertPost(np,
+                recipientsForObject(activity.object), config.url_root + "p/"));
+        }
+        return storeRemoteAttachments(data, activity.object, post.id);
+    };
+    DO_OR_RETURN(data.withWrite(create));
     return true;
 }
 
@@ -1155,9 +1162,13 @@ mw::E<bool> handleUpdateActivity(const Config& config,
         return false;
     }
     ASSIGN_OR_RETURN(auto np, remoteNotePostFromActivity(config, data, activity));
-    DO_OR_RETURN(data.updatePost(
-        existing->id, np, recipientsForObject(activity.object)));
-    DO_OR_RETURN(storeRemoteAttachments(data, activity.object, existing->id));
+    auto update = [&]() -> mw::E<void>
+    {
+        DO_OR_RETURN(data.updatePost(
+            existing->id, np, recipientsForObject(activity.object)));
+        return storeRemoteAttachments(data, activity.object, existing->id);
+    };
+    DO_OR_RETURN(data.withWrite(update));
     return true;
 }
 
@@ -1595,6 +1606,7 @@ nlohmann::json noteJson(const Config& config, const Post& post,
     nlohmann::json j;
     j["@context"] = "https://www.w3.org/ns/activitystreams";
     j["type"] = "Note";
+    j[POST_KIND_IRI] = postKindToStr(post.post_kind);
     j["id"] = post.uri;
     j["url"] = post.uri;
     j["attributedTo"] = config.url_root + "u/" + author.username;
@@ -2645,6 +2657,26 @@ receiveFederationInbox(const Config& config, const DataSourceSQLite& data,
     return InboxDispatchResult{disposition, result.applied};
 }
 
+namespace
+{
+// Old persisted local snapshots predate the extension. Add the saved kind
+// after authorization without changing historical activity IDs or deliveries.
+mw::E<void> addLocalPostKind(const DataSourceSQLite& data,
+                              nlohmann::json& document)
+{
+    auto* note = &document;
+    if(document.contains("object") && document["object"].is_object())
+        note = &document["object"];
+    if(!note->is_object() || jsonString(*note, "type") != "Note") return {};
+    auto uri = normalizeRef(*note);
+    if(!uri) return {};
+    ASSIGN_OR_RETURN(auto post, data.getPostByUri(*uri));
+    if(post && post->local_author_id)
+        (*note)[POST_KIND_IRI] = postKindToStr(post->post_kind);
+    return {};
+}
+}
+
 mw::E<nlohmann::json> federationActorDocument(const Config& config,
                                               const DataSourceSQLite& data,
                                               std::string_view actor_uri)
@@ -2672,11 +2704,17 @@ mw::E<std::optional<nlohmann::json>> federationObjectDocument(
     ASSIGN_OR_RETURN(auto doc,
                      session.objectForActor(object_uri, local_viewer_actor));
     if(doc)
+    {
+        DO_OR_RETURN(addLocalPostKind(data, *doc));
         return doc;
+    }
     auto verified = session.authenticate(request, now);
     if(!verified)
         return std::nullopt;
-    return session.objectForActor(object_uri, verified->actor_uri);
+    ASSIGN_OR_RETURN(auto authorized,
+                     session.objectForActor(object_uri, verified->actor_uri));
+    if(authorized) DO_OR_RETURN(addLocalPostKind(data, *authorized));
+    return authorized;
 }
 
 mw::E<nlohmann::json> federationOutboxPage(const Config& config,
@@ -2690,8 +2728,12 @@ mw::E<nlohmann::json> federationOutboxPage(const Config& config,
     UnspokenApplication application(config, data);
     auto policy = libraryConfig(config);
     ap::Session session(policy, data.connection(), crypto, http, application);
-    return session.outboxPage(actor_uri, cursor, config.posts_per_page,
-                              self_uri);
+    ASSIGN_OR_RETURN(auto page, session.outboxPage(actor_uri, cursor,
+        config.posts_per_page, self_uri));
+    if(page.contains("orderedItems") && page["orderedItems"].is_array())
+        for(auto& item : page["orderedItems"])
+            DO_OR_RETURN(addLocalPostKind(data, item));
+    return page;
 }
 
 } // namespace unspoken

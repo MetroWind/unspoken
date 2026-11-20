@@ -6,7 +6,7 @@
 {% for guide in post.thread_guides %}
     <div class="thread-guide thread-level-{{ guide.level }}{% if guide.branch %} branch{% endif %}{% if guide.last %} last{% endif %}" aria-hidden="true"></div>
 {% endfor %}
-{% include "_post.html" %}
+{% include "_post_card.html" %}
   </div>
 {% endfor %}
 </div>

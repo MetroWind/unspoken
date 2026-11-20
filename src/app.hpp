@@ -75,7 +75,8 @@ private:
 
     // ── Handlers ────────────────────────────────────────────────────
     void handleHealth(const Request& req, Response& res) const;
-    void handleIndex(const Request& req, Response& res) const;
+    void handleIndex(const Request& req, Response& res,
+                     unspoken::PostKind post_kind) const;
     void handleLogin(const Request& req, Response& res) const;
     void handleCallback(const Request& req, Response& res) const;
     void handleSetupGet(const Request& req, Response& res) const;

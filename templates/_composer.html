@@ -1,8 +1,9 @@
 <section class="composer">
   <form method="post" action="{{ site.root }}post" enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% include "_post_mode.html" %}
     <div class="composer-text">
-      <textarea name="content" rows="4" placeholder="Write a post (Markdown)…"></textarea>
+      <textarea name="content" rows="4" placeholder="{% if post_kind == "photo" %}Add a caption (optional, Markdown)…{% else %}Write a post (Markdown)…{% endif %}"></textarea>
       <div class="composer-tools">
         <button type="button" class="linkbtn emoji-picker-trigger"
                 data-emoji-mode="insert" aria-controls="emoji-picker"
@@ -27,9 +28,22 @@
       </label>
     </div>
     <div class="composer-row">
-      <label>attach <input type="file" name="attachments" multiple></label>
-      <button type="submit">Post</button>
+      <div class="photo-uploads">
+        <label>{% if post_kind == "photo" %}photos{% else %}attach{% endif %}
+          <input type="file" name="attachments" multiple
+{% if post_kind == "photo" %}
+                 accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/jxl" required
+{% endif %}
+          >
+        </label>
+        <div class="upload-descriptions">
+          <label>First image description (alt text)
+            <input name="attachment_description_0" value="">
+          </label>
+        </div>
+      </div>
+      <button type="submit">{% if post_kind == "photo" %}Post photos{% else %}Post{% endif %}</button>
     </div>
-    <a href="{{ site.root }}compose">Standalone composer</a>
+    <a href="{{ site.root }}compose?kind={{ post_kind }}">Standalone composer</a>
   </form>
 </section>

@@ -1,0 +1,6 @@
+{% if exists("social_url") %}
+<nav class="stream-tabs" aria-label="Post streams">
+  <a href="{{ social_url }}"{% if post_kind == "social" %} aria-current="page"{% endif %}>Social</a>
+  <a href="{{ photo_url }}"{% if post_kind == "photo" %} aria-current="page"{% endif %}>Photos</a>
+</nav>
+{% endif %}

@@ -4,6 +4,7 @@
 
 #include <cxxopts.hpp>
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <mw/error.hpp>
 
 #include "app.hpp"
@@ -12,6 +13,8 @@
 #include "data.hpp"
 #include "federation.hpp"
 #include "follow_import.hpp"
+#include "photo_processing.hpp"
+#include "nspic_import.hpp"
 
 int main(int argc, char** argv)
 {
@@ -24,8 +27,15 @@ int main(int argc, char** argv)
          cxxopts::value<std::string>())
         ("user", "Local username for --import-follows",
          cxxopts::value<std::string>())
+        ("command", "Operator command", cxxopts::value<std::string>())
+        ("source-db", "Read-only nspic SQLite backup", cxxopts::value<std::string>())
+        ("image-dir", "Matching nspic stored image root", cxxopts::value<std::string>())
+        ("source-key", "Stable import identity", cxxopts::value<std::string>())
+        ("author", "Existing local import author", cxxopts::value<std::string>())
+        ("dry-run", "Validate import without writes")
         ("v,verbose", "Verbose (debug) logging")
         ("h,help", "Print this message.");
+    cmd_options.parse_positional({"command"});
     auto opts = cmd_options.parse(argc, argv);
 
     if(opts.count("help"))
@@ -34,6 +44,21 @@ int main(int argc, char** argv)
         return 0;
     }
 
+    const bool importing_photos = opts.count("command")
+        && opts["command"].as<std::string>() == "import-nspic";
+    if(opts.count("command") && !importing_photos)
+    {
+        std::cerr << "Unknown operator command.\n";
+        return 1;
+    }
+    if(importing_photos && (opts.count("import-follows")
+       || !opts.count("source-db") || !opts.count("image-dir")
+       || !opts.count("source-key") || !opts.count("author")))
+    {
+        std::cerr << "import-nspic requires --source-db, --image-dir, "
+                     "--source-key and --author.\n";
+        return 1;
+    }
     const bool importing = opts.count("import-follows") > 0;
     if(importing != (opts.count("user") > 0) ||
        (importing && opts["user"].as<std::string>().empty()))
@@ -53,6 +78,7 @@ int main(int argc, char** argv)
         }
     }
 
+    spdlog::set_default_logger(spdlog::stderr_color_mt("unspoken"));
     spdlog::set_pattern("[%l] %v");
     bool cli_verbose = opts.count("verbose") > 0;
     if(opts.count("verbose"))
@@ -89,6 +115,31 @@ int main(int argc, char** argv)
             hosts += host;
         }
         spdlog::warn("private outbound host allowlist enabled: {}", hosts);
+    }
+
+    auto photo_init = unspoken::initializePhotoProcessing();
+    if(!photo_init)
+    {
+        spdlog::error("Cannot initialize photos: {}",
+                      mw::errorMsg(photo_init.error()));
+        return 1;
+    }
+
+    if(importing_photos)
+    {
+        unspoken::NspicImportOptions options;
+        options.source_db = opts["source-db"].as<std::string>();
+        options.image_dir = opts["image-dir"].as<std::string>();
+        options.source_key = opts["source-key"].as<std::string>();
+        options.author = opts["author"].as<std::string>();
+        options.dry_run = opts.count("dry-run") != 0;
+        auto result = unspoken::importNspic(*config, options, std::cout);
+        if(!result)
+        {
+            spdlog::error("nspic import stopped: {}", mw::errorMsg(result.error()));
+            return 1;
+        }
+        return 0;
     }
 
     // Initialize the database (create the schema at v1 if fresh) once at

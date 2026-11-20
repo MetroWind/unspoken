@@ -463,7 +463,7 @@ TEST(ServiceTimeline, IncludesAcceptedFollowedRemoteActorPosts)
     ASSIGN_OR_FAIL(auto post, db->insertPost(
         np, {{0, std::string(AS_PUBLIC), "to"}}, "https://f.test/p/"));
 
-    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(alice, Cursor{}));
+    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(unspoken::PostKind::SOCIAL, alice, Cursor{}));
     std::vector<int64_t> ids;
     for(const auto& item : timeline) ids.push_back(item.id);
     EXPECT_NE(std::find(ids.begin(), ids.end(), post.id), ids.end());
@@ -598,7 +598,7 @@ TEST(ServiceAuthz, RemoteFollowersCollectionRequiresAcceptedFollow)
         follow.follower_uri, follow.followee_uri, FollowState::ACCEPTED)));
     ASSIGN_OR_FAIL(bool accepted, svc.canViewPost(post, alice));
     EXPECT_TRUE(accepted);
-    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(alice, Cursor{}));
+    ASSIGN_OR_FAIL(auto timeline, svc.homeTimeline(unspoken::PostKind::SOCIAL, alice, Cursor{}));
     ASSERT_EQ(timeline.size(), 1u);
     EXPECT_EQ(timeline.front().id, post.id);
     ASSIGN_OR_FAIL(bool stranger, svc.canActorViewPost(
@@ -612,7 +612,7 @@ TEST(ServiceAuthz, RemoteFollowersCollectionRequiresAcceptedFollow)
         follow.follower_uri, follow.followee_uri)));
     ASSIGN_OR_FAIL(bool unfollowed, svc.canViewPost(post, alice));
     EXPECT_FALSE(unfollowed);
-    ASSIGN_OR_FAIL(auto after_unfollow, svc.homeTimeline(alice, Cursor{}));
+    ASSIGN_OR_FAIL(auto after_unfollow, svc.homeTimeline(unspoken::PostKind::SOCIAL, alice, Cursor{}));
     EXPECT_TRUE(after_unfollow.empty());
 }
 
@@ -1359,7 +1359,7 @@ TEST(ServiceTimeline, RendersFollowedLocalBoostWithEscapedAttribution)
     input.source = "A post from somebody else";
     ASSIGN_OR_FAIL(auto post,service.createPost(stranger,input));
     ASSERT_TRUE(service.setBoost(booster,post,true));
-    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}));
     ASSERT_EQ(timeline.size(),1u);
     ASSIGN_OR_FAIL(auto view,service.postView(timeline.front(),viewer));
     EXPECT_TRUE(view["is_boost"].get<bool>());
@@ -1649,7 +1649,7 @@ TEST(ServiceProfile, RemoteProfileLinksExternallyAndFollowsActorUri)
     EXPECT_NE(html.find("name=\"actor_uri\" value=\"" + actor.uri + "\""),
               std::string::npos);
     EXPECT_EQ(html.find("/followers"), std::string::npos);
-    EXPECT_EQ(html.find("No posts."), std::string::npos);
+    EXPECT_NE(html.find("No posts."), std::string::npos);
     actor.actor_json = R"json({"url":"javascript:alert(1)"})json";
     EXPECT_EQ(service.remoteActorView(actor)["external_profile_url"],
               actor.uri);

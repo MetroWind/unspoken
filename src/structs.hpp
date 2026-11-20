@@ -23,6 +23,39 @@ namespace unspoken
 // the compact/bare input forms.
 using ap::AS_PUBLIC;
 
+// Author-selected stream classification, independent of attachments.
+enum class PostKind
+{
+    SOCIAL = 0,
+    PHOTO = 1,
+};
+
+// Stable wire key; only this full IRI identifies the extension.
+inline constexpr const char* POST_KIND_IRI =
+    "https://f.mws.rocks/#postKind";
+
+// Serialize a post kind for forms and ActivityStreams objects.
+inline std::string_view postKindToStr(PostKind kind)
+{
+    return kind == PostKind::PHOTO ? "photo" : "social";
+}
+
+// Parse exact lowercase tokens; callers choose their invalid-input policy.
+inline std::optional<PostKind> postKindFromStr(std::string_view value)
+{
+    if(value == "social") return PostKind::SOCIAL;
+    if(value == "photo") return PostKind::PHOTO;
+    return std::nullopt;
+}
+
+// Missing or malformed remote classifications always mean Social.
+inline PostKind remotePostKind(const nlohmann::json& object)
+{
+    auto value = object.find(POST_KIND_IRI);
+    if(value == object.end() || !value->is_string()) return PostKind::SOCIAL;
+    return postKindFromStr(value->get<std::string>()).value_or(PostKind::SOCIAL);
+}
+
 enum class Visibility
 {
     PUBLIC,
@@ -98,6 +131,7 @@ using ap::RemoteActorResolution;
 // A post. BOTH local and remote posts live in one table (PRD line 207).
 struct Post
 {
+    PostKind post_kind = PostKind::SOCIAL;
     int64_t id = 0;
     std::string uri;            // local: url_root/p/<id>; remote: origin URI
     std::optional<int64_t> local_author_id;
@@ -154,6 +188,7 @@ inline constexpr int64_t NOTIFICATION_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 // after insert (it embeds the new id), so insertPost backfills it.
 struct NewPost
 {
+    PostKind post_kind = PostKind::SOCIAL;
     std::optional<std::string> uri; // set for remote; nullopt for local
     std::optional<int64_t> local_author_id;
     std::optional<int64_t> remote_author_id;

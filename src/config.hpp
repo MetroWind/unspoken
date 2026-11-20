@@ -35,6 +35,7 @@ struct NodeInfoConfig
 using DevConfig = ap::DevConfig;
 
 #include "theme.hpp"
+#include "photo_processing.hpp"
 
 struct Config
 {
@@ -94,6 +95,8 @@ struct Config
 
     // ─── Uploads ─────────────────────────────────────────────────
     int64_t max_upload_bytes = 10485760; // 10 MiB
+    // Photo-only canonical encoding; Social attachments bypass processing.
+    unspoken::PhotoCompression photos;
 
     // ─── OpenID Connect (Keycloak) ───────────────────────────────
     OidcConfig oidc;

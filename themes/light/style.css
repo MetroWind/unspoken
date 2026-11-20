@@ -105,6 +105,11 @@ section.composer
         align-items: start;
     }
 
+    main.timeline-photo
+    {
+        max-width: 900px;
+    }
+
     main:has(> .sidebar) > *
     {
         grid-column: 2;
@@ -260,6 +265,73 @@ article.post
 article.focus
 {
     border: 2px solid var(--color-accent-2);
+}
+
+article.photo-post
+{
+    .attachments
+    {
+        display: block;
+    }
+    .gallery
+    {
+        width: 100%;
+        overflow: scroll;
+        display: flex;
+        flex-wrap: nowrap;
+        /* container-type: inline-size; */
+        scroll-snap-type: x mandatory;
+
+        > *
+        {
+            min-width: 0px;
+            flex: 0 0 100%;
+            object-fit: contain;
+            scroll-snap-align: center;
+        }
+    }
+
+    .scroll-pips
+    {
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        width: 100%;
+        margin: 8px 0;
+    }
+    .scroll-pip
+    {
+        display: grid;
+        place-items: center;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--color-border);
+        cursor: pointer;
+    }
+    .scroll-pip::before
+    {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+    }
+    .scroll-pip.active
+    {
+        color: var(--color-fg);
+    }
+    .scroll-pip:focus-visible
+    {
+        outline: 2px solid var(--color-fg);
+        outline-offset: 1px;
+    }
+    .scroll-pip:disabled
+    {
+        cursor: default;
+    }
 }
 
 .profile-banner

@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <charconv>
 #include <format>
 #include <fstream>
 #include <iterator>
@@ -8,6 +9,7 @@
 #include <ryml.hpp>
 #include <ryml_std.hpp>
 #include <mw/error.hpp>
+#include <mw/utils.hpp>
 #include <mw/url.hpp>
 
 #include "config.hpp"
@@ -213,6 +215,8 @@ mw::E<void> Config::validateAndFinalize()
             "max_upload_bytes must be positive"));
     }
 
+    DO_OR_RETURN(unspoken::validatePhotoCompression(photos));
+
     // OIDC fields are required.
     if(oidc.issuer.empty() || oidc.client_id.empty() ||
        oidc.client_secret.empty())
@@ -301,6 +305,28 @@ mw::E<Config> Config::fromYaml(const std::filesystem::path& path)
             config.job_retry_base_delay_seconds);
 
     readInt64(child(root, "max_upload_bytes"), config.max_upload_bytes);
+
+    auto photos = child(root, "photos");
+    if(photos.readable())
+    {
+        if(!photos.is_map()) return std::unexpected(
+            mw::runtimeError("photos must be a map"));
+        auto format = child(photos, "format");
+        if(format.readable() && (!format.has_val() || format.val_is_null()))
+            return std::unexpected(mw::runtimeError("Invalid photos.format"));
+        readStr(format, config.photos.format);
+        auto quality = child(photos, "quality");
+        if(quality.readable())
+        {
+            std::string value;
+            readStr(quality, value);
+            auto parsed = std::from_chars(value.data(),
+                value.data() + value.size(), config.photos.quality);
+            if(parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+                return std::unexpected(mw::runtimeError(
+                    "photos.quality must be an integer between 1 and 100"));
+        }
+    }
 
     ryml::ConstNodeRef oidc = child(root, "oidc");
     if(oidc.readable() && oidc.is_map())

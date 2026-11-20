@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include <mw/error.hpp>
+#include "photo_processing.hpp"
 
 namespace unspoken
 {
@@ -38,6 +39,11 @@ mw::E<StoredFile> storeAttachment(const std::string& attachment_dir,
                                   const std::string& bytes,
                                   std::string_view original_name,
                                   std::string_view declared_media_type);
+
+// Process a photo and store only its compressed canonical bytes. Originals
+// and thumbnails are never written. Social uploads use storeAttachment().
+mw::E<StoredFile> storePhoto(const std::string& attachment_dir,
+    const std::string& bytes, const PhotoCompression& settings);
 
 // Lowercase extension (no dot) of a filename, or "" if none.
 std::string extensionOf(std::string_view filename);

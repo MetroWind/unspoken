@@ -30,6 +30,9 @@ enum class StickerAction { KEEP, CLEAR, SET };
 // Parameters for composing a new local post.
 struct ComposeParams
 {
+    PostKind post_kind = PostKind::SOCIAL;
+    // Distinguishes an omitted edit mode from an explicit change.
+    bool post_kind_supplied = false;
     // Existing callers preserve the saved sticker by default.
     StickerAction sticker_action = StickerAction::KEEP;
     std::string sticker;
@@ -93,7 +96,7 @@ public:
     // Home timeline: the viewer's own posts plus posts from local
     // accounts they follow (design §16.3), one cursor page.
     mw::E<std::vector<Post>>
-    homeTimeline(const User& viewer, const Cursor& c) const;
+    homeTimeline(PostKind post_kind, const User& viewer, const Cursor& c) const;
 
     // Record an accepted interaction directed at a local account.
     mw::E<void> notifyInteraction(NotificationKind kind,

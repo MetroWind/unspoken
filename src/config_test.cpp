@@ -285,3 +285,54 @@ TEST(Config, StickerDirectoryDefaultsToStickers)
 {
     EXPECT_EQ(Config{}.sticker_dir, "stickers");
 }
+
+TEST(Config, ValidatesPhotoCompressionSettings)
+{
+    Config config = validBase();
+    EXPECT_EQ(config.photos.format, "webp");
+    EXPECT_EQ(config.photos.quality, 85);
+    for(const auto& format : {"jpeg", "webp", "avif", "jpegxl", "jxl"})
+    {
+        config.photos.format = format;
+        EXPECT_TRUE(config.validateAndFinalize());
+    }
+    config.photos.format = "png";
+    EXPECT_FALSE(config.validateAndFinalize());
+    config.photos.format = "jpeg";
+    config.photos.quality = 0;
+    EXPECT_FALSE(config.validateAndFinalize());
+    config.photos.quality = 101;
+    EXPECT_FALSE(config.validateAndFinalize());
+}
+
+TEST(Config, FromYamlReadsPhotoCompressionAndRejectsMalformedSettings)
+{
+    const auto path = std::filesystem::temp_directory_path()
+        / "unspoken_photo_compression_config.yaml";
+    for(const auto& settings : {
+        std::string("photos:\n  format: avif\n  quality: 72\n"),
+        std::string("photos: webp\n"),
+        std::string("photos:\n  format: png\n"),
+        std::string("photos:\n  format: null\n"),
+        std::string("photos:\n  quality: 85.5\n"),
+        std::string("photos:\n  quality: null\n"),
+        std::string("photos:\n  quality: [85]\n"),
+        std::string("photos:\n  quality: 9999999999999999999\n")})
+    {
+        SCOPED_TRACE(settings);
+        std::ofstream output(path);
+        output << "url_root: https://f.test/\ndatabase_path: ':memory:'\n"
+            "attachment_dir: /tmp\noidc:\n  issuer: https://kc.test/\n"
+            "  client_id: app\n  client_secret: secret\n" << settings;
+        output.close();
+        auto config = Config::fromYaml(path);
+        if(settings.find("format: avif") != std::string::npos)
+        {
+            ASSERT_TRUE(config) << mw::errorMsg(config.error());
+            EXPECT_EQ(config->photos.format, "avif");
+            EXPECT_EQ(config->photos.quality, 72);
+        }
+        else EXPECT_FALSE(config);
+    }
+    std::filesystem::remove(path);
+}

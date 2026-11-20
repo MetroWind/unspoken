@@ -27,6 +27,7 @@ std::string mediaTypeForExtension(std::string_view ext_lower)
     if(ext_lower == "webp") return "image/webp";
     if(ext_lower == "svg")  return "image/svg+xml";
     if(ext_lower == "avif") return "image/avif";
+    if(ext_lower == "jxl") return "image/jxl";
     if(ext_lower == "bmp")  return "image/bmp";
     if(ext_lower == "ico")  return "image/x-icon";
     // A few common non-image types (served download-only).
@@ -120,6 +121,14 @@ mw::E<StoredFile> storeAttachment(const std::string& attachment_dir,
         }
     }
     return out;
+}
+
+mw::E<StoredFile> storePhoto(const std::string& attachment_dir,
+    const std::string& bytes, const PhotoCompression& settings)
+{
+    ASSIGN_OR_RETURN(auto photo, processPhoto(bytes, settings));
+    return storeAttachment(attachment_dir, photo.bytes,
+        "photo." + photo.info.extension, photo.info.media_type);
 }
 
 } // namespace unspoken

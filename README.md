@@ -27,3 +27,10 @@ is the relevant risk.
 Only allow uploads from users you trust to serve active content on the
 application's origin. SVG sanitization and media origin isolation are not
 currently implemented.
+
+Photo posting requires ImageMagick 7 Magick++ and pkg-config, with codecs
+for the selected JPEG, WebP, AVIF or JPEG XL output. Photos fit within
+1024×1024 and use `photos.format` / `photos.quality` (WebP, 85 by default).
+Only compressed photos are saved; Social images retain their original
+bytes. See the [operator guide](docs/operator.md#social-and-photos-streams)
+for configuration, federation and offline nspic import.

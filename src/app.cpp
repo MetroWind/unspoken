@@ -29,6 +29,7 @@
 #include <actpub/identity.hpp>
 #include <actpub/collection.hpp>
 #include "attachments.hpp"
+#include "photo_processing.hpp"
 #include "auth.hpp"
 #include "commit.hpp"
 #include "config.hpp"
@@ -136,6 +137,28 @@ std::string param(const mw::HTTPServer::Request& req, const char* name)
 {
     if(req.has_param(name)) return req.get_param_value(name);
     return req.form.get_field(name);
+}
+
+// HTTP inputs reject unknown kinds; absence preserves the caller's default.
+mw::E<unspoken::PostKind> kindParam(
+    const mw::HTTPServer::Request& req, const char* field)
+{
+    auto count = req.get_param_value_count(field)
+        + req.form.get_field_count(field);
+    if(count == 0) return unspoken::PostKind::SOCIAL;
+    auto kind = unspoken::postKindFromStr(param(req, field));
+    if(count != 1 || !kind)
+        return std::unexpected(mw::HTTPError(400, "Invalid post kind"));
+    return *kind;
+}
+
+mw::E<void> parseComposeKind(const mw::HTTPServer::Request& req,
+                            unspoken::ComposeParams& params)
+{
+    ASSIGN_OR_RETURN(params.post_kind, kindParam(req, "post_kind"));
+    params.post_kind_supplied = req.has_param("post_kind")
+        || req.form.get_field_count("post_kind") != 0;
+    return {};
 }
 
 mw::E<void> parseStickerIntent(const mw::HTTPServer::Request& req,
@@ -656,6 +679,7 @@ App::baseContext(const Request& req,
     ctx["logged_in"] = viewer.has_value();
     ctx["error"] = "";
     ctx["has_stickers"] = !stickers.empty();
+    ctx["post_kind"] = "social";
     std::string theme = cookie(req, "unspoken-theme")
         .value_or(config.default_theme);
     if(!config.themes.all().contains(theme)) theme = config.default_theme;
@@ -873,7 +897,8 @@ void App::handleLogout(const Request& req, Response& res) const
 
 // ─── Timeline ──────────────────────────────────────────────────────────
 
-void App::handleIndex(const Request& req, Response& res) const
+void App::handleIndex(const Request& req, Response& res,
+                      unspoken::PostKind post_kind) const
 {
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
@@ -888,16 +913,19 @@ void App::handleIndex(const Request& req, Response& res) const
     std::vector<unspoken::Post> posts;
     if(viewer.has_value())
     {
-        ASSIGN_OR_RESPOND_ERROR(posts, svc.homeTimeline(*viewer, cursor), res);
+        ASSIGN_OR_RESPOND_ERROR(posts, svc.homeTimeline(post_kind, *viewer, cursor), res);
     }
     else
     {
         ASSIGN_OR_RESPOND_ERROR(
-            posts, ds->timelinePublic(cursor, config.posts_per_page), res);
+            posts, ds->timelinePublic(post_kind, cursor, config.posts_per_page), res);
     }
 
     ASSIGN_OR_RESPOND_ERROR(auto post_views, svc.postViews(posts, viewer), res);
     auto ctx = baseContext(req, viewer);
+    ctx["post_kind"] = unspoken::postKindToStr(post_kind);
+    const auto stream_url = config.url_root
+        + (post_kind == unspoken::PostKind::PHOTO ? "photos" : "");
     if(viewer)
     {
         ASSIGN_OR_RESPOND_ERROR(auto page, svc.notificationPage(
@@ -907,11 +935,11 @@ void App::handleIndex(const Request& req, Response& res) const
         older.max_id = page["older_id"].get<int64_t>();
         unspoken::Cursor newer;
         newer.min_id = page["newer_id"].get<int64_t>();
-        page["older_url"] = timelinePageUrl(config.url_root, cursor,
+        page["older_url"] = timelinePageUrl(stream_url, cursor,
                                             older, "notifications");
-        page["newer_url"] = timelinePageUrl(config.url_root, cursor,
+        page["newer_url"] = timelinePageUrl(stream_url, cursor,
                                             newer, "notifications");
-        page["latest_url"] = timelinePageUrl(config.url_root, cursor,
+        page["latest_url"] = timelinePageUrl(stream_url, cursor,
                                              {}, "notifications");
         ctx["notifications"] = std::move(page);
         res.set_header("Cache-Control", "private, no-store");
@@ -924,7 +952,7 @@ void App::handleIndex(const Request& req, Response& res) const
             ? posts.back().timeline_id : posts.back().id;
         unspoken::Cursor older;
         older.max_id = ctx["next_max_id"].get<int64_t>();
-        ctx["older_url"] = timelinePageUrl(config.url_root, older,
+        ctx["older_url"] = timelinePageUrl(stream_url, older,
             *notification_cursor, "timeline");
         ctx["has_more"] = (static_cast<int>(posts.size())
                            == config.posts_per_page);
@@ -966,12 +994,13 @@ void App::handleUserProfile(const Request& req, Response& res) const
         return;
     }
 
+    ASSIGN_OR_RESPOND_ERROR(auto post_kind, kindParam(req, "kind"), res);
     auto parsed_cursor = cursorFromRequest(req, res, false);
     if(!parsed_cursor.has_value()) return;
     unspoken::Cursor cursor = *parsed_cursor;
     std::vector<int64_t> ids{user->id};
     ASSIGN_OR_RESPOND_ERROR(
-        auto posts, ds->postsForAuthors(ids, cursor, config.posts_per_page),
+        auto posts, ds->postsForAuthors(post_kind, ids, cursor, config.posts_per_page),
         res);
     // Hide private posts the viewer may not see.
     std::vector<unspoken::Post> visible;
@@ -987,6 +1016,14 @@ void App::handleUserProfile(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto profile_view, svc.userView(*user), res);
     ctx["profile"] = std::move(profile_view);
     ctx["posts"] = post_views;
+    ctx["post_kind"] = unspoken::postKindToStr(post_kind);
+    const auto profile_url = urlFor("u/" + username);
+    ctx["social_url"] = profile_url;
+    ctx["photo_url"] = profile_url + "?kind=photo";
+    ctx["has_more"] = static_cast<int>(posts.size()) == config.posts_per_page;
+    ctx["older_url"] = posts.empty() ? "" : profile_url + "?kind="
+        + std::string(unspoken::postKindToStr(post_kind))
+        + "&max_id=" + std::to_string(posts.back().id);
     bool is_self = viewer.has_value() && viewer->id == user->id;
     ctx["is_self"] = is_self;
     if(viewer.has_value() && !is_self)
@@ -1010,6 +1047,9 @@ void App::handleRemoteProfile(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(auto viewer, currentUser(req), res);
     ASSIGN_OR_RESPOND_ERROR(auto* ds, dataSource(), res);
     Service svc(config, *ds, emoji, stickers);
+    ASSIGN_OR_RESPOND_ERROR(auto post_kind, kindParam(req, "kind"), res);
+    auto cursor = cursorFromRequest(req, res, false);
+    if(!cursor) return;
     const auto uri = param(req, "uri");
     ASSIGN_OR_RESPOND_ERROR(auto actor, ds->getRemoteActorByUri(uri), res);
     if(!actor)
@@ -1030,7 +1070,23 @@ void App::handleRemoteProfile(const Request& req, Response& res) const
     ctx["profile"] = svc.remoteActorView(*actor);
     ctx["is_self"] = false;
     ctx["following"] = false;
-    ctx["posts"] = nlohmann::json::array();
+    ASSIGN_OR_RESPOND_ERROR(auto posts, ds->remotePostsForAuthor(
+        post_kind, actor->id, *cursor, config.posts_per_page), res);
+    std::vector<unspoken::Post> visible;
+    for(auto& post : posts)
+    {
+        ASSIGN_OR_RESPOND_ERROR(auto allowed, svc.canViewPost(post, viewer), res);
+        if(allowed) visible.push_back(std::move(post));
+    }
+    ASSIGN_OR_RESPOND_ERROR(ctx["posts"], svc.postViews(visible, viewer), res);
+    ctx["post_kind"] = unspoken::postKindToStr(post_kind);
+    const auto profile_url = urlFor("remote") + "?uri=" + mw::URL::encode(uri);
+    ctx["social_url"] = mw::escapeHTML(profile_url);
+    ctx["photo_url"] = mw::escapeHTML(profile_url + "&kind=photo");
+    ctx["has_more"] = static_cast<int>(posts.size()) == config.posts_per_page;
+    ctx["older_url"] = posts.empty() ? "" : mw::escapeHTML(profile_url
+        + "&kind=" + std::string(unspoken::postKindToStr(post_kind))
+        + "&max_id=" + std::to_string(posts.back().id));
     if(viewer)
     {
         ASSIGN_OR_RESPOND_ERROR(auto follow,
@@ -1203,6 +1259,8 @@ mw::E<void> storeComposeAttachments(
 {
     if(req.is_multipart_form_data())
     {
+        size_t file_index = 0;
+        std::set<int64_t> seen;
         for(const auto& file : req.form.get_files("attachments"))
         {
             if(file.content.empty()) continue;
@@ -1212,10 +1270,18 @@ mw::E<void> storeComposeAttachments(
                 return std::unexpected(mw::httpError(
                     413, "Attachment too large"));
             }
-            ASSIGN_OR_RETURN(
-                auto stored,
-                unspoken::storeAttachment(config.attachment_dir, file.content,
-                                          file.filename, file.content_type));
+            unspoken::StoredFile stored;
+            if(cp.post_kind == unspoken::PostKind::PHOTO)
+            {
+                ASSIGN_OR_RETURN(stored, unspoken::storePhoto(
+                    config.attachment_dir, file.content, config.photos));
+            }
+            else
+            {
+                ASSIGN_OR_RETURN(stored, unspoken::storeAttachment(
+                    config.attachment_dir, file.content, file.filename,
+                    file.content_type));
+            }
             unspoken::Attachment a;
             a.sha256 = stored.sha256;
             a.extension = unspoken::extensionOf(stored.filename);
@@ -1224,8 +1290,13 @@ mw::E<void> storeComposeAttachments(
             a.is_image = stored.is_image;
             a.sensitive = cp.sensitive;
             ASSIGN_OR_RETURN(int64_t aid, data.insertAttachment(a));
+            if(!seen.insert(aid).second)
+                return std::unexpected(mw::HTTPError(400,
+                    "Duplicate attachment selection"));
             cp.attachment_ids.push_back(aid);
-            cp.attachment_descriptions[aid] = file.filename;
+            const auto field = "attachment_description_"
+                + std::to_string(file_index++);
+            cp.attachment_descriptions[aid] = param(req, field.c_str());
         }
     }
 
@@ -1272,6 +1343,7 @@ void App::handlePostCreate(const Request& req, Response& res) const
     Service svc(config, *ds, emoji, stickers);
 
     unspoken::ComposeParams cp;
+    if(respondIfError(parseComposeKind(req, cp), res)) return;
     cp.source = param(req, "content");
     cp.visibility = visibilityParam(param(req, "visibility"));
     std::string summary = param(req, "summary");
@@ -1342,6 +1414,7 @@ void App::handleReply(const Request& req, Response& res) const
     if(respondIfCannotView(svc, *parent, viewer, res)) return;
 
     unspoken::ComposeParams cp;
+    if(respondIfError(parseComposeKind(req, cp), res)) return;
     cp.source = param(req, "content");
     cp.visibility = visibilityParam(param(req, "visibility"));
     cp.in_reply_to_uri = parent->uri;
@@ -1401,6 +1474,7 @@ void App::handlePostEdit(const Request& req, Response& res) const
     int64_t id = 0;
     try { id = std::stoll(req.path_params.at("id")); } catch(...) {}
     unspoken::ComposeParams params;
+    if(respondIfError(parseComposeKind(req, params), res)) return;
     params.source = param(req, "content");
     auto summary = param(req, "summary");
     if(!summary.empty()) params.summary = summary;
@@ -1441,7 +1515,7 @@ void App::handlePostEdit(const Request& req, Response& res) const
     ASSIGN_OR_RESPOND_ERROR(ctx["post"], svc.postView(post, viewer), res);
     ctx["focus_id"] = 0;
     res.set_header("Cache-Control", "private, no-store");
-    render(res, 200, "_post.html", ctx);
+    render(res, 200, "_post_card.html", ctx);
 }
 
 void App::handlePostDelete(const Request& req, Response& res) const
@@ -2504,6 +2578,8 @@ void App::handleCompose(const Request& req, Response& res, bool edit) const
             for(const char* key : {"key", "name", "url"})
                 sticker[key] = mw::escapeHTML(sticker[key].get<std::string>());
     }
+    ASSIGN_OR_RESPOND_ERROR(auto compose_kind, kindParam(req, "kind"), res);
+    ctx["post_kind"] = unspoken::postKindToStr(compose_kind);
     ctx["editing"] = edit;
     ctx["draft"] = {{"edit_source", ""}, {"summary", ""},
         {"sensitive", false}, {"sticker", nullptr}};
@@ -2518,6 +2594,7 @@ void App::handleCompose(const Request& req, Response& res, bool edit) const
             return;
         }
         ASSIGN_OR_RESPOND_ERROR(ctx["draft"], svc.postView(*post, viewer), res);
+        ctx["post_kind"] = unspoken::postKindToStr(post->post_kind);
         ctx["submit_url"] = urlFor("post/" + std::to_string(post->id) + "/edit");
     }
     else if(req.has_param("reply_to"))
@@ -2898,7 +2975,9 @@ void App::setup()
     server.Get("/health", [&](const Request& req, Response& res)
     { handleHealth(req, res); });
     server.Get("/", [&](const Request& req, Response& res)
-    { handleIndex(req, res); });
+    { handleIndex(req, res, unspoken::PostKind::SOCIAL); });
+    server.Get("/photos", [&](const Request& req, Response& res)
+    { handleIndex(req, res, unspoken::PostKind::PHOTO); });
     server.Get("/actor", [&](const Request& req, Response& res)
     { handleSystemActor(req, res); });
     server.Get("/.well-known/webfinger", [&](const Request& req, Response& res)

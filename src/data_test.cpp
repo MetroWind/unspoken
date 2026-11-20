@@ -81,11 +81,11 @@ RemoteActor sampleRemoteActor(const std::string& uri)
 
 } // namespace
 
-TEST(Data, SchemaVersionIsNine)
+TEST(Data, SchemaVersionIsTen)
 {
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::newFromMemory());
     ASSIGN_OR_FAIL(int64_t v, db->getSchemaVersion());
-    EXPECT_EQ(v, 9);
+    EXPECT_EQ(v, 10);
 }
 
 TEST(Data, OpensAndMigratesVersionOneDatabase)
@@ -110,7 +110,7 @@ TEST(Data, OpensAndMigratesVersionOneDatabase)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(int64_t version, db->getSchemaVersion());
-    EXPECT_EQ(version, 9);
+    EXPECT_EQ(version, 10);
     ASSIGN_OR_FAIL(auto user, db->getUserByUsername("mw"));
     ASSERT_TRUE(user.has_value());
     EXPECT_FALSE(user->avatar_attachment_id.has_value());
@@ -184,7 +184,7 @@ TEST(Data, MigratesVersionTwoActorAndActivityStateToVersionThree)
 
     ASSIGN_OR_FAIL(auto db, DataSourceSQLite::fromFile(path.string()));
     ASSIGN_OR_FAIL(auto version, db->getSchemaVersion());
-    EXPECT_EQ(version, 9);
+    EXPECT_EQ(version, 10);
     ASSIGN_OR_FAIL(auto actor, db->getRemoteActorByUri(
         "https://remote.test/u/bob"));
     ASSERT_TRUE(actor.has_value());
@@ -903,7 +903,7 @@ TEST(Data, CursorPaginationStableUnderInsertionAndDeletion)
     }
 
     // First page: newest 4 (ids 10,9,8,7 in DESC).
-    ASSIGN_OR_FAIL(auto page1, db->timelinePublic(Cursor{}, 4));
+    ASSIGN_OR_FAIL(auto page1, db->timelinePublic(unspoken::PostKind::SOCIAL, Cursor{}, 4));
     ASSERT_THAT(page1, SizeIs(4));
     EXPECT_EQ(page1.front().id, ids[9]);
     EXPECT_EQ(page1.back().id, ids[6]);
@@ -916,7 +916,7 @@ TEST(Data, CursorPaginationStableUnderInsertionAndDeletion)
     // Next page after the last id we saw (ids[6]).
     Cursor c;
     c.max_id = page1.back().id; // ids[6]
-    ASSIGN_OR_FAIL(auto page2, db->timelinePublic(c, 4));
+    ASSIGN_OR_FAIL(auto page2, db->timelinePublic(unspoken::PostKind::SOCIAL, c, 4));
     ASSERT_THAT(page2, SizeIs(4));
     // Strictly older than ids[6]: 5,4,3,2.
     EXPECT_EQ(page2.front().id, ids[5]);
@@ -931,7 +931,7 @@ TEST(Data, CursorPaginationStableUnderInsertionAndDeletion)
     // min_id walks the newer direction and returns newest-first.
     Cursor newer;
     newer.min_id = ids[6];
-    ASSIGN_OR_FAIL(auto page_newer, db->timelinePublic(newer, 100));
+    ASSIGN_OR_FAIL(auto page_newer, db->timelinePublic(unspoken::PostKind::SOCIAL, newer, 100));
     ASSERT_FALSE(page_newer.empty());
     EXPECT_GT(page_newer.front().id, page_newer.back().id);
     for(const auto& p : page_newer)
@@ -952,7 +952,7 @@ TEST(Data, PublicTimelineExcludesNonPublic)
     np.visibility = Visibility::FOLLOWERS;
     ASSERT_TRUE(mw::isExpected(db->insertPost(np, {}, "https://f.test/p/")));
 
-    ASSIGN_OR_FAIL(auto tl, db->timelinePublic(Cursor{}, 20));
+    ASSIGN_OR_FAIL(auto tl, db->timelinePublic(unspoken::PostKind::SOCIAL, Cursor{}, 20));
     EXPECT_THAT(tl, SizeIs(1));
     EXPECT_EQ(tl[0].content_html, "public one");
 }
@@ -991,7 +991,7 @@ TEST(Data, HomeTimelineIncludesRepliesToUsersPosts)
     ASSIGN_OR_FAIL(auto bob_reply, db->insertPost(
         reply_to_bob, {}, "https://f.test/p/"));
 
-    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(unspoken::PostKind::SOCIAL,
         std::vector<int64_t>{alice.id}, {}, alice.id, Cursor{}, 20,
         "https://f.test/u/alice"));
     std::vector<int64_t> ids;
@@ -1029,7 +1029,7 @@ TEST(Data, HomeTimelineIncludesPostsAddressedToUser)
         addressed, {{0, "https://f.test/u/alice", "to"}},
         "https://f.test/p/"));
 
-    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(unspoken::PostKind::SOCIAL,
         std::vector<int64_t>{alice.id}, {}, alice.id, Cursor{}, 20,
         "https://f.test/u/alice"));
 
@@ -1086,7 +1086,7 @@ TEST(Data, HomeTimelineIncludesFollowedRemoteAuthors)
         other_post, {{0, std::string(AS_PUBLIC), "to"}},
         "https://f.test/p/"));
 
-    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(unspoken::PostKind::SOCIAL,
         std::vector<int64_t>{alice.id}, std::vector<int64_t>{followed.id},
         alice.id, Cursor{}, 20, "https://f.test/u/alice"));
 
@@ -1138,7 +1138,7 @@ TEST(Data, HomeTimelineHidesUnaddressedRemotePrivateFollowedPosts)
         addressed_post, {{0, "https://f.test/u/alice", "to"}},
         "https://f.test/p/"));
 
-    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(
+    ASSIGN_OR_FAIL(auto tl, db->homeTimelinePosts(unspoken::PostKind::SOCIAL,
         std::vector<int64_t>{alice.id}, std::vector<int64_t>{followed.id},
         alice.id, Cursor{}, 20, "https://f.test/u/alice"));
 
@@ -1356,7 +1356,7 @@ TEST(Data, OpensOlderVersionThreeSchema)
     }
     {
         ASSIGN_OR_FAIL(auto source, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(source->getSchemaVersion().value(), 9);
+        EXPECT_EQ(source->getSchemaVersion().value(), 10);
         ASSIGN_OR_FAIL(auto system, source->getSystemActor());
         EXPECT_FALSE(system.has_value());
         ASSIGN_OR_FAIL(auto migrated_keys,
@@ -1420,7 +1420,7 @@ TEST(Data, HomeTimelineIncludesBoostsAndRepliesToUnknownPeople)
     ASSERT_TRUE(db->addBoost({0,local_uri,another.uri,"https://f.test/boost",201}));
     // Corrupt or legacy private boosts must not reveal private posts.
     ASSERT_TRUE(db->addBoost({0,remote.uri,secret.uri,std::nullopt,202}));
-    auto page = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+    auto page = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id,local.id},{remote.id},
         viewer.id,{},2,viewer_uri).value();
     ASSERT_EQ(page.size(),2u);
     EXPECT_EQ(page[0].id,another.id);
@@ -1430,26 +1430,26 @@ TEST(Data, HomeTimelineIncludesBoostsAndRepliesToUnknownPeople)
     EXPECT_GT(page[0].timeline_id,page[1].timeline_id);
     Cursor older;
     older.max_id = page.back().timeline_id;
-    auto next = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+    auto next = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id,local.id},{remote.id},
         viewer.id,older,2,viewer_uri).value();
     ASSERT_EQ(next.size(),1u);
     EXPECT_EQ(next[0].id,reply.id);
     EXPECT_FALSE(next[0].boosted_by_uri);
     Cursor newer;
     newer.min_id = page.back().timeline_id;
-    auto previous = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+    auto previous = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id,local.id},{remote.id},
         viewer.id,newer,2,viewer_uri).value();
     ASSERT_EQ(previous.size(),1u);
     EXPECT_EQ(previous[0].id,another.id);
     // Redelivery preserves the event cursor and does not add a duplicate.
     ASSERT_TRUE(db->addBoost({0,remote.uri,old.uri,std::nullopt,300}));
-    auto stable = db->homeTimelinePosts({viewer.id,local.id},{remote.id},
+    auto stable = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id,local.id},{remote.id},
         viewer.id,{},20,viewer_uri).value();
     ASSERT_EQ(stable.size(),3u);
     EXPECT_EQ(stable[1].timeline_id,page[1].timeline_id);
     ASSERT_TRUE(db->removeBoost(local_uri,another.uri));
     ASSERT_TRUE(db->removeFollow(viewer_uri,remote.uri));
-    EXPECT_TRUE(db->homeTimelinePosts({viewer.id,local.id},{},viewer.id,
+    EXPECT_TRUE(db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id,local.id},{},viewer.id,
                                       {},20,viewer_uri).value().empty());
 }
 
@@ -1459,16 +1459,16 @@ TEST(Data, HomeTimelineDeduplicatesAuthoredAndBoostedPosts)
     ASSIGN_OR_FAIL(auto viewer,db->createUser(sampleUser("viewer")));
     auto post = insertLocalPost(*db,viewer.id,"a post");
     const std::string actor = "https://f.test/u/viewer";
-    auto before = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+    auto before = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id},{},viewer.id,{},20,actor)
         .value();
     ASSERT_TRUE(db->addBoost({0,actor,post.uri,std::nullopt,200}));
-    auto boosted = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+    auto boosted = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id},{},viewer.id,{},20,actor)
         .value();
     ASSERT_EQ(boosted.size(),1u);
     EXPECT_EQ(boosted[0].boosted_by_uri,actor);
     EXPECT_GT(boosted[0].timeline_id,before[0].timeline_id);
     ASSERT_TRUE(db->removeBoost(actor,post.uri));
-    auto undone = db->homeTimelinePosts({viewer.id},{},viewer.id,{},20,actor)
+    auto undone = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {viewer.id},{},viewer.id,{},20,actor)
         .value();
     ASSERT_EQ(undone.size(),1u);
     EXPECT_FALSE(undone[0].boosted_by_uri);
@@ -1501,12 +1501,17 @@ TEST(Data, MigrationFiveToSixBackfillsOrderedEvents)
         ASSERT_TRUE(db->connection().execute(
             "ALTER TABLE posts DROP COLUMN updated_at"));
         removeStickerSchema(db->connection());
+        ASSERT_TRUE(db->connection().execute("DROP TABLE nspic_imports"));
+        ASSERT_TRUE(db->connection().execute("DROP INDEX idx_posts_kind_id"));
+        ASSERT_TRUE(db->connection().execute("DROP INDEX idx_posts_local_author_kind_id"));
+        ASSERT_TRUE(db->connection().execute("DROP INDEX idx_posts_remote_author_kind_id"));
+        ASSERT_TRUE(db->connection().execute("ALTER TABLE posts DROP COLUMN post_kind"));
         ASSERT_TRUE(db->connection().execute("PRAGMA user_version=5"));
     }
     {
         ASSIGN_OR_FAIL(auto db,DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(db->getSchemaVersion().value(),9);
-        auto timeline = db->homeTimelinePosts({1},{},1,{},20,
+        EXPECT_EQ(db->getSchemaVersion().value(),10);
+        auto timeline = db->homeTimelinePosts(unspoken::PostKind::SOCIAL, {1},{},1,{},20,
                                               "https://f.test/u/viewer").value();
         ASSERT_EQ(timeline.size(),2u);
         EXPECT_EQ(timeline[0].content_html,"old");
@@ -1543,11 +1548,16 @@ TEST(DataMigration, PostEditTimestampSurvivesReopening)
         ASSERT_TRUE(data->connection().execute(
             "ALTER TABLE posts DROP COLUMN updated_at"));
         removeStickerSchema(data->connection());
+        ASSERT_TRUE(data->connection().execute("DROP TABLE nspic_imports"));
+        ASSERT_TRUE(data->connection().execute("DROP INDEX idx_posts_kind_id"));
+        ASSERT_TRUE(data->connection().execute("DROP INDEX idx_posts_local_author_kind_id"));
+        ASSERT_TRUE(data->connection().execute("DROP INDEX idx_posts_remote_author_kind_id"));
+        ASSERT_TRUE(data->connection().execute("ALTER TABLE posts DROP COLUMN post_kind"));
         ASSERT_TRUE(data->connection().execute("PRAGMA user_version=7"));
     }
     {
         ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
-        EXPECT_EQ(data->getSchemaVersion().value(), 9);
+        EXPECT_EQ(data->getSchemaVersion().value(), 10);
         ASSIGN_OR_FAIL(auto post, data->getPostById(1));
         ASSERT_TRUE(post);
         EXPECT_FALSE(post->updated_at);
@@ -1559,7 +1569,7 @@ TEST(DataMigration, PostEditTimestampSurvivesReopening)
     }
     {
         ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
-        ASSIGN_OR_FAIL(auto posts, data->timelinePublic({}, 20));
+        ASSIGN_OR_FAIL(auto posts, data->timelinePublic(unspoken::PostKind::SOCIAL, {}, 20));
         ASSERT_EQ(posts.size(), 1u);
         EXPECT_EQ(posts[0].content_html, "Edited");
         EXPECT_EQ(posts[0].updated_at, 123456);

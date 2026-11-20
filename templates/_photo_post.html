@@ -1,0 +1,236 @@
+<article class="post photo-post {% if post.id == focus_id %}focus{% endif %}" id="p{{ post.id }}">
+{% if existsIn(post, "show_parent") %}
+{% if post.show_parent %}
+  <a class="thread-parent" href="#p{{ post.parent_id }}">replying to {{ post.parent_handle }}</a>
+{% endif %}
+{% endif %}
+{% if post.is_boost %}
+  <div class="boost-attribution">
+    <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i>
+    <a href="{{ post.boosted_by.profile_url }}">{{ post.boosted_by.display_name }}</a>
+    boosted
+  </div>
+{% endif %}
+  <div class="post-head">
+    <a class="post-avatar-link" href="{{ post.author.profile_url }}">
+      <img class="post-avatar"
+           src="{{ post.author.avatar_url }}"
+           alt=""
+           loading="lazy"
+           decoding="async">
+    </a>
+    <span class="author-copy">
+      <a class="author" href="{{ post.author.profile_url }}">{{ post.author.display_name }}</a>
+      <span class="handle">{{ post.author.handle }}</span>
+    </span>
+    <a class="permalink" href="{{ site.root }}p/{{ post.id }}" title="Local URL">
+      <time data-local-time datetime="{{ post.created_datetime }}">{{ post.created_at }} UTC</time>
+    </a>
+    <span class="post-edited"
+          data-edited-at="{{ post.updated_datetime }}"
+          title="Edited {{ post.updated_at }} UTC">
+{% if post.edited %}
+      <span role="img" aria-label="Edited {{ post.updated_at }} UTC">
+        <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i>
+      </span>
+{% endif %}
+    </span>
+    <a class="vis vis-{{ post.visibility }}" href="{{ post.url }}"
+{% if post.visibility == "followers" %}
+          title="Remote URL (followers-only)" aria-label="followers-only">
+      <i class="nf nf-fa-users ui-icon" aria-hidden="true"></i>
+{% else if post.visibility == "direct" %}
+          title="Remote URL (direct message)" aria-label="direct message">
+      <i class="nf nf-fa-envelope ui-icon" aria-hidden="true"></i>
+{% else if post.visibility == "unlisted" %}
+          title="Remote URL (unlisted)" aria-label="unlisted">
+      <i class="nf nf-fa-unlock ui-icon" aria-hidden="true"></i>
+{% else %}
+          title="Remote URL (public)" aria-label="public">
+      <i class="nf nf-fa-globe ui-icon" aria-hidden="true"></i>
+{% endif %}
+    </a>
+  </div>
+
+<div class="post-body">
+  {% if length(post.photos) > 0 %}
+  <div class="attachments">
+    <div class="gallery" tabindex="0" aria-label="Photos">
+      {% for att in post.photos %}
+      {% if att.is_image %} <!-- Non-image attachments are not shown. -->
+      {% if att.sensitive %}
+      <details class="sensitive" id="photo-{{ post.id }}-{{ att.id }}"><summary>sensitive image</summary>
+        <img src="{{ att.url }}" alt="{{ att.original_name }}">
+      </details>
+      {% else %}
+      <img id="photo-{{ post.id }}-{{ att.id }}"
+           src="{{ att.url }}" alt="{{ att.original_name }}">
+      {% endif %}
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% if length(post.photos) > 1 %}
+    <div class="scroll-pips" role="group" aria-label="Choose photo">
+      {% for att in post.photos %}
+      <button type="button"
+              class="{% if loop.index == 0 %}scroll-pip active{% else %}scroll-pip{% endif %}"
+              data-photo-index="{{ loop.index }}"
+              aria-label="Photo {{ loop.index1 }} of {{ length(post.photos) }}"
+              aria-controls="photo-{{ post.id }}-{{ att.id }}"
+              {% if loop.index == 0 %}aria-current="true"{% endif %}
+              disabled></button>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+{% if post.has_summary %}
+  <details class="cw">
+    <summary{% if post.summary_lang != null %} lang="{{ post.summary_lang }}"{% endif %}>{{ post.summary }}</summary>
+    <div class="content"{% if post.content_lang != null %} lang="{{ post.content_lang }}"{% endif %}>{{ post.content_html }}</div>
+    {% include "_link_preview.html" %}
+{% else %}
+    <div class="content"{% if post.content_lang != null %} lang="{{ post.content_lang }}"{% endif %}>{{ post.content_html }}</div>
+{% if post.sensitive and post.has_link_preview %}
+    <details class="sensitive"><summary>sensitive link preview</summary>
+    {% include "_link_preview.html" %}
+    </details>
+{% else %}
+  {% include "_link_preview.html" %}
+{% endif %}
+{% endif %}
+
+{% if existsIn(post, "sticker") %}
+{% if post.sticker != null %}
+{% if post.sensitive %}
+  <details class="sensitive"><summary>sensitive sticker</summary>
+{% endif %}
+  <div class="post-sticker">
+    <a href="{{ post.sticker.url }}"><img src="{{ post.sticker.url }}"
+        alt="{{ post.sticker.original_name }}" loading="lazy"></a>
+  </div>
+{% if post.sensitive %}</details>{% endif %}
+{% endif %}
+{% endif %}
+
+{% if post.has_summary %}</details>{% endif %}
+</div>
+
+{% if length(post.reactions) > 0 %}
+  <div class="reactions">
+{% for r in post.reactions %}
+    <span class="react {% if r.reacted %}mine{% endif %}">{{ r.emoji_html }} {{ r.count }}</span>
+{% endfor %}
+  </div>
+{% endif %}
+
+{% if logged_in %}
+  <div class="actions">
+    <form class="inline" method="post" data-post-action="like"
+          action="{{ site.root }}post/{{ post.id }}/like">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if post.liked %}
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on" title="unlike"
+              aria-label="like, {{ post.like_count }} likes"
+              aria-pressed="true">
+        <i class="nf nf-fa-star ui-icon" aria-hidden="true"></i> {{ post.like_count }}
+      </button>
+{% else %}
+      <button type="submit" class="linkbtn" title="like"
+              aria-label="like, {{ post.like_count }} likes"
+              aria-pressed="false">
+        <i class="nf nf-fa-star_o ui-icon" aria-hidden="true"></i> {{ post.like_count }}
+      </button>
+{% endif %}
+    </form>
+{% if post.can_boost %}
+    <form class="inline" method="post" data-post-action="boost"
+          action="{{ site.root }}post/{{ post.id }}/boost">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if post.boosted %}
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on" title="undo boost"
+              aria-label="boost, {{ post.boost_count }} boosts"
+              aria-pressed="true">
+        <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i> {{ post.boost_count }}
+      </button>
+{% else %}
+      <button type="submit" class="linkbtn" title="boost"
+              aria-label="boost, {{ post.boost_count }} boosts"
+              aria-pressed="false">
+        <i class="nf nf-fa-retweet ui-icon" aria-hidden="true"></i> {{ post.boost_count }}
+      </button>
+{% endif %}
+    </form>
+{% endif %}
+    <form class="inline" method="post" data-post-action="bookmark"
+          action="{{ site.root }}post/{{ post.id }}/bookmark">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+{% if post.bookmarked %}
+      <input type="hidden" name="undo" value="1">
+      <button type="submit" class="linkbtn on" title="remove bookmark"
+              aria-pressed="true">
+        <i class="nf nf-fa-bookmark ui-icon" aria-hidden="true"></i> saved
+      </button>
+{% else %}
+      <button type="submit" class="linkbtn" title="bookmark"
+              aria-pressed="false">
+        <i class="nf nf-fa-bookmark_o ui-icon" aria-hidden="true"></i> save
+      </button>
+{% endif %}
+    </form>
+    <form class="inline react-form" method="post" action="{{ site.root }}post/{{ post.id }}/react">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="emoji" value="">
+      <button type="button" class="linkbtn emoji-picker-trigger"
+              data-emoji-mode="react" aria-controls="emoji-picker"
+              aria-haspopup="dialog" aria-expanded="false"
+              title="react" aria-label="react" hidden>
+        <i class="nf nf-md-emoticon_outline ui-icon" aria-hidden="true"></i>
+      </button>
+    </form>
+    <a class="linkbtn" href="{{ site.root }}p/{{ post.id }}">
+      <i class="nf nf-fa-reply ui-icon" aria-hidden="true"></i> reply
+    </a>
+{% if logged_in and post.can_edit %}
+    <a href="{{ site.root }}post/{{ post.id }}/edit"
+       class="linkbtn post-edit-trigger"
+            aria-expanded="false" title="Edit post" aria-label="Edit post">
+      <i class="nf nf-fa-pencil ui-icon" aria-hidden="true"></i> edit
+    </a>
+{% endif %}
+{% if post.can_delete %}
+    <form class="inline" method="post" action="{{ site.root }}post/{{ post.id }}/delete"
+          onsubmit="return confirm('Delete this post?');">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="linkbtn danger">
+        <i class="nf nf-md-delete ui-icon" aria-hidden="true"></i> delete
+      </button>
+    </form>
+{% endif %}
+  </div>
+{% endif %}
+{% if logged_in and post.can_edit %}
+  <form class="composer post-edit-form" method="post" hidden
+        action="{{ site.root }}post/{{ post.id }}/edit">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Post text
+      <textarea name="content" rows="6">{{ post.edit_source }}</textarea>
+    </label>
+    {% set sticker_preview = post.sticker %}
+    {% include "_sticker_controls.html" %}
+    <div class="composer-row">
+      <label>CW <input type="text" name="summary" value="{{ post.summary }}"></label>
+      <label class="cb"><input type="checkbox" name="sensitive" value="1"
+{% if post.sensitive %}
+             checked
+{% endif %}
+      > sensitive</label>
+      <button type="submit">Save</button>
+      <button type="button" class="post-edit-cancel">Cancel</button>
+    </div>
+    <p class="post-edit-status" role="status" aria-live="polite"></p>
+  </form>
+{% endif %}
+</article>

@@ -3140,7 +3140,7 @@ TEST_F(FollowedInbox, UnknownBoostTargetIsFetchedAndShownWithAttribution)
     EXPECT_EQ(post->content_html,"<p>authoritative content</p>");
     EmojiRegistry emoji;
     Service service(config,*data,emoji);
-    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}));
     ASSERT_EQ(timeline.size(),1u);
     EXPECT_EQ(timeline[0].id,post->id);
     EXPECT_EQ(timeline[0].boosted_by_uri,followed.uri);
@@ -3152,12 +3152,12 @@ TEST_F(FollowedInbox, UnknownBoostTargetIsFetchedAndShownWithAttribution)
     ASSIGN_OR_FAIL(auto duplicate,receive(activity));
     EXPECT_EQ(duplicate.disposition,InboxDisposition::DUPLICATE);
     EXPECT_EQ(http.get_urls.size(),2u);
-    EXPECT_EQ(service.homeTimeline(viewer,{}).value()[0].timeline_id,cursor);
+    EXPECT_EQ(service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}).value()[0].timeline_id,cursor);
     nlohmann::json undo = {{"id","https://remote.test/a/undo-boost"},
         {"type","Undo"},{"actor",followed.uri},{"object",activity},
         {"to",std::string(AS_PUBLIC)}};
     ASSERT_TRUE(receive(undo));
-    EXPECT_TRUE(service.homeTimeline(viewer,{}).value().empty());
+    EXPECT_TRUE(service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}).value().empty());
 }
 
 TEST_F(FollowedInbox, PrivateBoostTargetIsNotRetained)
@@ -3205,7 +3205,7 @@ TEST_F(FollowedInbox, ReplyToUnknownParentAppearsWithoutFetchingParent)
     EXPECT_EQ(result.disposition,InboxDisposition::APPLIED);
     EmojiRegistry emoji;
     Service service(config,*data,emoji);
-    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(viewer,{}));
+    ASSIGN_OR_FAIL(auto timeline,service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}));
     ASSERT_EQ(timeline.size(),1u);
     EXPECT_EQ(timeline[0].uri,"https://remote.test/o/reply");
     EXPECT_EQ(timeline[0].in_reply_to_uri,"https://unknown.test/o/parent");
@@ -3268,10 +3268,10 @@ TEST_F(FollowedInbox, MisskeyReactionBeforeBoostIsRetainedAndRendered)
     EXPECT_TRUE(data->likesForPost(post->uri).value().empty());
     EmojiRegistry emoji;
     Service service(config,*data,emoji);
-    EXPECT_TRUE(service.homeTimeline(viewer,{}).value().empty());
+    EXPECT_TRUE(service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}).value().empty());
     ASSERT_TRUE(receive(announce()));
     EXPECT_EQ(http.get_urls.size(),2u);
-    auto timeline = service.homeTimeline(viewer,{}).value();
+    auto timeline = service.homeTimeline(unspoken::PostKind::SOCIAL, viewer,{}).value();
     ASSERT_EQ(timeline.size(),1u);
     ASSIGN_OR_FAIL(auto view,service.postView(timeline.front(),viewer));
     ASSERT_EQ(view["reactions"].size(),1u);
@@ -3376,7 +3376,7 @@ TEST_F(FollowedInbox, StartupRepairsRetainedReactionLikesAndHonorsUndo)
     ASSERT_TRUE(initializeFederationLibrary(config,*data,crypto,http));
     EXPECT_TRUE(data->reactionsForPost("https://other.test/o/original").value().empty());
     EXPECT_EQ(http.get_urls.size(),2u);
-    EXPECT_EQ(data->getSchemaVersion().value(),9);
+    EXPECT_EQ(data->getSchemaVersion().value(),10);
 }
 
 TEST_F(FollowedInbox, ExplicitPrivateReactionAudienceIsNotExpandedToFollowers)
@@ -3527,4 +3527,103 @@ TEST(InboxDispatch, RemoteEmojiNamesAcceptUppercaseAndHyphens)
     ASSERT_TRUE(updated);
     EXPECT_NE(updated->content_html.find("src=\"https://remote.test/cat.png\""),
               std::string::npos);
+}
+
+TEST(InboxDispatch, ExplicitPhotoKindDefaultsAndAtomicUpdates)
+{
+    Config config = testConfig();
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    ASSIGN_OR_FAIL(auto remote, data->upsertRemoteActor(
+        testRemoteActor("https://remote.test/u/photos")));
+    nlohmann::json object = {{"id", "https://remote.test/p/photo"},
+        {"type", "Note"}, {"attributedTo", remote.uri},
+        {"content", "caption"}, {"to", std::string(AS_PUBLIC)},
+        {POST_KIND_IRI, "photo"}};
+    nlohmann::json raw = {{"id", "https://remote.test/a/create-photo"},
+        {"type", "Create"}, {"actor", remote.uri}, {"object", object}};
+    ASSIGN_OR_FAIL(auto activity, parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 100));
+    auto post = data->getPostByUri(object["id"].get<std::string>()).value();
+    ASSERT_TRUE(post);
+    EXPECT_EQ(post->post_kind, PostKind::PHOTO);
+    // A full Update without the key resets classification despite an image.
+    object.erase(POST_KIND_IRI);
+    object["attachment"] = {{{"type", "Image"},
+        {"url", "https://remote.test/media/photo.png"},
+        {"mediaType", "image/png"}}};
+    raw["id"] = "https://remote.test/a/social-update";
+    raw["type"] = "Update";
+    raw["object"] = object;
+    ASSIGN_OR_FAIL(activity, parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 101));
+    EXPECT_EQ(data->getPostById(post->id)->value().post_kind, PostKind::SOCIAL);
+    ASSERT_TRUE(data->connection().execute(
+        "CREATE TRIGGER reject_photo_relation BEFORE INSERT ON post_attachments "
+        "BEGIN SELECT RAISE(ABORT,'injected attachment failure'); END"));
+    object[POST_KIND_IRI] = "photo";
+    raw["id"] = "https://remote.test/a/photo-update";
+    raw["object"] = object;
+    ASSIGN_OR_FAIL(activity, parseActivity(raw));
+    EXPECT_FALSE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 102));
+    EXPECT_EQ(data->getPostById(post->id)->value().post_kind, PostKind::SOCIAL);
+    EXPECT_EQ(data->attachmentsForPost(post->id)->size(), 1u);
+    ASSERT_TRUE(data->connection().execute("DROP TRIGGER reject_photo_relation"));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 103));
+    EXPECT_EQ(data->getPostById(post->id)->value().post_kind, PostKind::PHOTO);
+    // Replayed Create never changes a stored post.
+    raw["id"] = "https://remote.test/a/create-photo";
+    raw["type"] = "Create";
+    raw["object"].erase(POST_KIND_IRI);
+    ASSIGN_OR_FAIL(activity, parseActivity(raw));
+    ASSERT_TRUE(dispatchIncomingActivity(config, *data,
+        retainedSignature(remote), activity, 104));
+    EXPECT_EQ(data->getPostById(post->id)->value().post_kind, PostKind::PHOTO);
+}
+
+TEST(FederationCollections, LegacySnapshotsEmitSavedSocialKind)
+{
+    auto config = testConfig();
+    ASSIGN_OR_FAIL(auto data, DataSourceSQLite::newFromMemory());
+    mw::Crypto crypto;
+    mw::HTTPSession http;
+    ASSIGN_OR_FAIL(auto keys, crypto.generateKeyPair(mw::KeyType::RSA));
+    auto params = testNewUser("legacy");
+    params.private_key_pem = keys.private_key;
+    params.public_key_pem = keys.public_key;
+    ASSIGN_OR_FAIL(auto author, data->createUser(params));
+    NewPost input;
+    input.local_author_id = author.id;
+    input.content_html = "old social post";
+    ASSIGN_OR_FAIL(auto post, data->insertPost(input,
+        {{0, std::string(AS_PUBLIC), "to"}}, config.url_root + "p/"));
+    ASSERT_TRUE(initializeFederationLibrary(config, *data, crypto, http));
+    auto note = noteJson(config, post, author,
+        {{0, std::string(AS_PUBLIC), "to"}}, {});
+    note.erase(POST_KIND_IRI);
+    auto& db = data->connection();
+    ASSIGN_OR_FAIL(auto update, db.statementFromStr(
+        "UPDATE ap_objects SET document_json=? WHERE uri=?"));
+    ASSERT_TRUE((update.bind<std::string, std::string>(note.dump(), post.uri)));
+    ASSERT_TRUE(db.execute(std::move(update)));
+    auto activity = nlohmann::json({{"id", post.uri + "/activity"},
+        {"type", "Create"}, {"actor", config.url_root + "u/legacy"},
+        {"object", note}, {"to", {std::string(AS_PUBLIC)}}});
+    ASSIGN_OR_FAIL(auto outbox, db.statementFromStr(
+        "UPDATE ap_outbox SET document_json=? WHERE activity_uri=?"));
+    ASSERT_TRUE((outbox.bind<std::string, std::string>(activity.dump(),
+                                                     post.uri + "/activity")));
+    ASSERT_TRUE(db.execute(std::move(outbox)));
+    ASSIGN_OR_FAIL(auto document, federationObjectDocument(config, *data,
+        crypto, http, post.uri, "", {}, 100));
+    ASSERT_TRUE(document);
+    EXPECT_EQ((*document)[POST_KIND_IRI], "social");
+    ASSIGN_OR_FAIL(auto page, federationOutboxPage(config, *data,
+        config.url_root + "u/legacy", {},
+        config.url_root + "u/legacy/outbox?page=true"));
+    ASSERT_EQ(page["orderedItems"].size(), 1u);
+    EXPECT_EQ(page["orderedItems"][0]["object"][POST_KIND_IRI], "social");
 }

@@ -1,0 +1,5 @@
+<input type="hidden" name="post_kind" value="{{ post_kind }}">
+{% if post_kind == "photo" %}
+<p class="hint">Add JPEG, PNG, WebP, GIF, AVIF or JPEG XL photos, up to 40 megapixels. Captions are optional.</p>
+<p class="photo-mode-status" role="status" aria-live="polite"></p>
+{% endif %}

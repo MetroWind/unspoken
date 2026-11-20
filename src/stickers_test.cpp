@@ -302,10 +302,15 @@ TEST_F(Stickers, MigrationEightToNineAndUniqueSticker)
         ASSERT_TRUE(db.execute("ALTER TABLE post_attachments DROP COLUMN role"));
         ASSERT_TRUE(db.execute(
             "ALTER TABLE post_attachments DROP COLUMN description"));
+        ASSERT_TRUE(db.execute("DROP TABLE nspic_imports"));
+        ASSERT_TRUE(db.execute("DROP INDEX idx_posts_kind_id"));
+        ASSERT_TRUE(db.execute("DROP INDEX idx_posts_local_author_kind_id"));
+        ASSERT_TRUE(db.execute("DROP INDEX idx_posts_remote_author_kind_id"));
+        ASSERT_TRUE(db.execute("ALTER TABLE posts DROP COLUMN post_kind"));
         ASSERT_TRUE(db.execute("PRAGMA user_version=8"));
     }
     ASSIGN_OR_FAIL(auto data, DataSourceSQLite::fromFile(path.string()));
-    EXPECT_EQ(data->getSchemaVersion().value(), 9);
+    EXPECT_EQ(data->getSchemaVersion().value(), 10);
     ASSIGN_OR_FAIL(auto media, data->attachmentsForPost(post_id));
     ASSERT_EQ(media.size(), 1u);
     EXPECT_EQ(media[0].role, AttachmentRole::ATTACHMENT);

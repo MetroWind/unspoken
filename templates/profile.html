@@ -63,14 +63,14 @@
   </div>
 </section>
 
-{% if profile.is_local %}
+{% include "_stream_tabs.html" %}
 <div class="timeline">
 {% if length(posts) == 0 %}
 <p class="empty">No posts.</p>
 {% endif %}
 {% for post in posts %}
-{% include "_post.html" %}
+{% include "_post_card.html" %}
 {% endfor %}
 </div>
-{% endif %}
+{% if exists("has_more") %}{% if has_more %}<p class="pager"><a href="{{ older_url }}">older</a></p>{% endif %}{% endif %}
 {% include "_footer.html" %}

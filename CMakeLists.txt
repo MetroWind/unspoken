@@ -9,6 +9,12 @@ option(UNSPOKEN_BUILD_TESTS "Build unit tests" OFF)
 include(FetchContent)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(LibXml2 2.14 REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(MAGICKPP REQUIRED IMPORTED_TARGET Magick++>=7)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/docs/photo_policy.xml")
+file(READ "${CMAKE_SOURCE_DIR}/docs/photo_policy.xml" PHOTO_POLICY_XML)
+configure_file(cmake/photo_policy.hpp.in generated/photo_policy.hpp @ONLY)
 
 FetchContent_Declare(
   libmw
@@ -129,6 +135,10 @@ configure_file(
   @ONLY)
 
 set(SOURCE_FILES
+  src/nspic_import.cpp
+  src/nspic_import.hpp
+  src/photo_processing.cpp
+  src/photo_processing.hpp
   src/theme.cpp
   src/theme.hpp
   src/follow_import.cpp
@@ -160,6 +170,7 @@ set(SOURCE_FILES
 )
 
 set(LIBS
+  PkgConfig::MAGICKPP
   ActPub::actpub
   LibXml2::LibXml2
   cxxopts
@@ -174,6 +185,7 @@ set(LIBS
 )
 
 set(INCLUDES
+  ${CMAKE_BINARY_DIR}/generated
   ${libmw_SOURCE_DIR}/includes
   ${json_SOURCE_DIR}/single_include
   ${inja_SOURCE_DIR}/single_include/inja
@@ -215,6 +227,7 @@ target_link_libraries(fake_oidc PRIVATE
 
 if(UNSPOKEN_BUILD_TESTS)
   set(TEST_FILES
+    src/photo_test.cpp
     lib/actpub/tests/transaction_test.cpp
     lib/actpub/tests/store_test.cpp
     lib/actpub/tests/engine_test.cpp
@@ -255,6 +268,9 @@ if(UNSPOKEN_BUILD_TESTS)
   enable_testing()
   find_program(NODE_EXECUTABLE node)
   if(NODE_EXECUTABLE)
+    add_test(NAME Photos
+      COMMAND "${NODE_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/photos_test.js")
     add_test(NAME PostEditor
       COMMAND "${NODE_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/tests/post_editor_test.js")
@@ -270,5 +286,6 @@ endif()
 
 install(TARGETS unspoken RUNTIME DESTINATION bin)
 install(DIRECTORY templates static themes DESTINATION share/unspoken)
+install(FILES docs/photo_policy.xml DESTINATION share/unspoken)
 install(FILES "${UNSPOKEN_EMOJI_DATA_FILE}"
         DESTINATION share/unspoken/data)

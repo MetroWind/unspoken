@@ -536,3 +536,165 @@ inheriting the interface language. Supplied language strings are HTML-escaped
 without validation. Local posts keep their current behavior.
 Language metadata is read from retained remote objects without network
 requests, schema changes, or rewriting existing posts.
+
+## Social and Photos streams
+
+Posts have an explicit, saved `social` or `photo` kind. Historical posts
+remain Social, including posts containing images. `/` always selects
+Social; `/photos` always selects Photos. Logged-in visitors see their home
+stream; anonymous visitors see public posts. Home pagination uses event
+IDs (including boosts); public and profile pagination uses post IDs.
+Switching tabs starts at the latest page. A `kind` query cannot override
+these two paths.
+
+Local profiles (`/u/alice?kind=photo`), cached remote profiles
+(`/remote?uri=ACTOR_URL&kind=photo`), and `/compose?kind=photo` accept
+`kind=social|photo`. Unknown values return 400. Outboxes, threads, search,
+bookmarks and notifications include both kinds. Photos streams exclude
+replies; threads retain replies of both kinds. Boosts use the original
+post's kind.
+
+Each stream has its own posting form: Social posts to Social and Photos
+posts to Photos, without a stream selector. The standalone composer keeps
+its selected stream. Forms submit a hidden `post_kind=social|photo`.
+Missing kinds default to
+Social on creation and preserve the saved kind on edits. A local post's
+kind cannot change after creation. Photos require at least one uploaded
+JPEG, PNG, GIF, WebP, AVIF or JPEG XL image (codec support is required).
+Documents, SVG, videos, corrupt images, duplicate selections, images over
+40 million pixels per frame or 16384 pixels on either axis, and sequences
+exceeding 128 frames are rejected. The global upload byte limit still
+applies. The configured output format determines stored MIME and extension.
+Social uploads retain their existing format support.
+
+Reorder uploads using Move earlier/later; descriptions follow their files.
+Empty descriptions stay empty. Without JavaScript, files use browser
+selection order and the first description field applies to the first
+file. Gallery scrolling and numbered image links work without JavaScript;
+hidden sensitive media is available through explicit image links.
+JavaScript adds arrow-key navigation, lightbox support and warning reveal.
+
+Build and runtime dependencies now include ImageMagick **7 Magick++** and
+pkg-config (`imagemagick` and `pkgconf` on Arch). CMake discovers
+`Magick++>=7`, including the installed ABI flags. The process embeds
+[photo_policy.xml](photo_policy.xml) at build time and initializes it
+before workers start. No ImageMagick command is invoked. Selected raster
+modules are available, with coder reads limited to supported formats and
+writes restricted to JPEG, WebP, AVIF and JPEG XL. Delegates, network/document/SVG
+coders, indirect reads and loadable filters are disabled. The wrapper
+allows two concurrent operations and bounds cache memory, mapped memory,
+disk, dimensions, sequence length, threads and processing time. These are
+in-process limits, without crash isolation or a hard wall-clock timeout.
+See the [Magick++ API](https://imagemagick.org/magick++/) and
+[security policy documentation](https://imagemagick.org/security-policy/).
+
+### Photo compression
+
+New local photo uploads and offline nspic imports are processed before
+storage. They fit inside **1024 × 1024 pixels**, retaining aspect ratio
+without cropping or upscaling. Orientation is applied before conversion
+to sRGB and metadata removal. Animated inputs use the first frame. JPEG
+composites transparency on white; WebP, AVIF and JPEG XL retain alpha.
+
+```yaml
+photos:
+  format: webp
+  quality: 85
+```
+
+`photos.format` accepts `jpeg`, `webp`, `avif`, or `jpegxl` (`jxl` is also
+accepted). `photos.quality` is an integer from 1 through 100. Defaults
+are WebP at quality 85. Quality scales are codec-specific: the same number
+does not guarantee matching visual quality or file size across formats.
+Invalid settings reject the configuration. The installed ImageMagick must
+provide the selected encoder; unsupported codecs produce a clear photo
+processing error. Social posting remains available.
+
+Only compressed bytes are hashed and stored as the canonical attachment;
+there is no saved original, thumbnail, variant table, or processing queue.
+Federation and media links point directly to this compressed attachment.
+Changing these settings applies to new uploads/imports. Existing media and
+caption edits are left alone. Source nspic backups remain untouched.
+
+**Social uploads bypass photo processing completely**, including Social
+posts with image attachments. They retain their original bytes, format,
+dimensions and metadata. Remote photo URLs are also left untouched; viewing
+a photo does not download it to this server for processing.
+
+On Arch, install `imagemagick`, `libheif` and `libjxl` for the requested
+codecs (alongside the normal build dependencies). The application uses
+linked libraries, never ImageMagick command-line subprocesses.
+
+### Federation extension
+
+Every local Note emits the full JSON property key
+`https://f.mws.rocks/#postKind` with value `social` or `photo`. Fetch,
+outbox, Create and Update all use the same serialization. Incoming Notes
+are Photos only when that exact property contains the exact lowercase
+string `photo`. Absence, invalid values, compact aliases and unrelated
+properties mean Social, regardless of attachments. Full Updates without
+the key reset the remote post to Social. The IRI is a vocabulary identifier
+and is never fetched. Peers may ignore or discard this extension.
+
+### Offline nspic import
+
+Stop Unspoken and back up its database and attachment directory together
+before schema migration or import. Schema 10 adds classifications and
+import bookkeeping. Rollback requires restoring that matching snapshot
+with the prior binary; do not run the old binary against schema 10.
+
+Stop nspic writes while producing a consistent SQLite backup and matching
+stored-image directory. Keep the original backup. Choose an existing local
+Unspoken author and a stable source key, independent of backup locations:
+
+```sh
+unspoken import-nspic --config /etc/unspoken/config.yaml \
+    --source-db /backup/nspic/db.sqlite \
+    --image-dir /backup/nspic/images \
+    --source-key personal-nspic --author alice --dry-run \
+    > /backup/nspic/preflight.jsonl
+```
+
+Dry-run opens both databases read-only, performs no schema migrations,
+and writes no image files. It validates every source post and reports
+intended mappings, file counts, bytes, album data and errors as JSON lines.
+Logs go to stderr. Review the report, then run the same command without
+`--dry-run`, saving its report to a different file. The entire source must
+pass preflight before importing anything. Each complete post and its
+mapping commit together; an unexpected error stops the write pass and
+retains earlier commits for resumption.
+
+Source posts use `(upload_time ASC,id ASC)` and images use `images.id ASC`.
+This is insertion order, not recovery of an independent sort order.
+Paths must stay beneath the selected root; absolute paths, traversal,
+symlink escapes, missing/nonregular files, zero-image posts and unsupported
+or oversized images fail validation. Repeated identical images within a
+single source post also fail, since a post relation cannot duplicate an
+asset. Files shared across different posts deduplicate after compression. Imports
+process the stored nspic image, never its `_t` thumbnail; nspic may already
+have discarded the camera original. Images that collapse to the same
+compressed asset within one post are rejected during preflight.
+
+Captions are imported as plain text with line breaks. Images have empty
+alt text, and source files stay untouched. Posts are public Photos, without
+reply parents, stickers, mention processing, delivery jobs, notifications
+or webhooks. Publication dates retain UTC source timestamps; insertion
+and timeline event IDs are assigned at import time. Imported public posts
+can subsequently be fetched, listed in outboxes or boosted.
+
+The durable `(source_key,source_post_id)` mapping stores an author and
+versioned SHA-256 digest of length-prefixed caption, timestamp, album data,
+image count and ordered image bytes. Identical reruns skip mapped posts,
+including deleted destinations. Changed content or author requires
+operator reconciliation and fails preflight. Source album data is reported
+without creating an album feature. Compare report counts, media and links
+before removing backups; use the ID-to-URL report to configure old-site
+redirects explicitly.
+
+Run the photo integration checks after compiling:
+
+```sh
+cmake --build build -j24
+ctest --test-dir build --output-on-failure
+python tests/photos_http_test.py --binary build/unspoken
+```

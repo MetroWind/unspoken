@@ -18,6 +18,7 @@
 #include <mw/error.hpp>
 
 #include "structs.hpp"
+#include "attachments.hpp"
 #include "link_preview.hpp"
 
 namespace unspoken
@@ -145,24 +146,28 @@ public:
     // Public global timeline: only 'public' posts, newest first, one
     // cursor page (design §16.2).
     virtual mw::E<std::vector<Post>>
-    timelinePublic(const Cursor& c, int limit) const = 0;
+    timelinePublic(PostKind post_kind, const Cursor& c, int limit) const = 0;
     // Home timeline: posts by the user and by accounts they follow.
     virtual mw::E<std::vector<Post>>
-    timelineHome(int64_t user_id, const Cursor& c, int limit) const = 0;
+    timelineHome(PostKind post_kind, int64_t user_id, const Cursor& c, int limit) const = 0;
     // Posts authored by any of the given local users, newest first, one
     // cursor page. The service layer passes the viewer plus the local
     // accounts they follow to assemble the home timeline (§16.3).
     virtual mw::E<std::vector<Post>>
-    postsForAuthors(const std::vector<int64_t>& local_author_ids,
+    postsForAuthors(PostKind post_kind, const std::vector<int64_t>& local_author_ids,
                     const Cursor& c, int limit) const = 0;
     // Home timeline posts: authored by viewer/followed accounts, replies
     // to the viewer's own local posts, plus posts addressed directly to
     // the viewer actor.
     virtual mw::E<std::vector<Post>>
-    homeTimelinePosts(const std::vector<int64_t>& local_author_ids,
+    homeTimelinePosts(PostKind post_kind, const std::vector<int64_t>& local_author_ids,
                       const std::vector<int64_t>& remote_author_ids,
                       int64_t reply_author_id, const Cursor& c, int limit,
                       std::string_view viewer_actor) const = 0;
+    // Retained authored remote posts, with no remote history fetching.
+    virtual mw::E<std::vector<Post>> remotePostsForAuthor(
+        PostKind post_kind, int64_t author_id, const Cursor& c,
+        int limit) const = 0;
     // All posts that share a reply chain root (by in_reply_to_uri /
     // uri), for the thread view.
     virtual mw::E<std::vector<Post>>
@@ -323,6 +328,12 @@ public:
     mw::E<void> migrate7To8() const;
     // Add sticker relationship metadata without reading source files.
     mw::E<void> migrate8To9() const;
+    // Classify streams and retain durable offline-import mappings.
+    mw::E<void> migrate9To10() const;
+    // Offline cleanup after a rolled-back import. Requires the sole writer.
+    // Preserve files referenced by another post or profile.
+    mw::E<void> cleanupStoredAttachments(
+        const std::vector<StoredFile>& files) const;
     // Commit an application operation atomically, joining an outer write.
     mw::E<void> withWrite(
         const std::function<mw::E<void>()>& operation) const override;
@@ -426,17 +437,20 @@ public:
     mw::E<std::vector<PostRecipient>>
     getPostRecipients(int64_t post_id) const override;
     mw::E<std::vector<Post>>
-    timelinePublic(const Cursor& c, int limit) const override;
+    timelinePublic(PostKind post_kind, const Cursor& c, int limit) const override;
     mw::E<std::vector<Post>>
-    timelineHome(int64_t user_id, const Cursor& c, int limit) const override;
+    timelineHome(PostKind post_kind, int64_t user_id, const Cursor& c, int limit) const override;
     mw::E<std::vector<Post>>
-    postsForAuthors(const std::vector<int64_t>& local_author_ids,
+    postsForAuthors(PostKind post_kind, const std::vector<int64_t>& local_author_ids,
                     const Cursor& c, int limit) const override;
     mw::E<std::vector<Post>>
-    homeTimelinePosts(const std::vector<int64_t>& local_author_ids,
+    homeTimelinePosts(PostKind post_kind, const std::vector<int64_t>& local_author_ids,
                       const std::vector<int64_t>& remote_author_ids,
                       int64_t reply_author_id, const Cursor& c, int limit,
                       std::string_view viewer_actor) const override;
+    mw::E<std::vector<Post>> remotePostsForAuthor(
+        PostKind post_kind, int64_t author_id, const Cursor& c,
+        int limit) const override;
     mw::E<std::vector<Post>> threadFor(std::string_view root_uri) const override;
     mw::E<int64_t> countLocalPosts() const override;
 

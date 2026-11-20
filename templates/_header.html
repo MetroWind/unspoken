@@ -33,6 +33,7 @@
 {% else %}
 <link rel="stylesheet" href="{{ site.root }}static/style.css">
 {% endif %}
+<link rel="stylesheet" href="{{ site.root }}static/photos.css">
 </head>
 <body>
 <header class="topbar">
@@ -40,6 +41,7 @@
     <a href="{{ site.root }}" aria-label="Timeline"
        title="Timeline"><i class="nf nf-fa-home ui-icon"
        aria-hidden="true"></i></a>
+    <a href="{{ site.root }}photos">Photos</a>
     <a href="{{ site.root }}search" aria-label="Search"
        title="Search"><i class="nf nf-fa-search ui-icon"
        aria-hidden="true"></i></a>
@@ -80,7 +82,7 @@
 {% endif %}
   </nav>
 </header>
-<main>
+<main {% if exists("post_kind") %} class="timeline-{{ post_kind }}"{% endif %}>
 {% if length(error) > 0 %}
 <p class="error">{{ error }}</p>
 {% endif %}

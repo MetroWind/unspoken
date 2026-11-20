@@ -7,8 +7,9 @@ pkgdesc='Micro-blog server that federates over ActivityPub'
 arch=('x86_64')
 url='https://github.com/MetroWind/unspoken'
 license=('unknown')
-depends=('curl' 'gcc-libs' 'glibc' 'libxml2>=2.14' 'openssl' 'sqlite')
-makedepends=('cmake' 'git')
+depends=('curl' 'gcc-libs' 'glibc' 'libxml2>=2.14' 'openssl' 'sqlite'
+         'imagemagick' 'libheif' 'libjxl')
+makedepends=('cmake' 'git' 'pkgconf')
 provides=('unspoken')
 conflicts=('unspoken')
 backup=('etc/unspoken/config.yaml')
@@ -25,7 +26,7 @@ sha256sums=(
     '55886800e6948b5d4692796e4a9dc5f9df114c0b8eab9eb0943a936e7bb036b2'
     '854a27c8fb3cc72d6cf541a654e4717339e8dab940b5b653df4c67e2908fd545'
     '13f941070585e369e52ad4344bf2e5bb02f58fa37ec7f229694f649137ae57df'
-    '49547593dae1f43c779268366882eeb52c81c199ee70c060b80e6fef1bee8385'
+    '564558fb0e48649a53ee0ed9dfa31258035234cb76b8546c71e192820e509c15'
 )
 
 pkgver()
@@ -60,6 +61,8 @@ package()
         "$pkgdir/usr/share/unspoken/data/emoji_categories.json"
 
     install -Dm644 config.yaml "$pkgdir/etc/unspoken/config.yaml"
+    install -Dm644 unspoken/docs/photo_policy.xml \
+        "$pkgdir/usr/share/unspoken/photo_policy.xml"
     install -Dm644 unspoken/docs/operator.md \
         "$pkgdir/usr/share/doc/unspoken/operator.md"
     install -Dm644 unspoken.service \
