@@ -281,7 +281,7 @@ article.photo-post
     .gallery
     {
         width: 100%;
-        overflow: scroll;
+        overflow-x: scroll;
         display: flex;
         flex-wrap: nowrap;
         /* container-type: inline-size; */
