@@ -118,15 +118,21 @@ def run(binary, root):
                 assert older_ids == list(reversed(expected))[2:4], older_ids
         profile = sender.get("u/alice?kind=photo")[2].decode()
         assert 'aria-current="page">Photos' in profile
-        assert f'id="p{photos[-1]}"' in profile
-        assert f'id="p{socials[-1]}"' not in profile
+        assert 'class="profile-photo-grid"' in profile
+        assert profile.count(f'class="profile-photo-tile" href="/p/{photos[-1]}"') == 2
+        assert f'class="profile-photo-tile" href="/p/{socials[-1]}"' not in profile
+        assert '<article class="post ' not in profile
+        assert profile.count(wire["attachment"][0]["url"]) == 2
+        assert profile.count(wire["attachment"][1]["url"]) == 2
         assert "kind=photo" in profile
         def received():
             with receiver.connection() as db:
                 return db.execute("SELECT id FROM posts WHERE uri=? AND post_kind=1", (uri,)).fetchone()
         remote_id = until(received)[0]
         assert f'id="p{remote_id}"'.encode() in receiver.get("photos")[2]
-        assert f'id="p{remote_id}"'.encode() in receiver.get("remote?kind=photo&uri=" + urllib.parse.quote(sender.url + "u/alice", safe=""))[2]
+        remote_profile = receiver.get("remote?kind=photo&uri="
+            + urllib.parse.quote(sender.url + "u/alice", safe=""))[2]
+        assert f'class="profile-photo-tile" href="/p/{remote_id}"'.encode() in remote_profile
         # Private photos stay absent from anonymous pages and sharing metadata.
         code, headers, body = multipart(sender, [("post_kind", "photo"),
             ("visibility", "direct"), ("sensitive", "1")], [("red.png", "image/png", red)])
@@ -135,6 +141,12 @@ def run(binary, root):
         assert request(private_url)[0] == 404
         private = request(private_url, token=sender.token)[2]
         assert b'property="og:image"' not in private
+        private_id = private_url.rsplit("/", 1)[1]
+        owner_profile = sender.get("u/alice?kind=photo")[2]
+        assert f'class="profile-photo-tile" href="/p/{private_id}"'.encode() in owner_profile
+        assert b'<span>Hidden photo</span>' in owner_profile
+        public_profile = request(sender.url + "u/alice?kind=photo")[2]
+        assert f'class="profile-photo-tile" href="/p/{private_id}"'.encode() not in public_profile
         # Reply form defaults to Social, even under a photo root.
         code, headers, body = sender.post(f"post/{post_id}/reply", [("content", "social comment")])
         assert code == 302, body

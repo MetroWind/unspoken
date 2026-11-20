@@ -64,6 +64,33 @@
 </section>
 
 {% include "_stream_tabs.html" %}
+{% if default(post_kind, "social") == "photo" %}
+{% if length(posts) == 0 %}
+<p class="empty">No photos.</p>
+{% else %}
+<div class="profile-photo-grid">
+{% for post in posts %}
+  {% if length(post.photos) == 0 %}
+  <a class="profile-photo-tile" href="{{ site.root }}p/{{ post.id }}">
+    <span>Photo unavailable</span>
+  </a>
+  {% endif %}
+  {% for photo in post.photos %}
+  {% set hidden_photo = post.has_summary or post.sensitive or photo.sensitive %}
+  <a class="profile-photo-tile" href="{{ site.root }}p/{{ post.id }}"
+     {% if not hidden_photo and photo.original_name == "" %}aria-label="Open photo post"{% endif %}>
+    {% if hidden_photo %}
+    <span>Hidden photo</span>
+    {% else %}
+    <img src="{{ photo.url }}" alt="{{ photo.original_name }}"
+         loading="lazy" decoding="async">
+    {% endif %}
+  </a>
+  {% endfor %}
+{% endfor %}
+</div>
+{% endif %}
+{% else %}
 <div class="timeline">
 {% if length(posts) == 0 %}
 <p class="empty">No posts.</p>
@@ -72,5 +99,6 @@
 {% include "_post_card.html" %}
 {% endfor %}
 </div>
+{% endif %}
 {% if exists("has_more") %}{% if has_more %}<p class="pager"><a href="{{ older_url }}">older</a></p>{% endif %}{% endif %}
 {% include "_footer.html" %}
