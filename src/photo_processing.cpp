@@ -80,6 +80,10 @@ mw::E<void> validateDimensions(const Magick::Image &image)
 }
 
 // Remove standard and extended XMP APP1 segments from the JPEG header.
+// ImageMagick can emit XML parse warnings while reading JPEG XMP, even for
+// valid packets. See https://github.com/ImageMagick/ImageMagick/issues/9078
+// We reject decoder warnings, so discard unused XMP before probing or
+// decoding. Keep EXIF for orientation and ICC for color conversion.
 std::string stripJpegXmp(std::string_view bytes)
 {
     using namespace std::string_view_literals;
