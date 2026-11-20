@@ -185,6 +185,21 @@ def run(binary, root):
         original_path = (sender.path / "uploads" / original_hash[0]
                          / (original_hash + ".png"))
         assert not original_path.exists(), "Photo pipeline retained the original"
+        oriented = pathlib.Path("tests/fixtures/photos/oriented.jpg").read_bytes()
+        xmp = (b"http://ns.adobe.com/xap/1.0/\0"
+               b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><unfinished')
+        app1 = b"\xff\xe1" + (len(xmp) + 2).to_bytes(2, "big") + xmp
+        with_xmp = oriented[:2] + app1 + oriented[2:]
+        photo_urls = []
+        for jpeg in (oriented, with_xmp):
+            code, headers, body = multipart(sender, [("post_kind", "photo")],
+                [("oriented.jpg", "image/jpeg", jpeg)])
+            assert code == 302, body
+            note = json.loads(request(headers["Location"],
+                accept="application/activity+json")[2])
+            photo_urls.append(note["attachment"][0]["url"])
+        assert photo_urls[0] == photo_urls[1]
+
         # With JPEG XL configured, Social still stores the original PNG bytes.
         code, headers, body = multipart(sender, [("post_kind", "social")],
             [("landscape.png", "image/png", large)])

@@ -7,6 +7,7 @@
 #include <mw/utils.hpp>
 #include <optional>
 #include <semaphore>
+#include <string_view>
 
 namespace unspoken
 {
@@ -77,10 +78,55 @@ mw::E<void> validateDimensions(const Magick::Image &image)
     return {};
 }
 
+// Remove standard and extended XMP APP1 segments from the JPEG header.
+std::string stripJpegXmp(std::string_view bytes)
+{
+    using namespace std::string_view_literals;
+    if(!bytes.starts_with("\xff\xd8"sv))
+        return {};
+
+    std::string stripped;
+    size_t keep_from = 0;
+    size_t offset = 2;
+    while(offset < bytes.size() && bytes[offset] == '\xff')
+    {
+        const size_t segment_start = offset++;
+        while(offset < bytes.size() && bytes[offset] == '\xff')
+            ++offset;
+        if(offset == bytes.size())
+            break;
+        const auto marker = static_cast<unsigned char>(bytes[offset++]);
+        if(marker == 0xda || marker == 0xd9)
+            break;
+        if(marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7))
+            continue;
+        if(marker == 0x00 || marker == 0xd8 || bytes.size() - offset < 2)
+            break;
+        const size_t length =
+            (static_cast<unsigned char>(bytes[offset]) << 8) |
+            static_cast<unsigned char>(bytes[offset + 1]);
+        if(length < 2 || length > bytes.size() - offset)
+            break;
+        const auto payload = bytes.substr(offset + 2, length - 2);
+        offset += length;
+        if(marker != 0xe1 ||
+           !(payload.starts_with("http://ns.adobe.com/xap/1.0/\0"sv) ||
+             payload.starts_with("http://ns.adobe.com/xmp/extension/\0"sv)))
+            continue;
+        stripped.append(bytes.substr(keep_from, segment_start - keep_from));
+        keep_from = offset;
+    }
+    if(keep_from != 0)
+        stripped.append(bytes.substr(keep_from));
+    return stripped;
+}
+
 // Called only inside a public exception boundary with admission held.
 mw::E<std::list<Magick::Image>> decodePhoto(const std::string &bytes)
 {
-    Magick::Blob blob(bytes.data(), bytes.size());
+    auto stripped = stripJpegXmp(bytes);
+    const auto &input = stripped.empty() ? bytes : stripped;
+    Magick::Blob blob(input.data(), input.size());
     Magick::Image header;
     header.quiet(false);
     header.ping(blob);
