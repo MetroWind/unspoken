@@ -212,7 +212,7 @@ test("Single-photo galleries need no pip controls", function()
     assert.equal(gallery.handlers.keydown, undefined);
 });
 
-test("Photo form retains file-description associations when reordering", function()
+test("Attachment queue appends batches and preserves descriptions", function()
 {
     class Element
     {
@@ -223,6 +223,8 @@ test("Photo form retains file-description associations when reordering", functio
             this.handlers = {};
             this.value = "";
         }
+        setAttribute() {}
+        removeAttribute() {}
         addEventListener(name, handler) { this.handlers[name] = handler; }
         appendChild(child) { this.children.push(child); }
         replaceChildren() { this.children = []; }
@@ -247,16 +249,21 @@ test("Photo form retains file-description associations when reordering", functio
     }
     const input = new Element("input");
     input.files = [];
+    input.required = true;
+    const picker = new Element("input");
+    input.cloneNode = () => picker;
+    input.replaceWith = () => {};
     const mode = new Element("input");
     mode.value = "photo";
     const status = new Element("p");
     const controls = new Element("div");
-    const form = {querySelector(selector)
+    const form = {addEventListener() {}, querySelector(selector)
     {
-        return {'[name="post_kind"]': mode, 'input[type="file"]': input,
+        return {'[name="post_kind"]': mode, 'input[name="attachments"]': input,
             ".photo-mode-status": status}[selector];
     }};
     const container = {
+        appendChild() {},
         closest() { return form; },
         querySelector(selector)
         {
@@ -280,15 +287,26 @@ test("Photo form retains file-description associations when reordering", functio
         createElement(tag) { return new Element(tag); },
         createTextNode(value) { return {textContent: value}; }
     };
-    vm.runInNewContext(source, {document, DataTransfer});
+    const revoked = [];
+    const URL = {
+        createObjectURL(file) { return "blob:" + file.name; },
+        revokeObjectURL(url) { revoked.push(url); }
+    };
+    vm.runInNewContext(source, {document, DataTransfer, URL});
     const first = {name: "first.png", type: "image/png"};
     const second = {name: "notes.txt", type: "text/plain"};
-    input.files = [first, second];
-    input.handlers.change();
+    picker.files = [first];
+    picker.handlers.change();
+    assert.equal(picker.value, "");
+    assert.equal(picker.required, false);
+    assert.equal(controls.children[0].children[1].src, "blob:first.png");
     const description = controls.children[0].querySelector("input");
     description.value = "First description";
     description.handlers.input();
-    controls.children[0].children[2].handlers.click();
+    picker.files = [second];
+    picker.handlers.change();
+    assert.deepEqual(input.files, [first, second]);
+    controls.children[0].children.at(-1).handlers.click();
     assert.equal(input.files[0], second);
     assert.equal(controls.children[1].querySelector("input").value,
         "First description");
@@ -297,6 +315,11 @@ test("Photo form retains file-description associations when reordering", functio
     assert.match(status.textContent, /Some selected files/);
     assert.equal(input.files.length, 2);
     assert.equal(mode.value, "photo");
-    assert.equal(controls.children[1].querySelector("input").value,
-        "First description");
+    controls.children[1].children.find(child =>
+        child.textContent === "Remove").handlers.click();
+    assert.deepEqual(revoked, ["blob:first.png"]);
+    assert.deepEqual(input.files, [second]);
+    controls.children[0].children.find(child =>
+        child.textContent === "Remove").handlers.click();
+    assert.equal(picker.required, true);
 });

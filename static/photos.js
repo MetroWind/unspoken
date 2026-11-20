@@ -128,7 +128,7 @@
     function updateModeStatus(form)
     {
         var mode = form.querySelector('[name="post_kind"]');
-        var input = form.querySelector('input[type="file"]');
+        var input = form.querySelector('input[name="attachments"]');
         var status = form.querySelector(".photo-mode-status");
         if(!mode || !input || !status) return;
         var incompatible = Array.from(input.files).some(function(file)
@@ -145,8 +145,39 @@
     {
         var input = container.querySelector('input[type="file"]');
         var controls = container.querySelector(".upload-descriptions");
+        if(typeof DataTransfer !== "function") return;
+        var picker = input.cloneNode();
+        var required = input.required;
+        picker.removeAttribute("name");
+        input.replaceWith(picker);
+        container.appendChild(input);
+        input.required = false;
+        input.hidden = true;
         var entries = [];
         var form = container.closest("form");
+
+        function syncFiles()
+        {
+            var transfer = new DataTransfer();
+            entries.forEach(function(entry) { transfer.items.add(entry.file); });
+            input.files = transfer.files;
+            picker.required = required && entries.length === 0;
+            updateModeStatus(form);
+        }
+
+        function revokePreview(entry)
+        {
+            if(entry.preview_url) URL.revokeObjectURL(entry.preview_url);
+        }
+
+        function removeEntry(index)
+        {
+            revokePreview(entries[index]);
+            entries.splice(index, 1);
+            syncFiles();
+            draw();
+            picker.focus();
+        }
 
         function draw()
         {
@@ -166,6 +197,27 @@
                 });
                 label.appendChild(description);
                 row.appendChild(label);
+                if(entry.preview_url)
+                {
+                    var preview = document.createElement("img");
+                    preview.className = "upload-preview";
+                    preview.alt = "";
+                    preview.addEventListener("error", function()
+                    {
+                        preview.hidden = true;
+                    });
+                    preview.src = entry.preview_url;
+                    row.appendChild(preview);
+                }
+                var remove = document.createElement("button");
+                remove.type = "button";
+                remove.textContent = "Remove";
+                remove.setAttribute("aria-label", "Remove " + entry.file.name);
+                remove.addEventListener("click", function()
+                {
+                    removeEntry(index);
+                });
+                row.appendChild(remove);
                 [-1, 1].forEach(function(step)
                 {
                     var button = document.createElement("button");
@@ -178,9 +230,7 @@
                         var swapped = entries[target];
                         entries[target] = entry;
                         entries[index] = swapped;
-                        var transfer = new DataTransfer();
-                        entries.forEach(function(item) { transfer.items.add(item.file); });
-                        input.files = transfer.files;
+                        syncFiles();
                         draw();
                         controls.querySelectorAll(".upload-description")[target].querySelector("input").focus();
                     });
@@ -190,16 +240,32 @@
             });
         }
 
-        input.addEventListener("change", function()
+        picker.addEventListener("change", function()
         {
-            entries = Array.from(input.files).map(function(file)
+            Array.from(picker.files).forEach(function(file)
             {
-                return {file: file, description: ""};
+                var preview_url = "";
+                if(file.type.startsWith("image/"))
+                    preview_url = URL.createObjectURL(file);
+                entries.push({file: file, description: "", preview_url});
             });
+            picker.value = "";
+            syncFiles();
             draw();
-            updateModeStatus(form);
         });
-        updateModeStatus(form);
+        form.addEventListener("reset", function(event)
+        {
+            queueMicrotask(function()
+            {
+                if(event.defaultPrevented) return;
+                entries.forEach(revokePreview);
+                entries = [];
+                syncFiles();
+                draw();
+            });
+        });
+        syncFiles();
+        draw();
     }
 
     function refreshGalleries()

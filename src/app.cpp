@@ -1180,6 +1180,7 @@ void App::handlePostView(const Request& req, Response& res) const
     auto ctx = baseContext(req, viewer);
     ctx["posts"] = views;
     ctx["focus_id"] = post->id;
+    ctx["post_kind"] = unspoken::postKindToStr(post->post_kind);
     ctx["reply_to_id"] = post->id;
     ASSIGN_OR_RESPOND_ERROR(auto reply_prefill,
                             replyPrefillForPost(*ds, svc, *post), res);

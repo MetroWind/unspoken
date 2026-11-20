@@ -95,6 +95,9 @@ def run(binary, root):
         assert wire["attachment"][0]["name"] == 'Blue <&"'
         assert wire["attachment"][1]["name"] == ""
         photo_html = sender.get(f"p/{post_id}")[2]
+        assert re.search(rb'<main\s+class="timeline-photo">', photo_html)
+        social_html = sender.get(f"p/{socials[-1]}")[2]
+        assert re.search(rb'<main\s+class="timeline-social">', social_html)
         assert b'class="scroll-pips"' in photo_html
         assert b'aria-label="Photo 1 of 2"' in photo_html
         assert b'aria-label="Photo 2 of 2"' in photo_html

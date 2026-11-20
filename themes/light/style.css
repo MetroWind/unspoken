@@ -71,6 +71,11 @@ main
     padding: 0 10px;
 }
 
+main.timeline-photo
+{
+    max-width: 640px;
+}
+
 .page-title
 {
     text-transform: uppercase;
@@ -105,9 +110,9 @@ section.composer
         align-items: start;
     }
 
-    main.timeline-photo
+    main.timeline-photo:has(> .sidebar)
     {
-        max-width: 900px;
+        max-width: 960px;
     }
 
     main:has(> .sidebar) > *

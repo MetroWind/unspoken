@@ -2,3 +2,10 @@
 .stream-tabs [aria-current="page"] { font-weight: bold; text-decoration: underline; }
 .upload-description { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
 .photo-uploads, .upload-descriptions { min-width: 0; max-width: 100%; }
+
+.upload-preview
+{
+    width: 64px;
+    height: 64px;
+    object-fit: contain;
+}

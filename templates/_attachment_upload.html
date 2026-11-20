@@ -1,0 +1,14 @@
+  <div class="photo-uploads">
+    <label>{% if post_kind == "photo" %}photos{% else %}attach{% endif %}
+      <input type="file" name="attachments" multiple
+{% if post_kind == "photo" %}
+             accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/jxl" required
+{% endif %}
+      >
+    </label>
+    <div class="upload-descriptions">
+      <label>First image description (alt text)
+        <input name="attachment_description_0" value="">
+      </label>
+    </div>
+  </div>
