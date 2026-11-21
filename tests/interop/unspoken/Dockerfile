@@ -12,6 +12,7 @@ RUN pacman -Syu --needed --noconfirm \
         libheif \
         libjxl \
         openssl \
+        openssl-3 \
         sqlite \
     && pacman -Scc --noconfirm < /dev/null
 

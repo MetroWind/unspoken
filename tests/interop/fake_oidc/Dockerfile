@@ -7,6 +7,7 @@ RUN pacman -Syu --needed --noconfirm \
         curl \
         gcc-libs \
         openssl \
+        openssl-3 \
     && pacman -Scc --noconfirm < /dev/null
 
 COPY build/fake_oidc /usr/local/bin/fake_oidc

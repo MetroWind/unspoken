@@ -257,6 +257,8 @@ class UnspokenControl:
         payload = {"csrf": csrf, "content": fields.get("content", ""),
                    "visibility": fields.get("visibility", "public"),
                    "summary": fields.get("summary", "")}
+        if "post_kind" in fields:
+            payload["post_kind"] = fields["post_kind"]
         if fields.get("sensitive", False):
             payload["sensitive"] = "1"
         result = self.browser(username).postMultipart(

@@ -628,6 +628,37 @@ On Arch, install `imagemagick`, `libheif` and `libjxl` for the requested
 codecs (alongside the normal build dependencies). The application uses
 linked libraries, never ImageMagick command-line subprocesses.
 
+### AVIF attachments on Mastodon
+
+The stock Mastodon 4.7.6 Docker image advertises `image/avif` and downloads
+federated AVIF attachments. Its Rails libvips initializer blocks the
+`VipsForeign` operation family and re-enables a short list of loaders and
+savers. The list omits the HEIF loader that libvips uses for AVIF. Mastodon
+therefore logs `VipsForeignLoad: ... is not a known file format`, leaves the
+attachment uncached, and serves a missing-image placeholder.
+[Media MIME allowlist](https://github.com/mastodon/mastodon/blob/v4.7.6/app/models/media_attachment.rb#L59)
+· [Decoder allowlist](https://github.com/mastodon/mastodon/blob/v4.7.6/config/initializers/vips.rb)
+
+Mastodon 4.7.2 disabled the shared HEIF decoder as a security measure,
+which also disabled AVIF decoding. Upstream PR #40542 corrected the
+advertised media types on `main`. The tested 4.7.6 image still advertises
+AVIF despite blocking the loader.
+[4.7.2 release notes](https://github.com/mastodon/mastodon/releases/tag/v4.7.2)
+· [Upstream PR #40542](https://github.com/mastodon/mastodon/pull/40542)
+
+The Docker interop test reproduced this with a new Unspoken Photos post.
+Both files from the original report were served with `Content-Type:
+image/avif` and recognized by standalone `vipsheader` inside the same
+container. Mastodon's Rails decoder rejected both, and a JPEG control
+decoded successfully. The test establishes the behavior of the stock image.
+The reporting instance's decoder configuration was unverified.
+[Original photo post](https://f.mws.rocks/p/7838)
+
+Use `photos.format: webp` or `photos.format: jpeg` for new uploads if
+recipients run Mastodon with this decoder policy. Existing attachments
+keep their stored format. To reproduce with a local stack or compare
+Mastodon images, use the [Mastodon AVIF interop test](../tests/interop/README.md#mastodon-avif-photos).
+
 ### Federation extension
 
 Every local Note emits the full JSON property key

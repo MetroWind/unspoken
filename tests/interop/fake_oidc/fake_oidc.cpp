@@ -49,6 +49,7 @@ struct FakeOidcConfig
     int listen_port = 9000;
     std::string client_id = "unspoken-interop";
     std::string client_secret = "unspoken-interop-secret";
+    std::string redirect_uri = "http://unspoken.test:8080/callback";
     std::string default_user = "alice";
     int token_ttl_seconds = 3600;
     std::string private_key_path = "jwt_private.pem";
@@ -98,6 +99,7 @@ FakeOidcConfig loadConfig()
     c.listen_port = envIntOr("OIDC_LISTEN_PORT", c.listen_port);
     c.client_id = envOr("OIDC_CLIENT_ID", c.client_id);
     c.client_secret = envOr("OIDC_CLIENT_SECRET", c.client_secret);
+    c.redirect_uri = envOr("OIDC_REDIRECT_URI", c.redirect_uri);
     c.default_user = envOr("OIDC_DEFAULT_USER", c.default_user);
     c.token_ttl_seconds =
         envIntOr("OIDC_TOKEN_TTL_SECONDS", c.token_ttl_seconds);
@@ -280,7 +282,7 @@ private:
         std::string state = req.get_param_value("state");
         std::string nonce = req.get_param_value("nonce");
         if(response_type != "code" || client_id != config.client_id
-           || !redirect_uri.starts_with("http://unspoken.test:8080/callback")
+           || redirect_uri != config.redirect_uri
            || scope.find("openid") == std::string::npos || state.empty()
            || nonce.empty())
         {

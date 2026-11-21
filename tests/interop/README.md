@@ -65,6 +65,26 @@ cached remote actors, or existing follows can change test behavior.
 running after success or failure so logs and live state can be inspected.
 Use `all --cleanup` to stop the stack after a successful run.
 
+## Mastodon AVIF photos
+
+`tests/interop/run_mastodon.sh all` starts a separate Compose project
+with Mastodon 4.7.6, PostgreSQL, Redis, Unspoken, and fake OIDC. The runner
+uploads a PNG as a Photos post, verifies that Unspoken serves AVIF over
+ActivityPub, and fetches the post through Mastodon's remote status service.
+It then checks that Mastodon's public status API lists the image and that
+Mastodon serves a JPEG for both the cached image and its preview.
+
+Use `test` to publish and check another photo, `logs` to inspect failures,
+and `down` to stop the stack while keeping its volumes.
+`MASTODON_IMAGE` selects another image for comparison. The test exits
+nonzero if Mastodon cannot cache and serve the attachment. The default
+image reproduces that failure because Mastodon's libvips initializer
+leaves HEIF loading disabled, even though its MIME allowlist lists AVIF.
+The test uses Docker
+Compose v2.24.4 or newer and OpenSSL. It generates a local certificate so
+Mastodon can verify Unspoken's actor over HTTPS WebFinger. The stack runs
+on an internal network with no host ports.
+
 ## Network And URLs
 
 The Compose network provides stable test hostnames:

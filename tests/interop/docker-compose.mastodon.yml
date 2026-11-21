@@ -1,0 +1,124 @@
+name: unspoken-mastodon-interop
+
+services:
+  postgres:
+    extends:
+      file: docker-compose.akkoma.yml
+      service: postgres
+    environment:
+      POSTGRES_DB: mastodon
+      POSTGRES_USER: mastodon
+      POSTGRES_PASSWORD: mastodon
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mastodon -d mastodon"]
+    volumes:
+      - mastodon-db:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - feditest
+
+  mastodon:
+    image: ${MASTODON_IMAGE:-ghcr.io/mastodon/mastodon:v4.7.6}
+    command: bundle exec puma -C config/puma.rb
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      LOCAL_DOMAIN: mastodon.test
+      RAILS_ENV: production
+      RAILS_SERVE_STATIC_FILES: "true"
+      DB_HOST: postgres
+      DB_NAME: mastodon
+      DB_USER: mastodon
+      DB_PASS: mastodon
+      REDIS_HOST: redis
+      SECRET_KEY_BASE: disposable-mastodon-photo-interop-secret-key-base
+      ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY: interop-only-primary-key-0000000
+      ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY: interop-only-deterministic-key-0
+      ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT: interop-only-key-derivation-salt
+      ALLOWED_PRIVATE_ADDRESSES: 172.30.78.10/32
+      SSL_CERT_FILE: /certs/unspoken.crt
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -H 'Host: mastodon.test' -H 'X-Forwarded-Proto: https'
+          http://127.0.0.1:3000/health
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    networks:
+      feditest:
+        aliases:
+          - mastodon.test
+    volumes:
+      - mastodon-media:/opt/mastodon/public/system
+      - ./.artifacts/mastodon/tls.crt:/certs/unspoken.crt:ro
+
+  unspoken:
+    extends:
+      file: docker-compose.akkoma.yml
+      service: unspoken
+    command: ["/usr/local/bin/unspoken", "--config", "/config/unspoken.yaml"]
+    ports: !reset []
+    networks:
+      feditest:
+        aliases: !reset []
+    volumes:
+      - ./config/unspoken_mastodon.yaml:/config/unspoken.yaml:ro
+
+  unspoken-tls:
+    image: nginx:stable-alpine
+    depends_on:
+      unspoken:
+        condition: service_healthy
+    networks:
+      feditest:
+        aliases:
+          - unspoken.test
+        ipv4_address: 172.30.78.10
+    volumes:
+      - ./config/unspoken_mastodon.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./.artifacts/mastodon/tls.crt:/certs/unspoken.crt:ro
+      - ./.artifacts/mastodon/tls.key:/certs/unspoken.key:ro
+
+  fake-oidc:
+    extends:
+      file: docker-compose.akkoma.yml
+      service: fake-oidc
+    environment:
+      OIDC_REDIRECT_URI: https://unspoken.test/callback
+
+  photo-runner:
+    build:
+      context: runner
+    entrypoint: ["python", "/runner/mastodon_photo.py"]
+    environment:
+      UNSPOKEN_URL: https://unspoken.test
+      FAKE_OIDC_URL: http://fake-oidc.test:9000
+      MASTODON_URL: http://mastodon.test:3000
+      SSL_CERT_FILE: /certs/unspoken.crt
+    networks:
+      - feditest
+    profiles:
+      - test
+    volumes:
+      - ./runner/mastodon_photo.py:/runner/mastodon_photo.py:ro
+      - ../fixtures/photos/landscape.png:/runner/landscape.png:ro
+      - ./.artifacts/mastodon/tls.crt:/certs/unspoken.crt:ro
+
+networks:
+  feditest:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.78.0/24
+
+volumes:
+  mastodon-db:
+  mastodon-media:
+  unspoken-data:
